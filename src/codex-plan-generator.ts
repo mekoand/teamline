@@ -99,7 +99,7 @@ ${workOrder.goal}${acceptance}
 - outcome：完成后得到什么结果
 - scope：预计影响哪些代码范围
 - verification：如何检查这一阶段完成
-- verificationCommand：可选；只有存在明确、可直接运行的自动验证命令时才填写，否则省略。不要把自然语言说明复制为命令
+- verificationCommand：只有存在明确、可直接运行的自动验证命令时才填写，否则填写 null。不要把自然语言说明复制为命令
 
 不要执行计划，只返回符合指定 JSON Schema 的结果。`;
 }

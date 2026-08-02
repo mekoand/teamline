@@ -10,12 +10,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["outcome", "scope", "verification"],
+        "required": ["outcome", "scope", "verification", "verificationCommand"],
         "properties": {
           "outcome": { "type": "string", "minLength": 1 },
           "scope": { "type": "string", "minLength": 1 },
           "verification": { "type": "string", "minLength": 1 },
-          "verificationCommand": { "type": "string" }
+          "verificationCommand": { "type": ["string", "null"] }
         }
       }
     }
