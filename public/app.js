@@ -266,10 +266,46 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
     }
   });
 
+  document.querySelector("#interrupt-work-order")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "正在停止…";
+    setExecutionFeedback("正在请求 Codex 停止；进程退出后委托才会标为已中断。", false);
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodeURIComponent(workOrder.id)}/interrupt`,
+        { method: "POST" },
+      );
+      renderWorkOrderDetail(result.workOrder);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "中断运行";
+      setExecutionFeedback(messageFrom(error, "无法中断 Codex，请重试。"), true);
+    }
+  });
+
+  document.querySelector("#continue-work-order")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "正在继续…";
+    setExecutionFeedback("正在从已保存的会话或当前现场继续委托。", false);
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodeURIComponent(workOrder.id)}/continue`,
+        { method: "POST" },
+      );
+      renderWorkOrderDetail(result.workOrder);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "继续委托";
+      setExecutionFeedback(messageFrom(error, "无法继续委托，请处理后重试。"), true);
+    }
+  });
+
   if (workOrder.runStatus) {
     loadRunEvents(workOrder.id);
   }
-  if (workOrder.runStatus === "running") {
+  if (["running", "stopping"].includes(workOrder.runStatus)) {
     detailRefreshTimer = setTimeout(
       () => loadWorkOrderDetail(workOrder.id, true),
       2_000,
@@ -363,9 +399,19 @@ function renderExecutionPanel(workOrder) {
 
   const runLabel = {
     running: "Codex 运行中",
+    stopping: "正在停止 Codex",
+    interrupted: "Codex 已中断",
     completed: "Codex 已结束",
     failed: "Codex 运行失败",
   }[workOrder.runStatus];
+  const runAction =
+    workOrder.runStatus === "running"
+      ? '<button class="secondary-button" id="interrupt-work-order" type="button">中断运行</button>'
+      : workOrder.runStatus === "stopping"
+        ? '<button class="secondary-button" type="button" disabled>正在停止…</button>'
+        : workOrder.status === "interrupted"
+          ? '<button class="primary-button" id="continue-work-order" type="button">继续委托</button>'
+          : "";
   return `
     <section class="execution-panel run-panel">
       <div class="run-heading">
@@ -373,12 +419,17 @@ function renderExecutionPanel(workOrder) {
           <p class="eyebrow">运行详情</p>
           <h2>${runLabel}</h2>
         </div>
-        <span class="run-indicator run-${escapeHtml(workOrder.runStatus)}">${displayRunStatus(workOrder.runStatus)}</span>
+        <div class="run-actions">
+          <span class="run-indicator run-${escapeHtml(workOrder.runStatus)}">${displayRunStatus(workOrder.runStatus)}</span>
+          ${runAction}
+        </div>
       </div>
       <p class="run-summary">${escapeHtml(workOrder.currentSummary)}</p>
       ${workOrder.lastError ? `<p class="run-error">${escapeHtml(workOrder.lastError)}</p>` : ""}
+      <p id="execution-feedback" class="execution-feedback" role="status"></p>
       <dl class="run-facts">
         <div><dt>累计运行时间</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
+        <div><dt>当前运行记录</dt><dd>第 ${workOrder.runNumber} 次运行</dd></div>
         <div><dt>会话标识</dt><dd>${escapeHtml(workOrder.sessionId ?? "等待 Codex 返回")}</dd></div>
         <div><dt>委托分支</dt><dd>${escapeHtml(workOrder.executionBranch ?? "正在准备")}</dd></div>
         <div><dt>委托工作区</dt><dd>${escapeHtml(shortPath(workOrder.worktreePath ?? "正在准备"))}</dd></div>
@@ -406,7 +457,10 @@ async function loadRunEvents(id) {
           .map(
             (event) => `
               <article class="run-event">
-                <time>${formatDate(event.createdAt)}</time>
+                <div class="run-event-meta">
+                  <b>第 ${event.runNumber} 次运行</b>
+                  <time>${formatDate(event.createdAt)}</time>
+                </div>
                 <p>${escapeHtml(event.message)}</p>
               </article>
             `,
@@ -483,12 +537,16 @@ function formatDuration(milliseconds) {
 }
 
 function displayStatusLabel(workOrder) {
+  if (workOrder.runStatus === "stopping") return "正在停止";
+  if (workOrder.runStatus === "interrupted") return "已中断";
   if (workOrder.runStatus === "completed") return "Codex 已结束";
   if (workOrder.runStatus === "failed") return "运行失败";
   return statusLabels[workOrder.status] ?? workOrder.status;
 }
 
 function statusClass(workOrder) {
+  if (workOrder.runStatus === "stopping") return "status-running";
+  if (workOrder.runStatus === "interrupted") return "status-interrupted";
   if (workOrder.runStatus === "completed") return "status-run-completed";
   if (workOrder.runStatus === "failed") return "status-interrupted";
   return `status-${escapeHtml(workOrder.status)}`;
@@ -497,6 +555,8 @@ function statusClass(workOrder) {
 function displayRunStatus(runStatus) {
   return {
     running: "执行中",
+    stopping: "正在停止",
+    interrupted: "已中断",
     completed: "已结束",
     failed: "需要处理",
   }[runStatus];

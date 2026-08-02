@@ -9,12 +9,18 @@ export const workOrderStatuses = [
 
 export type WorkOrderStatus = (typeof workOrderStatuses)[number];
 
-export type RunStatus = "running" | "completed" | "failed";
+export type RunStatus =
+  | "running"
+  | "stopping"
+  | "interrupted"
+  | "completed"
+  | "failed";
 
 export type WorkOrderRunEvent = {
   id: number;
   type: "session" | "progress" | "exit";
   message: string;
+  runNumber: number;
   createdAt: string;
 };
 
@@ -49,6 +55,8 @@ export type WorkOrder = {
   runStatus: RunStatus | null;
   runStartedAt: string | null;
   runEndedAt: string | null;
+  runPid: number | null;
+  runNumber: number;
   runtimeMs: number;
   lastError: string | null;
   createdAt: string;
@@ -94,6 +102,8 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     runStatus: null,
     runStartedAt: null,
     runEndedAt: null,
+    runPid: null,
+    runNumber: 0,
     runtimeMs: 0,
     lastError: null,
     createdAt: now,

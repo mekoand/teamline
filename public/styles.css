@@ -704,6 +704,29 @@ textarea:focus {
   background: #f4e5d8;
 }
 
+.run-stopping {
+  color: #7b6424;
+  background: #f2ead0;
+}
+
+.run-interrupted {
+  color: #8b532d;
+  background: #f4e5d8;
+}
+
+.run-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.run-actions .primary-button,
+.run-actions .secondary-button {
+  min-height: 36px;
+  padding-inline: 14px;
+}
+
 .run-summary {
   margin-bottom: 24px;
   color: #4c5049;
@@ -758,6 +781,16 @@ textarea:focus {
   padding: 14px 16px;
   border-radius: 12px;
   background: #fffefb;
+}
+
+.run-event-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.run-event-meta b {
+  color: #666a62;
+  font-size: 11px;
 }
 
 .run-event time {

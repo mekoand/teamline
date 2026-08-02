@@ -1,7 +1,12 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
-import type { CodexRunEvent, CodexRunner } from "./codex-runner";
+import type {
+  ContinuationContext,
+  CodexRunEvent,
+  CodexRunner,
+  StartedCodexRun,
+} from "./codex-runner";
 import type { PlanStageInput } from "./work-order";
 import type { WorkOrderStore } from "./work-order-store";
 import type { WorktreeManager } from "./worktree-manager";
@@ -32,6 +37,7 @@ export function createApp({
   worktreeManager,
 }: AppDependencies) {
   let startingWorkOrderId: string | null = null;
+  const activeRuns = new Map<string, StartedCodexRun>();
 
   return {
     async fetch(request: Request): Promise<Response> {
@@ -125,8 +131,150 @@ export function createApp({
             );
           }
 
-          void consumeRunEvents(store, id, run.events);
+          store.recordRunPid(id, run.pid ?? null);
+          activeRuns.set(id, run);
+          void consumeRunEvents(store, id, run, activeRuns);
           return Response.json({ workOrder: startedWorkOrder });
+        } finally {
+          startingWorkOrderId = null;
+        }
+      }
+
+      const interruptMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/interrupt$/,
+      );
+      if (request.method === "POST" && interruptMatch) {
+        const id = decodeURIComponent(interruptMatch[1]);
+        const workOrder = store.get(id);
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        if (workOrder.runStatus === "stopping") {
+          return Response.json({ workOrder });
+        }
+        const activeRun = activeRuns.get(id);
+        if (workOrder.runStatus === "running" && !activeRun && workOrder.runPid) {
+          return Response.json(
+            {
+              code: "RUN_CONTROL_LOST",
+              error:
+                "服务重启后无法控制这次仍在运行的 Codex，请在终端停止或待其结束后重启 Teamline",
+            },
+            { status: 409 },
+          );
+        }
+        if (workOrder.runStatus !== "running" || !activeRun) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_RUNNING", error: "这项委托当前没有可中断的运行" },
+            { status: 409 },
+          );
+        }
+
+        const stopping = store.markStopping(id);
+        activeRun.interrupt();
+        return Response.json({ workOrder: stopping });
+      }
+
+      const continueMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/continue$/,
+      );
+      if (request.method === "POST" && continueMatch) {
+        const id = decodeURIComponent(continueMatch[1]);
+        const workOrder = store.get(id);
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        if (workOrder.status !== "interrupted") {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的委托可以继续" },
+            { status: 409 },
+          );
+        }
+        if (!codexRunner) {
+          return Response.json(
+            { code: "EXECUTION_UNAVAILABLE", error: "Codex 执行服务尚未配置" },
+            { status: 503 },
+          );
+        }
+        if (!workOrder.worktreePath || !existsSync(workOrder.worktreePath)) {
+          return Response.json(
+            {
+              code: "WORKTREE_MISSING",
+              error: "委托工作区不存在，无法继续；Teamline 不会自动重建或覆盖现场",
+            },
+            { status: 409 },
+          );
+        }
+        if (store.hasActiveRun() || startingWorkOrderId) {
+          return Response.json(
+            {
+              code: "ACTIVE_WORK_ORDER_EXISTS",
+              error: "已有另一项委托正在运行，请等待它结束后再继续",
+            },
+            { status: 409 },
+          );
+        }
+        startingWorkOrderId = id;
+        try {
+          const continued = store.markContinued(id);
+          let run;
+          try {
+            run = workOrder.sessionId
+              ? await codexRunner.resume({
+                  workOrder: continued,
+                  workspacePath: workOrder.worktreePath,
+                  sessionId: workOrder.sessionId,
+                })
+              : await codexRunner.start({
+                  workOrder: continued,
+                  workspacePath: workOrder.worktreePath,
+                  continuation: await continuationContext(
+                    store,
+                    id,
+                    workOrder.worktreePath,
+                  ),
+                });
+          } catch (error) {
+            const message = safeCodexStartError(error);
+            store.recordExit(id, -1, message);
+            return Response.json(
+              { code: "CODEX_CONTINUE_FAILED", error: message },
+              { status: 502 },
+            );
+          }
+          store.recordRunPid(id, run.pid ?? null);
+          activeRuns.set(id, run);
+          void consumeRunEvents(store, id, run, activeRuns, {
+            fallback:
+              workOrder.sessionId && codexRunner
+                ? async () => {
+                    const context = await continuationContext(
+                      store,
+                      id,
+                      workOrder.worktreePath!,
+                    );
+                    if (store.get(id)?.runStatus === "stopping") {
+                      return null;
+                    }
+                    store.recordProgress(
+                      id,
+                      "保存的 Codex 会话不可用，已使用当前现场启动新的执行",
+                    );
+                    return codexRunner.start({
+                      workOrder: store.get(id)!,
+                      workspacePath: workOrder.worktreePath!,
+                      continuation: context,
+                    });
+                  }
+                : undefined,
+          });
+          return Response.json({ workOrder: continued });
         } finally {
           startingWorkOrderId = null;
         }
@@ -281,25 +429,99 @@ export function createApp({
 async function consumeRunEvents(
   store: WorkOrderStore,
   workOrderId: string,
-  events: AsyncIterable<CodexRunEvent>,
+  run: StartedCodexRun,
+  activeRuns: Map<string, StartedCodexRun>,
+  options: { fallback?: () => Promise<StartedCodexRun | null> } = {},
 ): Promise<void> {
   try {
-    for await (const event of events) {
+    for await (const event of run.events) {
       if (event.type === "session") {
         store.recordSession(workOrderId, event.sessionId);
       } else if (event.type === "progress") {
         store.recordProgress(workOrderId, event.message);
       } else {
-        store.recordExit(workOrderId, event.exitCode, event.message);
+        if (store.get(workOrderId)?.runStatus === "stopping") {
+          store.recordInterrupted(workOrderId);
+        } else if (event.resumeUnavailable && options.fallback) {
+          let fallbackRun: StartedCodexRun | null;
+          try {
+            fallbackRun = await options.fallback();
+          } catch {
+            if (store.get(workOrderId)?.runStatus === "stopping") {
+              store.recordInterrupted(workOrderId);
+            } else {
+              store.recordExit(
+                workOrderId,
+                -1,
+                "Codex 无法从当前现场启动，请检查本机 Codex 后重试",
+              );
+            }
+            return;
+          }
+          if (!fallbackRun) {
+            if (store.get(workOrderId)?.runStatus === "stopping") {
+              store.recordInterrupted(workOrderId);
+            }
+            return;
+          }
+          activeRuns.set(workOrderId, fallbackRun);
+          store.recordRunPid(workOrderId, fallbackRun.pid ?? null);
+          if (store.get(workOrderId)?.runStatus === "stopping") {
+            try {
+              fallbackRun.interrupt();
+            } catch {
+              // Keep waiting for the fallback process exit; stopping is not interrupted yet.
+            }
+          }
+          void consumeRunEvents(store, workOrderId, fallbackRun, activeRuns);
+          return;
+        } else {
+          store.recordExit(workOrderId, event.exitCode, event.message);
+        }
       }
     }
   } catch {
-    store.recordExit(
-      workOrderId,
-      -1,
-      "Codex 运行异常结束，请检查本机 Codex 后重试",
-    );
+    if (run.exited) {
+      await run.exited;
+    }
+    if (store.get(workOrderId)?.runStatus === "stopping") {
+      store.recordInterrupted(workOrderId);
+    } else {
+      store.recordExit(
+        workOrderId,
+        -1,
+        "Codex 运行异常结束，请检查本机 Codex 后重试",
+      );
+    }
+  } finally {
+    if (activeRuns.get(workOrderId) === run) {
+      activeRuns.delete(workOrderId);
+    }
   }
+}
+
+async function continuationContext(
+  store: WorkOrderStore,
+  workOrderId: string,
+  workspacePath: string,
+): Promise<ContinuationContext> {
+  const recentProgress = store
+    .listRunEvents(workOrderId, 20)
+    .filter((event) => event.type === "progress")
+    .slice(-5)
+    .map((event) => event.message);
+  const subprocess = Bun.spawn(["git", "-C", workspacePath, "status", "--short"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout] = await Promise.all([
+    subprocess.exited,
+    new Response(subprocess.stdout).text(),
+  ]);
+  return {
+    recentProgress,
+    gitStatus: exitCode === 0 ? stdout.trimEnd() : "无法读取当前 Git 状态",
+  };
 }
 
 function isGitRepository(repositoryPath: string): boolean {

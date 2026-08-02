@@ -24,6 +24,8 @@ type WorkOrderRow = {
   run_status: WorkOrder["runStatus"];
   run_started_at: string | null;
   run_ended_at: string | null;
+  run_pid: number | null;
+  run_number: number;
   runtime_ms: number;
   runtime_updated_at: string | null;
   last_error: string | null;
@@ -35,6 +37,7 @@ type RunEventRow = {
   id: number;
   event_type: WorkOrderRunEvent["type"];
   message: string;
+  run_number: number;
   created_at: string;
 };
 
@@ -65,10 +68,13 @@ export class WorkOrderStore {
         work_order_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
         message TEXT NOT NULL,
+        run_number INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
       )
     `);
+    this.addRunEventColumnsToExistingDatabase();
+    this.backfillLegacyRunNumbers();
   }
 
   list(): WorkOrder[] {
@@ -184,6 +190,24 @@ export class WorkOrderStore {
         UPDATE work_orders
         SET status = 'running', current_summary = 'Codex 已启动',
             run_status = 'running', session_id = NULL,
+            run_pid = NULL,
+            run_number = run_number + 1,
+            run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
+            last_error = NULL, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(now, now, now, id);
+    return this.get(id)!;
+  }
+
+  markContinued(id: string): WorkOrder {
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = 'running', current_summary = '正在继续 Codex',
+            run_status = 'running', run_number = run_number + 1,
+            run_pid = NULL,
             run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
             last_error = NULL, updated_at = ?
         WHERE id = ?
@@ -209,23 +233,51 @@ export class WorkOrderStore {
     return Boolean(
       this.database
         .query<{ present: number }, []>(
-          "SELECT 1 AS present FROM work_orders WHERE run_status = 'running' LIMIT 1",
+          "SELECT 1 AS present FROM work_orders WHERE run_status IN ('running', 'stopping') LIMIT 1",
         )
         .get(),
     );
   }
 
-  interruptActiveRunsAfterRestart(): number {
+  recordRunPid(id: string, pid: number | null): void {
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET run_pid = ?, updated_at = ?
+        WHERE id = ? AND run_status IN ('running', 'stopping')
+      `)
+      .run(pid, now, id);
+  }
+
+  interruptActiveRunsAfterRestart(
+    isProcessAlive: (pid: number) => boolean = processIsAlive,
+  ): number {
     const active = this.database
-      .query<{ id: string }, []>(
-        "SELECT id FROM work_orders WHERE run_status = 'running'",
+      .query<{ id: string; run_pid: number | null }, []>(
+        "SELECT id, run_pid FROM work_orders WHERE run_status IN ('running', 'stopping')",
       )
       .all();
     const message = "本地服务重启，无法继续跟踪这次运行";
+    let interrupted = 0;
     for (const workOrder of active) {
-      this.recordExit(workOrder.id, -1, message);
+      if (workOrder.run_pid !== null && isProcessAlive(workOrder.run_pid)) {
+        const now = new Date().toISOString();
+        this.database
+          .query(`
+            UPDATE work_orders
+            SET status = 'running', run_status = 'running',
+                current_summary = '服务重启后仍检测到 Codex 运行，但已无法控制',
+                updated_at = ?
+            WHERE id = ?
+          `)
+          .run(now, workOrder.id);
+        continue;
+      }
+      this.recordInterrupted(workOrder.id, message);
+      interrupted += 1;
     }
-    return active.length;
+    return interrupted;
   }
 
   recordSession(id: string, sessionId: string): void {
@@ -248,10 +300,30 @@ export class WorkOrderStore {
     });
   }
 
+  markStopping(id: string): WorkOrder {
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET run_status = 'stopping', current_summary = '正在停止 Codex', updated_at = ?
+        WHERE id = ? AND run_status = 'running'
+      `)
+      .run(now, id);
+    return this.get(id)!;
+  }
+
+  recordInterrupted(id: string, message = "Codex 已中断"): void {
+    this.appendRunEvent(id, "exit", message, {
+      summary: message,
+      ended: true,
+      interrupted: true,
+    });
+  }
+
   listRunEvents(id: string, limit = 20): WorkOrderRunEvent[] {
     const rows = this.database
       .query<RunEventRow, [string, number]>(`
-        SELECT id, event_type, message, created_at
+        SELECT id, event_type, message, run_number, created_at
         FROM run_events
         WHERE work_order_id = ?
         ORDER BY id DESC
@@ -264,6 +336,7 @@ export class WorkOrderStore {
       id: row.id,
       type: row.event_type,
       message: row.message,
+      runNumber: row.run_number,
       createdAt: row.created_at,
     }));
   }
@@ -277,12 +350,13 @@ export class WorkOrderStore {
       summary: string;
       ended?: boolean;
       failed?: boolean;
+      interrupted?: boolean;
     },
   ): void {
     const row = this.database
       .query<WorkOrderRow, [string]>("SELECT * FROM work_orders WHERE id = ?")
       .get(id);
-    if (!row || row.run_status !== "running") {
+    if (!row || !["running", "stopping"].includes(row.run_status ?? "")) {
       return;
     }
 
@@ -292,19 +366,25 @@ export class WorkOrderStore {
       ? Date.parse(row.runtime_updated_at)
       : now.getTime();
     const runtimeMs = row.runtime_ms + Math.max(0, now.getTime() - lastUpdated);
-    const status = options.ended && options.failed ? "interrupted" : row.status;
+    const status =
+      options.ended && (options.failed || options.interrupted)
+        ? "interrupted"
+        : row.status;
     const runStatus = options.ended
-      ? options.failed
+      ? options.interrupted
+        ? "interrupted"
+        : options.failed
         ? "failed"
         : "completed"
-      : "running";
+      : row.run_status;
 
     this.database.transaction(() => {
       this.database
         .query(`
           UPDATE work_orders
           SET status = ?, current_summary = ?, session_id = COALESCE(?, session_id),
-              run_status = ?, run_ended_at = ?, runtime_ms = ?, runtime_updated_at = ?,
+              run_status = ?, run_ended_at = ?, run_pid = ?,
+              runtime_ms = ?, runtime_updated_at = ?,
               last_error = ?, updated_at = ?
           WHERE id = ?
         `)
@@ -314,6 +394,7 @@ export class WorkOrderStore {
           options.sessionId ?? null,
           runStatus,
           options.ended ? nowIso : null,
+          options.ended ? null : row.run_pid,
           runtimeMs,
           nowIso,
           options.failed ? message : null,
@@ -322,10 +403,10 @@ export class WorkOrderStore {
         );
       this.database
         .query(`
-          INSERT INTO run_events (work_order_id, event_type, message, created_at)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO run_events (work_order_id, event_type, message, run_number, created_at)
+          VALUES (?, ?, ?, ?, ?)
         `)
-        .run(id, type, message, nowIso);
+        .run(id, type, message, row.run_number, nowIso);
     })();
   }
 
@@ -354,6 +435,8 @@ export class WorkOrderStore {
       ["run_status", "TEXT"],
       ["run_started_at", "TEXT"],
       ["run_ended_at", "TEXT"],
+      ["run_pid", "INTEGER"],
+      ["run_number", "INTEGER NOT NULL DEFAULT 0"],
       ["runtime_ms", "INTEGER NOT NULL DEFAULT 0"],
       ["runtime_updated_at", "TEXT"],
       ["last_error", "TEXT"],
@@ -364,6 +447,33 @@ export class WorkOrderStore {
         this.database.exec(`ALTER TABLE work_orders ADD COLUMN ${name} ${definition}`);
       }
     }
+  }
+
+  private addRunEventColumnsToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(run_events)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("run_number")) {
+      this.database.exec(
+        "ALTER TABLE run_events ADD COLUMN run_number INTEGER NOT NULL DEFAULT 0",
+      );
+    }
+  }
+
+  private backfillLegacyRunNumbers(): void {
+    this.database.exec(`
+      UPDATE work_orders
+      SET run_number = 1
+      WHERE run_number = 0 AND run_status IS NOT NULL
+    `);
+    this.database.exec(`
+      UPDATE run_events
+      SET run_number = 1
+      WHERE run_number = 0
+    `);
   }
 }
 
@@ -384,6 +494,8 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     runStatus: row.run_status,
     runStartedAt: row.run_started_at,
     runEndedAt: row.run_ended_at,
+    runPid: row.run_pid,
+    runNumber: row.run_number,
     runtimeMs: currentRuntime(row),
     lastError: row.last_error,
     createdAt: row.created_at,
@@ -392,8 +504,20 @@ function mapRow(row: WorkOrderRow): WorkOrder {
 }
 
 function currentRuntime(row: WorkOrderRow): number {
-  if (row.run_status !== "running" || !row.runtime_updated_at) {
+  if (
+    !["running", "stopping"].includes(row.run_status ?? "") ||
+    !row.runtime_updated_at
+  ) {
     return row.runtime_ms;
   }
   return row.runtime_ms + Math.max(0, Date.now() - Date.parse(row.runtime_updated_at));
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
 }

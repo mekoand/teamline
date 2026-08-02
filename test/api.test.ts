@@ -573,7 +573,7 @@ describe("work order API", () => {
       );
       expect((await detail.json()).workOrder).toMatchObject({
         status: "interrupted",
-        runStatus: "failed",
+        runStatus: "interrupted",
         currentSummary: "本地服务重启，无法继续跟踪这次运行",
       });
       const nextStart = await app.fetch(
