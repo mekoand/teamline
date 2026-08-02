@@ -6,6 +6,7 @@ import {
   type WorkOrder,
   type WorkOrderPlan,
   type WorkOrderRunEvent,
+  type WorkOrderResult,
 } from "./work-order";
 
 type WorkOrderRow = {
@@ -14,9 +15,11 @@ type WorkOrderRow = {
   repository_path: string;
   goal: string;
   acceptance: string | null;
-  status: WorkOrder["status"];
+  status: WorkOrder["status"] | "completed";
   current_summary: string;
   plan_json: string | null;
+  result_json: string | null;
+  revision_note: string | null;
   worktree_path: string | null;
   execution_branch: string | null;
   base_commit: string | null;
@@ -41,6 +44,8 @@ type RunEventRow = {
   created_at: string;
 };
 
+export class PlanLockedError extends Error {}
+
 export class WorkOrderStore {
   readonly database: Database;
 
@@ -62,6 +67,8 @@ export class WorkOrderStore {
     `);
     this.addPlanColumnToExistingDatabase();
     this.addExecutionColumnsToExistingDatabase();
+    this.addResultColumnsToExistingDatabase();
+    this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +129,12 @@ export class WorkOrderStore {
     if (!workOrder) {
       throw new Error("找不到这项委托");
     }
+    if (
+      workOrder.runStatus !== null ||
+      !["draft", "ready"].includes(workOrder.status)
+    ) {
+      throw new PlanLockedError("委托开始执行后不能直接修改计划");
+    }
 
     if (
       stages.length === 0 ||
@@ -140,6 +153,10 @@ export class WorkOrderStore {
       outcome: stage.outcome.trim(),
       scope: stage.scope.trim(),
       verification: stage.verification.trim(),
+      ...(typeof stage.verificationCommand === "string" &&
+      stage.verificationCommand.trim()
+        ? { verificationCommand: stage.verificationCommand.trim() }
+        : {}),
     }));
 
     if (
@@ -233,7 +250,7 @@ export class WorkOrderStore {
     return Boolean(
       this.database
         .query<{ present: number }, []>(
-          "SELECT 1 AS present FROM work_orders WHERE run_status IN ('running', 'stopping') LIMIT 1",
+          "SELECT 1 AS present FROM work_orders WHERE run_status IN ('running', 'stopping', 'verifying') LIMIT 1",
         )
         .get(),
     );
@@ -255,7 +272,7 @@ export class WorkOrderStore {
   ): number {
     const active = this.database
       .query<{ id: string; run_pid: number | null }, []>(
-        "SELECT id, run_pid FROM work_orders WHERE run_status IN ('running', 'stopping')",
+        "SELECT id, run_pid FROM work_orders WHERE run_status IN ('running', 'stopping', 'verifying')",
       )
       .all();
     const message = "本地服务重启，无法继续跟踪这次运行";
@@ -298,6 +315,132 @@ export class WorkOrderStore {
       ended: true,
       failed,
     });
+  }
+
+  beginResultProcessing(id: string, message: string): WorkOrder {
+    const row = this.database
+      .query<WorkOrderRow, [string]>("SELECT * FROM work_orders WHERE id = ?")
+      .get(id);
+    if (!row || row.run_status !== "running") {
+      throw new Error("这项委托当前不能整理结果");
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const lastUpdated = row.runtime_updated_at
+      ? Date.parse(row.runtime_updated_at)
+      : now.getTime();
+    const runtimeMs = row.runtime_ms + Math.max(0, now.getTime() - lastUpdated);
+    this.database.transaction(() => {
+      this.database
+        .query(`
+          UPDATE work_orders
+          SET status = 'running', current_summary = '正在整理代码变化并执行验证',
+              run_status = 'verifying', run_ended_at = ?, run_pid = NULL,
+              runtime_ms = ?, runtime_updated_at = ?, last_error = NULL, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(nowIso, runtimeMs, nowIso, nowIso, id);
+      this.database
+        .query(`
+          INSERT INTO run_events (work_order_id, event_type, message, run_number, created_at)
+          VALUES (?, 'exit', ?, ?, ?)
+        `)
+        .run(id, message, row.run_number, nowIso);
+    })();
+    return this.get(id)!;
+  }
+
+  completeReview(id: string, result: WorkOrderResult): WorkOrder {
+    const hasConfiguredCommand = result.verifications.some(
+      (verification) => verification.status !== "not_configured",
+    );
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = 'review', run_status = 'completed', result_json = ?,
+            current_summary = ?, last_error = NULL, updated_at = ?
+        WHERE id = ? AND run_status = 'verifying'
+      `)
+      .run(
+        JSON.stringify(result),
+        hasConfiguredCommand ? "自动验证通过，等待人工验收" : "等待人工验收",
+        now,
+        id,
+      );
+    return this.get(id)!;
+  }
+
+  recordVerificationFailure(id: string, result: WorkOrderResult): WorkOrder {
+    const now = new Date().toISOString();
+    const error = "自动验证未通过，请查看验证结果后继续处理";
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = 'interrupted', run_status = 'failed', result_json = ?,
+            current_summary = '自动验证未通过', last_error = ?, updated_at = ?
+        WHERE id = ? AND run_status = 'verifying'
+      `)
+      .run(JSON.stringify(result), error, now, id);
+    return this.get(id)!;
+  }
+
+  recordResultProcessingFailure(id: string): WorkOrder {
+    const now = new Date().toISOString();
+    const error = "无法整理代码变化或验证结果，请检查委托工作区后继续处理";
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = 'interrupted', run_status = 'failed',
+            current_summary = '结果整理失败', last_error = ?, updated_at = ?
+        WHERE id = ? AND run_status = 'verifying'
+      `)
+      .run(error, now, id);
+    return this.get(id)!;
+  }
+
+  confirmDelivered(id: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder || workOrder.status !== "review") {
+      throw new Error("只有待验收的委托可以确认交付");
+    }
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = 'delivered', current_summary = '已由用户确认交付', updated_at = ?
+        WHERE id = ? AND status = 'review'
+      `)
+      .run(now, id);
+    return this.get(id)!;
+  }
+
+  revise(id: string, revisionNote: string): WorkOrder {
+    const workOrder = this.get(id);
+    const note = revisionNote.trim();
+    if (!workOrder || workOrder.status !== "review" || !workOrder.plan) {
+      throw new Error("只有待验收的委托可以补充要求");
+    }
+    if (!note) {
+      throw new Error("请填写补充要求");
+    }
+    const now = new Date().toISOString();
+    const nextPlan: WorkOrderPlan = {
+      version: workOrder.plan.version + 1,
+      stages: workOrder.plan.stages.map((stage) => ({ ...stage })),
+      updatedAt: now,
+    };
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET plan_json = ?, revision_note = ?, status = 'ready', run_status = NULL,
+            run_pid = NULL, current_summary = '补充要求等待确认', last_error = NULL,
+            updated_at = ?
+        WHERE id = ? AND status = 'review'
+      `)
+      .run(JSON.stringify(nextPlan), note, now, id);
+    return this.get(id)!;
   }
 
   markStopping(id: string): WorkOrder {
@@ -356,7 +499,7 @@ export class WorkOrderStore {
     const row = this.database
       .query<WorkOrderRow, [string]>("SELECT * FROM work_orders WHERE id = ?")
       .get(id);
-    if (!row || !["running", "stopping"].includes(row.run_status ?? "")) {
+    if (!row || !["running", "stopping", "verifying"].includes(row.run_status ?? "")) {
       return;
     }
 
@@ -463,6 +606,29 @@ export class WorkOrderStore {
     }
   }
 
+  private addResultColumnsToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("result_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN result_json TEXT");
+    }
+    if (!columns.has("revision_note")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN revision_note TEXT");
+    }
+  }
+
+  private migrateDeliveredStatus(): void {
+    this.database.exec(`
+      UPDATE work_orders
+      SET status = 'delivered'
+      WHERE status = 'completed'
+    `);
+  }
+
   private backfillLegacyRunNumbers(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -484,9 +650,11 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     repositoryPath: row.repository_path,
     goal: row.goal,
     acceptance: row.acceptance,
-    status: row.status,
+    status: row.status === "completed" ? "delivered" : row.status,
     currentSummary: row.current_summary,
     plan: row.plan_json ? JSON.parse(row.plan_json) : null,
+    result: row.result_json ? (JSON.parse(row.result_json) as WorkOrderResult) : null,
+    revisionNote: row.revision_note,
     worktreePath: row.worktree_path,
     executionBranch: row.execution_branch,
     baseCommit: row.base_commit,

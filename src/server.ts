@@ -6,6 +6,7 @@ import { CodexPlanGenerator } from "./codex-plan-generator";
 import { CodexExecutionRunner } from "./codex-runner";
 import { WorkOrderStore } from "./work-order-store";
 import { GitWorktreeManager } from "./worktree-manager";
+import { LocalWorkOrderResultProcessor } from "./result-processor";
 
 const projectRoot = resolve(import.meta.dir, "..");
 const dataDirectory = resolve(process.env.TEAMLINE_DATA_DIR ?? join(projectRoot, ".teamline"));
@@ -19,6 +20,7 @@ const app = createApp({
   planGenerator: new CodexPlanGenerator(),
   codexRunner: new CodexExecutionRunner(),
   worktreeManager: new GitWorktreeManager(join(dataDirectory, "worktrees")),
+  resultProcessor: new LocalWorkOrderResultProcessor(),
   projectRoot,
 });
 

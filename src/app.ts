@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
+import type { WorkOrderResultProcessor } from "./result-processor";
 import type {
   ContinuationContext,
   CodexRunEvent,
@@ -8,7 +9,7 @@ import type {
   StartedCodexRun,
 } from "./codex-runner";
 import type { PlanStageInput } from "./work-order";
-import type { WorkOrderStore } from "./work-order-store";
+import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
 import type { WorktreeManager } from "./worktree-manager";
 
 type AppDependencies = {
@@ -18,6 +19,7 @@ type AppDependencies = {
   projectRoot?: string;
   codexRunner?: CodexRunner;
   worktreeManager?: WorktreeManager;
+  resultProcessor?: WorkOrderResultProcessor;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -35,6 +37,7 @@ export function createApp({
   projectRoot = resolve(import.meta.dir, ".."),
   codexRunner,
   worktreeManager,
+  resultProcessor,
 }: AppDependencies) {
   let startingWorkOrderId: string | null = null;
   const activeRuns = new Map<string, StartedCodexRun>();
@@ -133,7 +136,7 @@ export function createApp({
 
           store.recordRunPid(id, run.pid ?? null);
           activeRuns.set(id, run);
-          void consumeRunEvents(store, id, run, activeRuns);
+          void consumeRunEvents(store, id, run, activeRuns, { resultProcessor });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {
           startingWorkOrderId = null;
@@ -251,6 +254,7 @@ export function createApp({
           store.recordRunPid(id, run.pid ?? null);
           activeRuns.set(id, run);
           void consumeRunEvents(store, id, run, activeRuns, {
+            resultProcessor,
             fallback:
               workOrder.sessionId && codexRunner
                 ? async () => {
@@ -292,6 +296,52 @@ export function createApp({
         return Response.json({ events: store.listRunEvents(id) });
       }
 
+      const deliverMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/deliver$/,
+      );
+      if (request.method === "POST" && deliverMatch) {
+        const id = decodeURIComponent(deliverMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          return Response.json({ workOrder: store.confirmDelivered(id) });
+        } catch {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_IN_REVIEW", error: "只有待验收的委托可以确认交付" },
+            { status: 409 },
+          );
+        }
+      }
+
+      const reviseMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/revise$/);
+      if (request.method === "POST" && reviseMatch) {
+        const id = decodeURIComponent(reviseMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as { revisionNote?: string };
+          return Response.json({ workOrder: store.revise(id, body.revisionNote ?? "") });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "无法补充要求";
+          const invalidState = message.includes("只有待验收");
+          return Response.json(
+            {
+              code: invalidState ? "WORK_ORDER_NOT_IN_REVIEW" : "INVALID_REVISION_NOTE",
+              error: message,
+            },
+            { status: invalidState ? 409 : 400 },
+          );
+        }
+      }
+
       const generatePlanMatch = url.pathname.match(
         /^\/api\/work-orders\/([^/]+)\/plan\/generate$/,
       );
@@ -302,6 +352,12 @@ export function createApp({
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
             { status: 404 },
+          );
+        }
+        if (!planIsEditable(workOrder)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLAN_LOCKED", error: "委托开始执行后不能直接修改计划" },
+            { status: 409 },
           );
         }
         if (!planGenerator) {
@@ -331,6 +387,12 @@ export function createApp({
               { status: 504 },
             );
           }
+          if (error instanceof PlanLockedError) {
+            return Response.json(
+              { code: "WORK_ORDER_PLAN_LOCKED", error: error.message },
+              { status: 409 },
+            );
+          }
           return Response.json(
             {
               code: "PLAN_GENERATION_FAILED",
@@ -344,10 +406,17 @@ export function createApp({
       const planMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/plan$/);
       if (request.method === "PUT" && planMatch) {
         const id = decodeURIComponent(planMatch[1]);
-        if (!store.get(id)) {
+        const workOrder = store.get(id);
+        if (!workOrder) {
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
             { status: 404 },
+          );
+        }
+        if (!planIsEditable(workOrder)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLAN_LOCKED", error: "委托开始执行后不能直接修改计划" },
+            { status: 409 },
           );
         }
 
@@ -358,6 +427,12 @@ export function createApp({
           }
           return Response.json({ workOrder: store.savePlan(id, body.stages) });
         } catch (error) {
+          if (error instanceof PlanLockedError) {
+            return Response.json(
+              { code: "WORK_ORDER_PLAN_LOCKED", error: error.message },
+              { status: 409 },
+            );
+          }
           return Response.json(
             {
               code: "INVALID_PLAN",
@@ -431,7 +506,10 @@ async function consumeRunEvents(
   workOrderId: string,
   run: StartedCodexRun,
   activeRuns: Map<string, StartedCodexRun>,
-  options: { fallback?: () => Promise<StartedCodexRun | null> } = {},
+  options: {
+    fallback?: () => Promise<StartedCodexRun | null>;
+    resultProcessor?: WorkOrderResultProcessor;
+  } = {},
 ): Promise<void> {
   try {
     for await (const event of run.events) {
@@ -473,8 +551,22 @@ async function consumeRunEvents(
               // Keep waiting for the fallback process exit; stopping is not interrupted yet.
             }
           }
-          void consumeRunEvents(store, workOrderId, fallbackRun, activeRuns);
+          void consumeRunEvents(store, workOrderId, fallbackRun, activeRuns, {
+            resultProcessor: options.resultProcessor,
+          });
           return;
+        } else if (event.exitCode === 0 && options.resultProcessor) {
+          const verifying = store.beginResultProcessing(workOrderId, event.message);
+          try {
+            const result = await options.resultProcessor.process(verifying);
+            if (result.verifications.some((verification) => verification.status === "failed")) {
+              store.recordVerificationFailure(workOrderId, result);
+            } else {
+              store.completeReview(workOrderId, result);
+            }
+          } catch {
+            store.recordResultProcessingFailure(workOrderId);
+          }
         } else {
           store.recordExit(workOrderId, event.exitCode, event.message);
         }
@@ -530,6 +622,10 @@ function isGitRepository(repositoryPath: string): boolean {
   }
 
   return existsSync(join(repositoryPath, ".git"));
+}
+
+function planIsEditable(workOrder: { status: string; runStatus: string | null }): boolean {
+  return workOrder.runStatus === null && ["draft", "ready"].includes(workOrder.status);
 }
 
 function safeCodexStartError(error: unknown): string {

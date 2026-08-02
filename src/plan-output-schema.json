@@ -14,7 +14,8 @@
         "properties": {
           "outcome": { "type": "string", "minLength": 1 },
           "scope": { "type": "string", "minLength": 1 },
-          "verification": { "type": "string", "minLength": 1 }
+          "verification": { "type": "string", "minLength": 1 },
+          "verificationCommand": { "type": "string" }
         }
       }
     }

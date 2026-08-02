@@ -4,7 +4,7 @@ const statusLabels = {
   running: "进行中",
   interrupted: "已中断",
   review: "待验收",
-  completed: "已完成",
+  delivered: "已交付",
 };
 
 const detailMatch = window.location.pathname.match(/^\/work-orders\/([^/]+)$/);
@@ -166,6 +166,12 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
         </div>
 
         ${
+          workOrder.revisionNote
+            ? `<aside class="revision-note"><strong>补充要求</strong><p>${escapeHtml(workOrder.revisionNote)}</p></aside>`
+            : ""
+        }
+
+        ${
           stages
             ? workOrder.status === "ready" || draftStages
               ? renderPlanForm(stages)
@@ -184,6 +190,7 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
       </section>
 
       ${renderExecutionPanel(workOrder)}
+      ${renderResultPanel(workOrder)}
     </section>
   `;
 
@@ -302,10 +309,52 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
     }
   });
 
+  document.querySelector("#deliver-work-order")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "正在确认…";
+    setResultFeedback("", false);
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodeURIComponent(workOrder.id)}/deliver`,
+        { method: "POST" },
+      );
+      renderWorkOrderDetail(result.workOrder);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "确认已交付";
+      setResultFeedback(messageFrom(error, "无法确认交付，请重试。"), true);
+    }
+  });
+
+  document.querySelector("#revision-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = document.querySelector("#revise-work-order");
+    const revisionNote = new FormData(event.currentTarget).get("revisionNote");
+    button.disabled = true;
+    button.textContent = "正在保存…";
+    setResultFeedback("", false);
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodeURIComponent(workOrder.id)}/revise`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ revisionNote }),
+        },
+      );
+      renderWorkOrderDetail(result.workOrder, null, "补充要求已保存，请检查并再次确认计划。");
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "补充要求并继续";
+      setResultFeedback(messageFrom(error, "无法保存补充要求，请重试。"), true);
+    }
+  });
+
   if (workOrder.runStatus) {
     loadRunEvents(workOrder.id);
   }
-  if (["running", "stopping"].includes(workOrder.runStatus)) {
+  if (["running", "stopping", "verifying"].includes(workOrder.runStatus)) {
     detailRefreshTimer = setTimeout(
       () => loadWorkOrderDetail(workOrder.id, true),
       2_000,
@@ -338,6 +387,11 @@ function renderPlanForm(stages) {
                   <span>验证方式</span>
                   <textarea name="verification" rows="2" required>${escapeHtml(stage.verification ?? "")}</textarea>
                 </label>
+                <label>
+                  <span>自动验证命令（可选）</span>
+                  <input name="verificationCommand" value="${escapeHtml(stage.verificationCommand ?? "")}" placeholder="例如：bun test" />
+                  <small>确认并启动后，Codex 正常退出时才会在委托工作区运行此命令。验证方式中的自然语言不会执行。</small>
+                </label>
               </article>
             `,
           )
@@ -363,6 +417,7 @@ function renderPlanSummary(stages) {
                 <div><dt>目标结果</dt><dd>${escapeHtml(stage.outcome)}</dd></div>
                 <div><dt>预计影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
                 <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
+                <div><dt>自动验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置自动验证命令")}</code></dd></div>
               </dl>
             </article>
           `,
@@ -400,9 +455,10 @@ function renderExecutionPanel(workOrder) {
   const runLabel = {
     running: "Codex 运行中",
     stopping: "正在停止 Codex",
+    verifying: "正在整理变化并执行验证",
     interrupted: "Codex 已中断",
     completed: "Codex 已结束",
-    failed: "Codex 运行失败",
+    failed: "委托已中断",
   }[workOrder.runStatus];
   const runAction =
     workOrder.runStatus === "running"
@@ -438,6 +494,70 @@ function renderExecutionPanel(workOrder) {
         <div class="event-heading"><h3>最近进展</h3><span>自动保存于本机</span></div>
         <div id="run-event-list" class="run-event-list"><p>正在读取最近事件…</p></div>
       </div>
+    </section>
+  `;
+}
+
+function renderResultPanel(workOrder) {
+  if (!workOrder.result || ["ready", "running"].includes(workOrder.status)) return "";
+  const isReviewResult = ["review", "delivered"].includes(workOrder.status);
+  const isHistoricalResult = workOrder.result.planVersion !== workOrder.plan?.version;
+  const verificationItems = workOrder.result.verifications
+    .map((verification) => {
+      const label = {
+        passed: "通过",
+        failed: "失败",
+        not_configured: "未配置",
+      }[verification.status];
+      return `
+        <article class="verification-result verification-${escapeHtml(verification.status)}">
+          <div class="verification-heading">
+            <b>${escapeHtml(verification.stageOutcome)}</b>
+            <span>${label}</span>
+          </div>
+          <p><code>${escapeHtml(verification.command || "未配置自动验证命令")}</code></p>
+          ${verification.exitCode === null ? "" : `<p>退出码：${verification.exitCode}</p>`}
+          <pre>${escapeHtml(verification.output)}</pre>
+        </article>
+      `;
+    })
+    .join("");
+  const reviewActions =
+    workOrder.status === "review"
+      ? `
+        <div class="review-actions">
+          <button class="primary-button" id="deliver-work-order" type="button">确认已交付</button>
+          <form id="revision-form">
+            <label>
+              <span>还有补充要求？</span>
+              <textarea name="revisionNote" rows="3" required placeholder="说明需要继续处理的内容"></textarea>
+            </label>
+            <button class="secondary-button" id="revise-work-order" type="submit">补充要求并继续</button>
+          </form>
+        </div>
+      `
+      : workOrder.status === "delivered"
+        ? '<p class="delivered-note">这项委托已经由你确认交付。</p>'
+        : "";
+  return `
+    <section class="result-panel">
+      <div class="result-heading">
+        <div><p class="eyebrow">${isReviewResult ? "验收结果" : "最近一次执行结果"}</p><h2>代码变化与检查结果</h2></div>
+        <span>计划版本 ${workOrder.result.planVersion}</span>
+      </div>
+      ${isHistoricalResult ? `<p class="historical-result-note">这是计划版本 ${workOrder.result.planVersion} 的历史结果，当前计划为版本 ${workOrder.plan?.version ?? "未知"}。</p>` : ""}
+      <div class="git-summary">
+        <h3>Git 变化摘要</h3>
+        <p>相对起始提交 <code>${escapeHtml(workOrder.baseCommit ?? "未知")}</code></p>
+        <pre>${escapeHtml(workOrder.result.git.diffStat)}</pre>
+        <pre>${escapeHtml(workOrder.result.git.statusShort)}</pre>
+      </div>
+      <div class="verification-results">
+        <h3>验证结果</h3>
+        ${verificationItems}
+      </div>
+      ${reviewActions}
+      <p id="result-feedback" class="execution-feedback" role="status"></p>
     </section>
   `;
 }
@@ -478,11 +598,12 @@ function readPlanStages() {
     outcome: stage.querySelector('[name="outcome"]').value,
     scope: stage.querySelector('[name="scope"]').value,
     verification: stage.querySelector('[name="verification"]').value,
+    verificationCommand: stage.querySelector('[name="verificationCommand"]').value,
   }));
 }
 
 function emptyStage() {
-  return { outcome: "", scope: "", verification: "" };
+  return { outcome: "", scope: "", verification: "", verificationCommand: "" };
 }
 
 function setPlanFeedback(message, isError) {
@@ -493,6 +614,12 @@ function setPlanFeedback(message, isError) {
 
 function setExecutionFeedback(message, isError) {
   const feedback = document.querySelector("#execution-feedback");
+  feedback.textContent = message;
+  feedback.classList.toggle("is-error", isError);
+}
+
+function setResultFeedback(message, isError) {
+  const feedback = document.querySelector("#result-feedback");
   feedback.textContent = message;
   feedback.classList.toggle("is-error", isError);
 }
@@ -538,16 +665,17 @@ function formatDuration(milliseconds) {
 
 function displayStatusLabel(workOrder) {
   if (workOrder.runStatus === "stopping") return "正在停止";
-  if (workOrder.runStatus === "interrupted") return "已中断";
-  if (workOrder.runStatus === "completed") return "Codex 已结束";
-  if (workOrder.runStatus === "failed") return "运行失败";
+  if (workOrder.runStatus === "verifying") return "正在验证";
+  if (["interrupted", "failed"].includes(workOrder.runStatus)) return "已中断";
+  if (workOrder.runStatus === "completed" && workOrder.status === "running") return "Codex 已结束";
   return statusLabels[workOrder.status] ?? workOrder.status;
 }
 
 function statusClass(workOrder) {
   if (workOrder.runStatus === "stopping") return "status-running";
+  if (workOrder.runStatus === "verifying") return "status-running";
   if (workOrder.runStatus === "interrupted") return "status-interrupted";
-  if (workOrder.runStatus === "completed") return "status-run-completed";
+  if (workOrder.runStatus === "completed" && workOrder.status === "running") return "status-run-completed";
   if (workOrder.runStatus === "failed") return "status-interrupted";
   return `status-${escapeHtml(workOrder.status)}`;
 }
@@ -556,6 +684,7 @@ function displayRunStatus(runStatus) {
   return {
     running: "执行中",
     stopping: "正在停止",
+    verifying: "正在验证",
     interrupted: "已中断",
     completed: "已结束",
     failed: "需要处理",

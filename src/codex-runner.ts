@@ -249,11 +249,14 @@ function buildExecutionPrompt(
   const stages = workOrder.plan?.stages
     .map(
       (stage, index) =>
-        `${index + 1}. 目标结果：${stage.outcome}\n   影响范围：${stage.scope}\n   验证方式：${stage.verification}`,
+        `${index + 1}. 目标结果：${stage.outcome}\n   影响范围：${stage.scope}\n   验证方式：${stage.verification}\n   自动验证命令：${stage.verificationCommand || "未配置"}`,
     )
     .join("\n");
   const acceptance = workOrder.acceptance
     ? `\n完成要求：\n${workOrder.acceptance}`
+    : "";
+  const revision = workOrder.revisionNote
+    ? `\n补充要求：\n${workOrder.revisionNote}`
     : "";
 
   const currentContext = continuation
@@ -264,11 +267,14 @@ function buildExecutionPrompt(
       }\n\n当前 Git 状态：\n${continuation.gitStatus || "工作区干净"}`
     : "";
 
-  return `请在当前独立 Git worktree 中完成以下已确认的工作委托。不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}\n\n已确认计划：\n${stages ?? "未提供"}${currentContext}`;
+  return `请在当前独立 Git worktree 中完成以下已确认的工作委托。不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}\n\n已确认计划：\n${stages ?? "未提供"}${currentContext}`;
 }
 
 function buildResumePrompt(workOrder: WorkOrder): string {
-  return `请继续推进已确认的工作委托：${workOrder.goal}`;
+  const revision = workOrder.revisionNote
+    ? `\n补充要求：\n${workOrder.revisionNote}`
+    : "";
+  return `请继续推进已确认的工作委托：${workOrder.goal}${revision}`;
 }
 
 function readableEventType(type: string): string {

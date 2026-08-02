@@ -4,7 +4,7 @@ export const workOrderStatuses = [
   "running",
   "interrupted",
   "review",
-  "completed",
+  "delivered",
 ] as const;
 
 export type WorkOrderStatus = (typeof workOrderStatuses)[number];
@@ -12,6 +12,7 @@ export type WorkOrderStatus = (typeof workOrderStatuses)[number];
 export type RunStatus =
   | "running"
   | "stopping"
+  | "verifying"
   | "interrupted"
   | "completed"
   | "failed";
@@ -29,6 +30,28 @@ export type PlanStage = {
   outcome: string;
   scope: string;
   verification: string;
+  verificationCommand?: string;
+};
+
+export type GitChangeSummary = {
+  diffStat: string;
+  statusShort: string;
+};
+
+export type VerificationResult = {
+  stageId: string;
+  stageOutcome: string;
+  command: string | null;
+  status: "passed" | "failed" | "not_configured";
+  exitCode: number | null;
+  output: string;
+};
+
+export type WorkOrderResult = {
+  planVersion: number;
+  git: GitChangeSummary;
+  verifications: VerificationResult[];
+  completedAt: string;
 };
 
 export type WorkOrderPlan = {
@@ -48,6 +71,8 @@ export type WorkOrder = {
   status: WorkOrderStatus;
   currentSummary: string;
   plan: WorkOrderPlan | null;
+  result: WorkOrderResult | null;
+  revisionNote: string | null;
   worktreePath: string | null;
   executionBranch: string | null;
   baseCommit: string | null;
@@ -95,6 +120,8 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     status: "draft",
     currentSummary: "等待生成计划",
     plan: null,
+    result: null,
+    revisionNote: null,
     worktreePath: null,
     executionBranch: null,
     baseCommit: null,
