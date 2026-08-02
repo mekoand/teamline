@@ -9,6 +9,21 @@ export const workOrderStatuses = [
 
 export type WorkOrderStatus = (typeof workOrderStatuses)[number];
 
+export type PlanStage = {
+  id: string;
+  outcome: string;
+  scope: string;
+  verification: string;
+};
+
+export type WorkOrderPlan = {
+  version: number;
+  stages: PlanStage[];
+  updatedAt: string;
+};
+
+export type PlanStageInput = Omit<PlanStage, "id"> & { id?: string };
+
 export type WorkOrder = {
   id: string;
   title: string;
@@ -17,6 +32,7 @@ export type WorkOrder = {
   acceptance: string | null;
   status: WorkOrderStatus;
   currentSummary: string;
+  plan: WorkOrderPlan | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -52,6 +68,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     acceptance,
     status: "draft",
     currentSummary: "等待生成计划",
+    plan: null,
     createdAt: now,
     updatedAt: now,
   };
