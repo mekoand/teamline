@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
+import { presentConsoleWorkOrders } from "./console-presentation";
 import type { WorkOrderResultProcessor } from "./result-processor";
 import type {
   ContinuationContext,
@@ -91,6 +92,10 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/work-orders") {
         return Response.json({ workOrders: store.list() });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/console") {
+        return Response.json({ workOrders: presentConsoleWorkOrders(store.list()) });
       }
 
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
