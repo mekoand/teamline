@@ -1,14 +1,18 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
+import type { CodexRunEvent, CodexRunner } from "./codex-runner";
 import type { PlanStageInput } from "./work-order";
 import type { WorkOrderStore } from "./work-order-store";
+import type { WorktreeManager } from "./worktree-manager";
 
 type AppDependencies = {
   store: WorkOrderStore;
   planGenerator?: PlanGenerator;
   planGenerationTimeoutMs?: number;
   projectRoot?: string;
+  codexRunner?: CodexRunner;
+  worktreeManager?: WorktreeManager;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -24,7 +28,11 @@ export function createApp({
   planGenerator,
   planGenerationTimeoutMs = 5 * 60 * 1000,
   projectRoot = resolve(import.meta.dir, ".."),
+  codexRunner,
+  worktreeManager,
 }: AppDependencies) {
+  let startingWorkOrderId: string | null = null;
+
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -35,6 +43,105 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/work-orders") {
         return Response.json({ workOrders: store.list() });
+      }
+
+      const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
+      if (request.method === "POST" && startMatch) {
+        const id = decodeURIComponent(startMatch[1]);
+        const workOrder = store.get(id);
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        if (workOrder.runStatus === "running" || startingWorkOrderId === id) {
+          return Response.json(
+            { code: "WORK_ORDER_ALREADY_RUNNING", error: "这项委托已经在运行" },
+            { status: 409 },
+          );
+        }
+        if (workOrder.status !== "ready" || !workOrder.plan) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_READY", error: "请先保存并确认委托计划" },
+            { status: 409 },
+          );
+        }
+        if (!codexRunner || !worktreeManager) {
+          return Response.json(
+            { code: "EXECUTION_UNAVAILABLE", error: "Codex 执行服务尚未配置" },
+            { status: 503 },
+          );
+        }
+        if (store.hasActiveRun() || startingWorkOrderId) {
+          return Response.json(
+            {
+              code: "ACTIVE_WORK_ORDER_EXISTS",
+              error: "已有另一项委托正在运行，请等待它结束后再启动",
+            },
+            { status: 409 },
+          );
+        }
+
+        startingWorkOrderId = id;
+        try {
+          let delegatedWorktree;
+          try {
+            delegatedWorktree = await worktreeManager.prepare(workOrder);
+          } catch (error) {
+            const message = "无法准备独立 Git worktree，请确认仓库和分支状态后重试";
+            store.recordStartFailure(id, message, "委托工作区准备失败，请处理后重试");
+            return Response.json(
+              { code: "WORKTREE_PREPARATION_FAILED", error: message },
+              { status: 500 },
+            );
+          }
+
+          store.saveWorktree(id, delegatedWorktree);
+          let startedWorkOrder;
+          try {
+            startedWorkOrder = store.markStarted(id);
+          } catch {
+            return Response.json(
+              {
+                code: "EXECUTION_STATE_FAILED",
+                error: "无法保存运行状态，Codex 尚未启动，请重试",
+              },
+              { status: 500 },
+            );
+          }
+          let run;
+          try {
+            run = await codexRunner.start({
+              workOrder: startedWorkOrder,
+              workspacePath: delegatedWorktree.path,
+            });
+          } catch (error) {
+            const message = safeCodexStartError(error);
+            store.recordStartFailure(id, message, "Codex 启动失败，请处理后重试");
+            return Response.json(
+              { code: "CODEX_START_FAILED", error: message },
+              { status: 502 },
+            );
+          }
+
+          void consumeRunEvents(store, id, run.events);
+          return Response.json({ workOrder: startedWorkOrder });
+        } finally {
+          startingWorkOrderId = null;
+        }
+      }
+
+      const eventsMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/events$/);
+      if (request.method === "GET" && eventsMatch) {
+        const id = decodeURIComponent(eventsMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        return Response.json({ events: store.listRunEvents(id) });
       }
 
       const generatePlanMatch = url.pathname.match(
@@ -171,10 +278,41 @@ export function createApp({
   };
 }
 
+async function consumeRunEvents(
+  store: WorkOrderStore,
+  workOrderId: string,
+  events: AsyncIterable<CodexRunEvent>,
+): Promise<void> {
+  try {
+    for await (const event of events) {
+      if (event.type === "session") {
+        store.recordSession(workOrderId, event.sessionId);
+      } else if (event.type === "progress") {
+        store.recordProgress(workOrderId, event.message);
+      } else {
+        store.recordExit(workOrderId, event.exitCode, event.message);
+      }
+    }
+  } catch {
+    store.recordExit(
+      workOrderId,
+      -1,
+      "Codex 运行异常结束，请检查本机 Codex 后重试",
+    );
+  }
+}
+
 function isGitRepository(repositoryPath: string): boolean {
   if (!repositoryPath || !existsSync(repositoryPath)) {
     return false;
   }
 
   return existsSync(join(repositoryPath, ".git"));
+}
+
+function safeCodexStartError(error: unknown): string {
+  if (error instanceof Error && error.message.includes("找不到 Codex")) {
+    return "找不到 Codex，请先安装并登录 Codex";
+  }
+  return "Codex 无法启动，请确认本机 Codex 安装和配置后重试";
 }

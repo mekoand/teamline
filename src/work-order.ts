@@ -9,6 +9,15 @@ export const workOrderStatuses = [
 
 export type WorkOrderStatus = (typeof workOrderStatuses)[number];
 
+export type RunStatus = "running" | "completed" | "failed";
+
+export type WorkOrderRunEvent = {
+  id: number;
+  type: "session" | "progress" | "exit";
+  message: string;
+  createdAt: string;
+};
+
 export type PlanStage = {
   id: string;
   outcome: string;
@@ -33,6 +42,15 @@ export type WorkOrder = {
   status: WorkOrderStatus;
   currentSummary: string;
   plan: WorkOrderPlan | null;
+  worktreePath: string | null;
+  executionBranch: string | null;
+  baseCommit: string | null;
+  sessionId: string | null;
+  runStatus: RunStatus | null;
+  runStartedAt: string | null;
+  runEndedAt: string | null;
+  runtimeMs: number;
+  lastError: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -69,6 +87,15 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     status: "draft",
     currentSummary: "等待生成计划",
     plan: null,
+    worktreePath: null,
+    executionBranch: null,
+    baseCommit: null,
+    sessionId: null,
+    runStatus: null,
+    runStartedAt: null,
+    runEndedAt: null,
+    runtimeMs: 0,
+    lastError: null,
     createdAt: now,
     updatedAt: now,
   };

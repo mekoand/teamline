@@ -8,6 +8,7 @@ const statusLabels = {
 };
 
 const detailMatch = window.location.pathname.match(/^\/work-orders\/([^/]+)$/);
+let detailRefreshTimer;
 
 if (detailMatch) {
   loadWorkOrderDetail(decodeURIComponent(detailMatch[1]));
@@ -71,7 +72,7 @@ function setupHome() {
         card.href = `/work-orders/${encodeURIComponent(workOrder.id)}`;
         card.innerHTML = `
           <div class="card-topline">
-            <span class="status status-${escapeHtml(workOrder.status)}">${statusLabels[workOrder.status]}</span>
+            <span class="status ${statusClass(workOrder)}">${displayStatusLabel(workOrder)}</span>
             <time>${formatDate(workOrder.updatedAt)}</time>
           </div>
           <h3>${escapeHtml(workOrder.title)}</h3>
@@ -99,14 +100,20 @@ function setupHome() {
   loadWorkOrders();
 }
 
-async function loadWorkOrderDetail(id) {
+async function loadWorkOrderDetail(id, polling = false) {
   const main = document.querySelector("main");
-  main.innerHTML = '<div class="detail-loading">正在读取委托…</div>';
+  if (!polling) {
+    main.innerHTML = '<div class="detail-loading">正在读取委托…</div>';
+  }
 
   try {
     const { workOrder } = await requestJson(`/api/work-orders/${encodeURIComponent(id)}`);
     renderWorkOrderDetail(workOrder);
   } catch (error) {
+    if (polling) {
+      detailRefreshTimer = setTimeout(() => loadWorkOrderDetail(id, true), 4_000);
+      return;
+    }
     main.innerHTML = `
       <section class="detail-error">
         <p class="eyebrow">工作委托</p>
@@ -119,6 +126,7 @@ async function loadWorkOrderDetail(id) {
 }
 
 function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
+  clearTimeout(detailRefreshTimer);
   const main = document.querySelector("main");
   const stages = draftStages ?? workOrder.plan?.stages ?? null;
 
@@ -129,7 +137,7 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
       <header class="detail-header">
         <div>
           <div class="detail-meta">
-            <span class="status status-${escapeHtml(workOrder.status)}">${statusLabels[workOrder.status]}</span>
+            <span class="status ${statusClass(workOrder)}">${displayStatusLabel(workOrder)}</span>
             <span>${escapeHtml(shortPath(workOrder.repositoryPath))}</span>
           </div>
           <h1>${escapeHtml(workOrder.title)}</h1>
@@ -146,14 +154,22 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
         <div class="plan-heading">
           <div>
             <p class="eyebrow">委托计划</p>
-            <h2>${stages ? "检查并编辑计划" : "先把工作想清楚"}</h2>
+            <h2>${
+              stages
+                ? workOrder.status === "ready" || draftStages
+                  ? "检查并编辑计划"
+                  : "已确认计划"
+                : "先把工作想清楚"
+            }</h2>
           </div>
           ${workOrder.plan ? `<span class="plan-version">版本 ${workOrder.plan.version}</span>` : ""}
         </div>
 
         ${
           stages
-            ? renderPlanForm(stages)
+            ? workOrder.status === "ready" || draftStages
+              ? renderPlanForm(stages)
+              : renderPlanSummary(stages)
             : `
               <div class="plan-empty">
                 <p>Codex 会以只读方式查看这个仓库，并把生成计划所需的代码上下文发送给你当前配置的模型服务。它不会在这一步修改代码。</p>
@@ -166,6 +182,8 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
         }
         <p class="plan-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
       </section>
+
+      ${renderExecutionPanel(workOrder)}
     </section>
   `;
 
@@ -228,6 +246,35 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
       renderWorkOrderDetail(workOrder, stagesAfterRemoval.length ? stagesAfterRemoval : [emptyStage()]);
     });
   });
+
+  document.querySelector("#start-work-order")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "正在准备独立工作区…";
+    setExecutionFeedback("Teamline 正在创建委托 worktree 并启动 Codex。", false);
+
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodeURIComponent(workOrder.id)}/start`,
+        { method: "POST" },
+      );
+      renderWorkOrderDetail(result.workOrder);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "确认并启动";
+      setExecutionFeedback(messageFrom(error, "Codex 启动失败，请处理后重试。"), true);
+    }
+  });
+
+  if (workOrder.runStatus) {
+    loadRunEvents(workOrder.id);
+  }
+  if (workOrder.runStatus === "running") {
+    detailRefreshTimer = setTimeout(
+      () => loadWorkOrderDetail(workOrder.id, true),
+      2_000,
+    );
+  }
 }
 
 function renderPlanForm(stages) {
@@ -268,6 +315,109 @@ function renderPlanForm(stages) {
   `;
 }
 
+function renderPlanSummary(stages) {
+  return `
+    <div class="plan-stage-list">
+      ${stages
+        .map(
+          (stage, index) => `
+            <article class="plan-stage plan-stage-readonly">
+              <div class="stage-heading"><span>阶段 ${index + 1}</span></div>
+              <dl>
+                <div><dt>目标结果</dt><dd>${escapeHtml(stage.outcome)}</dd></div>
+                <div><dt>预计影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
+                <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
+              </dl>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderExecutionPanel(workOrder) {
+  if (workOrder.status === "ready" && !workOrder.runStatus) {
+    return `
+      <section class="execution-panel start-panel">
+        <div>
+          <p class="eyebrow">执行确认</p>
+          <h2>确认计划并启动 Codex</h2>
+          <p>Teamline 会从仓库当前提交创建独立 worktree。Codex 只在该委托工作区内执行。</p>
+          <dl class="execution-facts">
+            <div><dt>工具</dt><dd>Codex</dd></div>
+            <div><dt>工作区</dt><dd>首次启动时创建</dd></div>
+          </dl>
+        </div>
+        <div class="start-actions">
+          <button class="primary-button" id="start-work-order" type="button">确认并启动</button>
+          <p id="execution-feedback" class="execution-feedback" role="status">${escapeHtml(workOrder.lastError ?? "")}</p>
+        </div>
+      </section>
+    `;
+  }
+
+  if (!workOrder.runStatus) {
+    return "";
+  }
+
+  const runLabel = {
+    running: "Codex 运行中",
+    completed: "Codex 已结束",
+    failed: "Codex 运行失败",
+  }[workOrder.runStatus];
+  return `
+    <section class="execution-panel run-panel">
+      <div class="run-heading">
+        <div>
+          <p class="eyebrow">运行详情</p>
+          <h2>${runLabel}</h2>
+        </div>
+        <span class="run-indicator run-${escapeHtml(workOrder.runStatus)}">${displayRunStatus(workOrder.runStatus)}</span>
+      </div>
+      <p class="run-summary">${escapeHtml(workOrder.currentSummary)}</p>
+      ${workOrder.lastError ? `<p class="run-error">${escapeHtml(workOrder.lastError)}</p>` : ""}
+      <dl class="run-facts">
+        <div><dt>累计运行时间</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
+        <div><dt>会话标识</dt><dd>${escapeHtml(workOrder.sessionId ?? "等待 Codex 返回")}</dd></div>
+        <div><dt>委托分支</dt><dd>${escapeHtml(workOrder.executionBranch ?? "正在准备")}</dd></div>
+        <div><dt>委托工作区</dt><dd>${escapeHtml(shortPath(workOrder.worktreePath ?? "正在准备"))}</dd></div>
+      </dl>
+      <div class="event-section">
+        <div class="event-heading"><h3>最近进展</h3><span>自动保存于本机</span></div>
+        <div id="run-event-list" class="run-event-list"><p>正在读取最近事件…</p></div>
+      </div>
+    </section>
+  `;
+}
+
+async function loadRunEvents(id) {
+  const list = document.querySelector("#run-event-list");
+  if (!list) return;
+
+  try {
+    const { events } = await requestJson(
+      `/api/work-orders/${encodeURIComponent(id)}/events`,
+    );
+    list.innerHTML = events.length
+      ? events
+          .slice()
+          .reverse()
+          .map(
+            (event) => `
+              <article class="run-event">
+                <time>${formatDate(event.createdAt)}</time>
+                <p>${escapeHtml(event.message)}</p>
+              </article>
+            `,
+          )
+          .join("")
+      : "<p>Codex 已启动，正在等待第一条进展。</p>";
+  } catch (error) {
+    list.innerHTML = `<p class="run-error">${escapeHtml(messageFrom(error, "无法读取运行事件"))}</p>`;
+  }
+}
+
 function readPlanStages() {
   return [...document.querySelectorAll("[data-plan-stage]")].map((stage) => ({
     id: stage.querySelector('[name="id"]').value || undefined,
@@ -283,6 +433,12 @@ function emptyStage() {
 
 function setPlanFeedback(message, isError) {
   const feedback = document.querySelector("#plan-feedback");
+  feedback.textContent = message;
+  feedback.classList.toggle("is-error", isError);
+}
+
+function setExecutionFeedback(message, isError) {
+  const feedback = document.querySelector("#execution-feedback");
   feedback.textContent = message;
   feedback.classList.toggle("is-error", isError);
 }
@@ -312,6 +468,38 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours} 小时 ${minutes} 分`
+    : minutes > 0
+      ? `${minutes} 分 ${seconds} 秒`
+      : `${seconds} 秒`;
+}
+
+function displayStatusLabel(workOrder) {
+  if (workOrder.runStatus === "completed") return "Codex 已结束";
+  if (workOrder.runStatus === "failed") return "运行失败";
+  return statusLabels[workOrder.status] ?? workOrder.status;
+}
+
+function statusClass(workOrder) {
+  if (workOrder.runStatus === "completed") return "status-run-completed";
+  if (workOrder.runStatus === "failed") return "status-interrupted";
+  return `status-${escapeHtml(workOrder.status)}`;
+}
+
+function displayRunStatus(runStatus) {
+  return {
+    running: "执行中",
+    completed: "已结束",
+    failed: "需要处理",
+  }[runStatus];
 }
 
 function escapeHtml(value) {
