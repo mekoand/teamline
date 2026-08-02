@@ -4,12 +4,12 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 
 ## Repository binding
 
-This repository is bound to `Mastalie/teamline` through the `origin` remote.
+This repository is bound to `mekoand/teamline` through the `origin` remote.
 
 Before an issue-tracker write:
 
 1. Run `gh repo view` inside this repository.
-2. Verify that it resolves to `Mastalie/teamline`.
+2. Verify that it resolves to `mekoand/teamline`.
 
 Do not guess the repository or create issues in an unrelated repository.
 
