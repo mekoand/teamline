@@ -1,0 +1,10 @@
+{
+  "name": "teamline",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/server.ts",
+    "start": "bun src/server.ts",
+    "test": "bun test"
+  }
+}

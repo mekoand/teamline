@@ -1,0 +1,58 @@
+export const workOrderStatuses = [
+  "draft",
+  "ready",
+  "running",
+  "interrupted",
+  "review",
+  "completed",
+] as const;
+
+export type WorkOrderStatus = (typeof workOrderStatuses)[number];
+
+export type WorkOrder = {
+  id: string;
+  title: string;
+  repositoryPath: string;
+  goal: string;
+  acceptance: string | null;
+  status: WorkOrderStatus;
+  currentSummary: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateWorkOrderInput = {
+  repositoryPath: string;
+  goal: string;
+  acceptance?: string;
+};
+
+export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
+  const repositoryPath = input.repositoryPath.trim();
+  const goal = input.goal.trim();
+  const acceptance = input.acceptance?.trim() || null;
+
+  if (!repositoryPath) {
+    throw new Error("请选择本地仓库");
+  }
+
+  if (!goal) {
+    throw new Error("请描述想完成的工作");
+  }
+
+  const now = new Date().toISOString();
+  const firstLine = goal.split(/\r?\n/, 1)[0] ?? goal;
+  const title = firstLine.length > 56 ? `${firstLine.slice(0, 56)}…` : firstLine;
+
+  return {
+    id: crypto.randomUUID(),
+    title,
+    repositoryPath,
+    goal,
+    acceptance,
+    status: "draft",
+    currentSummary: "等待生成计划",
+    createdAt: now,
+    updatedAt: now,
+  };
+}

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Teamline 个人本地版" />
+    <title>Teamline</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Teamline 首页">
+          <span class="brand-mark">T</span>
+          <span>Teamline</span>
+        </a>
+        <span class="local-status"><i></i> 本地运行</span>
+      </header>
+
+      <main>
+        <section class="intro">
+          <div>
+            <p class="eyebrow">个人工作台</p>
+            <h1>把 AI 编码工作<br />放到一条清楚的线上。</h1>
+            <p class="intro-copy">创建委托，掌握进展，在中断后继续，并确认最终结果。</p>
+          </div>
+          <button class="primary-button" id="open-create">创建委托</button>
+        </section>
+
+        <section class="workspace">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">工作委托</p>
+              <h2>当前工作</h2>
+            </div>
+            <span class="count" id="work-order-count">0 项</span>
+          </div>
+          <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="create-dialog">
+      <form id="create-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">新的工作</p>
+            <h2>创建委托</h2>
+          </div>
+          <button type="button" class="icon-button" id="close-create" aria-label="关闭">×</button>
+        </div>
+
+        <label>
+          <span>本地 Git 仓库</span>
+          <input name="repositoryPath" placeholder="/Users/you/Projects/my-app" autocomplete="off" required />
+        </label>
+
+        <label>
+          <span>想完成什么</span>
+          <textarea name="goal" rows="5" placeholder="例如：为设置页面增加深色模式" required></textarea>
+        </label>
+
+        <label>
+          <span>完成要求 <em>可选</em></span>
+          <textarea name="acceptance" rows="3" placeholder="例如：保留现有布局，并通过相关测试"></textarea>
+        </label>
+
+        <p class="form-error" id="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" id="cancel-create">取消</button>
+          <button type="submit" class="primary-button" id="submit-create">创建委托</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="empty-template">
+      <div class="empty-state">
+        <span class="empty-icon">↗</span>
+        <h3>还没有委托</h3>
+        <p>从一项真实的开发工作开始。</p>
+      </div>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
