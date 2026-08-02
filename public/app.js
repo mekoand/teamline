@@ -7,6 +7,19 @@ const statusLabels = {
   delivered: "已交付",
 };
 
+const homeGroupDefinitions = [
+  {
+    id: "attention",
+    title: "需要处理",
+    statuses: ["draft", "ready", "interrupted"],
+  },
+  { id: "active", title: "进行中", statuses: ["running"] },
+  { id: "review", title: "待验收", statuses: ["review"] },
+  { id: "delivered", title: "最近交付", statuses: ["delivered"] },
+];
+
+const workOrderAnchorPrefix = "work-order-";
+
 const detailMatch = window.location.pathname.match(/^\/work-orders\/([^/]+)$/);
 let detailRefreshTimer;
 
@@ -66,24 +79,28 @@ function setupHome() {
         return;
       }
 
-      for (const workOrder of workOrders) {
-        const card = document.createElement("a");
-        card.className = "work-order-card";
-        card.href = `/work-orders/${encodeURIComponent(workOrder.id)}`;
-        card.innerHTML = `
-          <div class="card-topline">
-            <span class="status ${statusClass(workOrder)}">${displayStatusLabel(workOrder)}</span>
-            <time>${formatDate(workOrder.updatedAt)}</time>
+      for (const group of groupWorkOrders(workOrders)) {
+        if (group.workOrders.length === 0) continue;
+
+        const section = document.createElement("section");
+        section.className = "work-order-group";
+        section.setAttribute("aria-labelledby", `work-order-group-${group.id}`);
+        section.innerHTML = `
+          <div class="work-order-group-heading">
+            <h3 id="work-order-group-${group.id}">${group.title}</h3>
+            <span>${group.workOrders.length} 项</span>
           </div>
-          <h3>${escapeHtml(workOrder.title)}</h3>
-          <p class="repository">${escapeHtml(shortPath(workOrder.repositoryPath))}</p>
-          <div class="card-footer">
-            <span>${escapeHtml(workOrder.currentSummary)}</span>
-            <b aria-hidden="true">→</b>
-          </div>
+          <div class="work-order-grid"></div>
         `;
-        list.append(card);
+
+        const groupList = section.querySelector(".work-order-grid");
+        for (const workOrder of group.workOrders) {
+          groupList.append(createWorkOrderCard(workOrder));
+        }
+        list.append(section);
       }
+
+      restoreHomeAnchor();
     } catch {
       list.innerHTML = '<div class="empty-state"><h3>无法连接本地服务</h3><p>请确认 Teamline 正在运行。</p></div>';
     }
@@ -132,7 +149,7 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
 
   main.innerHTML = `
     <section class="detail-page">
-      <a class="back-link" href="/">← 返回工作台</a>
+      <a class="back-link" href="/#${workOrderAnchor(workOrder.id)}">← 返回工作台</a>
 
       <header class="detail-header">
         <div>
@@ -360,6 +377,102 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
       2_000,
     );
   }
+}
+
+function groupWorkOrders(workOrders) {
+  return homeGroupDefinitions.map((group) => ({
+    ...group,
+    workOrders: workOrders
+      .filter((workOrder) => group.statuses.includes(workOrder.status))
+      .sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt)),
+  }));
+}
+
+function createWorkOrderCard(workOrder) {
+  const card = document.createElement("a");
+  card.className = "work-order-card";
+  card.id = workOrderAnchor(workOrder.id);
+  card.href = `/work-orders/${encodeURIComponent(workOrder.id)}`;
+  card.innerHTML = `
+    <div class="card-topline">
+      <span class="status ${statusClass(workOrder)}">${displayStatusLabel(workOrder)}</span>
+      <time>${formatDate(workOrder.updatedAt)}</time>
+    </div>
+    <h3>${escapeHtml(workOrder.title)}</h3>
+    <p class="repository"><span>仓库</span>${escapeHtml(shortPath(workOrder.repositoryPath))}</p>
+    <div class="card-progress">
+      <span>最近进展</span>
+      <p>${escapeHtml(workOrder.currentSummary)}</p>
+    </div>
+    <dl class="card-facts">
+      <div>
+        <dt>累计运行时间</dt>
+        <dd>${formatDuration(workOrder.runtimeMs)}</dd>
+      </div>
+      <div class="card-next-action">
+        <dt>下一步</dt>
+        <dd>${escapeHtml(nextActionFor(workOrder))}</dd>
+      </div>
+    </dl>
+    <div class="card-footer">
+      <span>打开委托</span>
+      <b aria-hidden="true">→</b>
+    </div>
+  `;
+  card.addEventListener("click", (event) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    window.history.replaceState(null, "", `/#${card.id}`);
+  });
+  return card;
+}
+
+function nextActionFor(workOrder) {
+  const runAction = {
+    running: "查看运行进展",
+    stopping: "等待 Codex 停止",
+    verifying: "等待验证完成",
+    interrupted: "继续委托",
+    failed: "处理错误并继续委托",
+  }[workOrder.runStatus];
+  if (runAction) return runAction;
+
+  if (workOrder.runStatus === "completed" && workOrder.status === "running") {
+    return "等待结果整理完成";
+  }
+
+  return {
+    draft: "生成或填写计划",
+    ready: "确认计划并启动",
+    running: "查看运行进展",
+    interrupted: "继续委托",
+    review: "查看结果并确认已交付",
+    delivered: "查看已交付结果",
+  }[workOrder.status] ?? "打开委托查看详情";
+}
+
+function workOrderAnchor(id) {
+  return `${workOrderAnchorPrefix}${id}`;
+}
+
+function restoreHomeAnchor() {
+  const anchor = window.location.hash.slice(1);
+  if (!anchor.startsWith(workOrderAnchorPrefix)) return;
+
+  const card = document.getElementById(anchor);
+  if (!card) return;
+
+  window.requestAnimationFrame(() => {
+    card.scrollIntoView({ block: "center" });
+  });
 }
 
 function renderPlanForm(stages) {
