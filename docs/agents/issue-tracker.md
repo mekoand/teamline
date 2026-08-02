@@ -4,13 +4,12 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 
 ## Repository binding
 
-This local repository does not have a GitHub remote yet.
+This repository is bound to `Mastalie/teamline` through the `origin` remote.
 
-Before the first issue-tracker write:
+Before an issue-tracker write:
 
-1. Add the intended GitHub repository as the `origin` remote.
-2. Run `gh repo view` inside this repository.
-3. Verify that it resolves to the intended Teamline repository.
+1. Run `gh repo view` inside this repository.
+2. Verify that it resolves to `Mastalie/teamline`.
 
 Do not guess the repository or create issues in an unrelated repository.
 
