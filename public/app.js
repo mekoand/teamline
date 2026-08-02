@@ -271,6 +271,27 @@ function renderWorkOrderDetail(workOrder, draftStages = null, feedback = "") {
     });
   });
 
+  document.querySelector("#max-run-minutes")?.addEventListener("change", async (event) => {
+    const select = event.currentTarget;
+    const draftStages = readPlanStages();
+    select.disabled = true;
+    setExecutionFeedback("正在保存最长运行时间…", false);
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodeURIComponent(workOrder.id)}/execution-settings`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ maxRunMinutes: Number(select.value) }),
+        },
+      );
+      renderWorkOrderDetail(result.workOrder, draftStages);
+    } catch (error) {
+      select.disabled = false;
+      setExecutionFeedback(messageFrom(error, "无法保存最长运行时间。"), true);
+    }
+  });
+
   document.querySelector("#start-work-order")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -550,7 +571,21 @@ function renderExecutionPanel(workOrder) {
           <p>Teamline 会从仓库当前提交创建独立 worktree。Codex 只在该委托工作区内执行。</p>
           <dl class="execution-facts">
             <div><dt>工具</dt><dd>Codex</dd></div>
+            <div><dt>模型</dt><dd>使用本机 Codex 当前配置</dd></div>
             <div><dt>工作区</dt><dd>首次启动时创建</dd></div>
+            <div class="execution-setting">
+              <dt><label for="max-run-minutes">本轮最长运行时间</label></dt>
+              <dd>
+                <select id="max-run-minutes">
+                  ${[30, 60, 120, 240]
+                    .map(
+                      (minutes) =>
+                        `<option value="${minutes}" ${workOrder.maxRunMinutes === minutes ? "selected" : ""}>${formatRunLimit(minutes)}</option>`,
+                    )
+                    .join("")}
+                </select>
+              </dd>
+            </div>
           </dl>
         </div>
         <div class="start-actions">
@@ -598,6 +633,7 @@ function renderExecutionPanel(workOrder) {
       <p id="execution-feedback" class="execution-feedback" role="status"></p>
       <dl class="run-facts">
         <div><dt>累计运行时间</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
+        <div><dt>本轮最长运行时间</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>
         <div><dt>当前运行记录</dt><dd>第 ${workOrder.runNumber} 次运行</dd></div>
         <div><dt>会话标识</dt><dd>${escapeHtml(workOrder.sessionId ?? "等待 Codex 返回")}</dd></div>
         <div><dt>委托分支</dt><dd>${escapeHtml(workOrder.executionBranch ?? "正在准备")}</dd></div>
@@ -774,6 +810,10 @@ function formatDuration(milliseconds) {
     : minutes > 0
       ? `${minutes} 分 ${seconds} 秒`
       : `${seconds} 秒`;
+}
+
+function formatRunLimit(minutes) {
+  return minutes < 60 ? `${minutes} 分钟` : `${minutes / 60} 小时`;
 }
 
 function displayStatusLabel(workOrder) {

@@ -83,6 +83,7 @@ export type WorkOrder = {
   runPid: number | null;
   runNumber: number;
   runtimeMs: number;
+  maxRunMinutes: number;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -132,6 +133,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     runPid: null,
     runNumber: 0,
     runtimeMs: 0,
+    maxRunMinutes: 60,
     lastError: null,
     createdAt: now,
     updatedAt: now,

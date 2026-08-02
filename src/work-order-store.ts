@@ -31,6 +31,7 @@ type WorkOrderRow = {
   run_number: number;
   runtime_ms: number;
   runtime_updated_at: string | null;
+  max_run_minutes: number;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -182,6 +183,30 @@ export class WorkOrderStore {
       `)
       .run(JSON.stringify(plan), "ready", "计划等待确认", now, id);
 
+    return this.get(id)!;
+  }
+
+  saveMaxRunMinutes(id: string, maxRunMinutes: number): WorkOrder {
+    const workOrder = this.get(id);
+    if (
+      !workOrder ||
+      workOrder.runStatus !== null ||
+      workOrder.status !== "ready"
+    ) {
+      throw new PlanLockedError("只能在启动前修改最长运行时间");
+    }
+    if (![30, 60, 120, 240].includes(maxRunMinutes)) {
+      throw new Error("请选择有效的最长运行时间");
+    }
+
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET max_run_minutes = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(maxRunMinutes, now, id);
     return this.get(id)!;
   }
 
@@ -443,15 +468,15 @@ export class WorkOrderStore {
     return this.get(id)!;
   }
 
-  markStopping(id: string): WorkOrder {
+  markStopping(id: string, summary = "正在停止 Codex"): WorkOrder {
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET run_status = 'stopping', current_summary = '正在停止 Codex', updated_at = ?
+        SET run_status = 'stopping', current_summary = ?, updated_at = ?
         WHERE id = ? AND run_status = 'running'
       `)
-      .run(now, id);
+      .run(summary, now, id);
     return this.get(id)!;
   }
 
@@ -582,6 +607,7 @@ export class WorkOrderStore {
       ["run_number", "INTEGER NOT NULL DEFAULT 0"],
       ["runtime_ms", "INTEGER NOT NULL DEFAULT 0"],
       ["runtime_updated_at", "TEXT"],
+      ["max_run_minutes", "INTEGER NOT NULL DEFAULT 60"],
       ["last_error", "TEXT"],
     ] as const;
 
@@ -665,6 +691,7 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     runPid: row.run_pid,
     runNumber: row.run_number,
     runtimeMs: currentRuntime(row),
+    maxRunMinutes: row.max_run_minutes ?? 60,
     lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

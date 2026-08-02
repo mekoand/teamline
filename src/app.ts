@@ -20,6 +20,10 @@ type AppDependencies = {
   codexRunner?: CodexRunner;
   worktreeManager?: WorktreeManager;
   resultProcessor?: WorkOrderResultProcessor;
+  runTimeoutScheduler?: (
+    callback: () => void,
+    delayMs: number,
+  ) => () => void;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -38,9 +42,44 @@ export function createApp({
   codexRunner,
   worktreeManager,
   resultProcessor,
+  runTimeoutScheduler = scheduleTimeout,
 }: AppDependencies) {
   let startingWorkOrderId: string | null = null;
   const activeRuns = new Map<string, StartedCodexRun>();
+  const runTimeouts = new Map<string, () => void>();
+  const stopReasons = new Map<string, string>();
+
+  const clearRunTimeout = (id: string) => {
+    runTimeouts.get(id)?.();
+    runTimeouts.delete(id);
+  };
+  const startRunTimeout = (id: string) => {
+    clearRunTimeout(id);
+    const maxRunMinutes = store.get(id)?.maxRunMinutes ?? 60;
+    const cancel = runTimeoutScheduler(() => {
+      runTimeouts.delete(id);
+      const activeRun = activeRuns.get(id);
+      if (store.get(id)?.runStatus !== "running" || !activeRun) return;
+
+      const reason = `已达到本轮最长运行时间（${maxRunMinutes} 分钟），Codex 已停止；可以继续委托`;
+      stopReasons.set(id, reason);
+      store.markStopping(
+        id,
+        `已达到本轮最长运行时间（${maxRunMinutes} 分钟），正在停止 Codex`,
+      );
+      try {
+        activeRun.interrupt();
+      } catch {
+        // The event stream still decides when the run has actually stopped.
+      }
+    }, maxRunMinutes * 60_000);
+    runTimeouts.set(id, cancel);
+  };
+  const finishReason = (id: string) => {
+    const reason = stopReasons.get(id);
+    stopReasons.delete(id);
+    return reason;
+  };
 
   return {
     async fetch(request: Request): Promise<Response> {
@@ -136,7 +175,12 @@ export function createApp({
 
           store.recordRunPid(id, run.pid ?? null);
           activeRuns.set(id, run);
-          void consumeRunEvents(store, id, run, activeRuns, { resultProcessor });
+          startRunTimeout(id);
+          void consumeRunEvents(store, id, run, activeRuns, {
+            resultProcessor,
+            clearRunTimeout: () => clearRunTimeout(id),
+            finishReason: () => finishReason(id),
+          });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {
           startingWorkOrderId = null;
@@ -253,8 +297,11 @@ export function createApp({
           }
           store.recordRunPid(id, run.pid ?? null);
           activeRuns.set(id, run);
+          startRunTimeout(id);
           void consumeRunEvents(store, id, run, activeRuns, {
             resultProcessor,
+            clearRunTimeout: () => clearRunTimeout(id),
+            finishReason: () => finishReason(id),
             fallback:
               workOrder.sessionId && codexRunner
                 ? async () => {
@@ -443,6 +490,31 @@ export function createApp({
         }
       }
 
+      const settingsMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/execution-settings$/,
+      );
+      if (request.method === "PUT" && settingsMatch) {
+        const id = decodeURIComponent(settingsMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as { maxRunMinutes?: number };
+          return Response.json({
+            workOrder: store.saveMaxRunMinutes(id, body.maxRunMinutes ?? NaN),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "无法保存执行条件";
+          return Response.json(
+            { code: "INVALID_EXECUTION_SETTINGS", error: message },
+            { status: error instanceof PlanLockedError ? 409 : 400 },
+          );
+        }
+      }
+
       const workOrderMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)$/);
       if (request.method === "GET" && workOrderMatch) {
         const workOrder = store.get(decodeURIComponent(workOrderMatch[1]));
@@ -509,6 +581,8 @@ async function consumeRunEvents(
   options: {
     fallback?: () => Promise<StartedCodexRun | null>;
     resultProcessor?: WorkOrderResultProcessor;
+    clearRunTimeout?: () => void;
+    finishReason?: () => string | undefined;
   } = {},
 ): Promise<void> {
   try {
@@ -519,15 +593,18 @@ async function consumeRunEvents(
         store.recordProgress(workOrderId, event.message);
       } else {
         if (store.get(workOrderId)?.runStatus === "stopping") {
-          store.recordInterrupted(workOrderId);
+          options.clearRunTimeout?.();
+          store.recordInterrupted(workOrderId, options.finishReason?.());
         } else if (event.resumeUnavailable && options.fallback) {
           let fallbackRun: StartedCodexRun | null;
           try {
             fallbackRun = await options.fallback();
           } catch {
             if (store.get(workOrderId)?.runStatus === "stopping") {
-              store.recordInterrupted(workOrderId);
+              options.clearRunTimeout?.();
+              store.recordInterrupted(workOrderId, options.finishReason?.());
             } else {
+              options.clearRunTimeout?.();
               store.recordExit(
                 workOrderId,
                 -1,
@@ -538,7 +615,8 @@ async function consumeRunEvents(
           }
           if (!fallbackRun) {
             if (store.get(workOrderId)?.runStatus === "stopping") {
-              store.recordInterrupted(workOrderId);
+              options.clearRunTimeout?.();
+              store.recordInterrupted(workOrderId, options.finishReason?.());
             }
             return;
           }
@@ -553,9 +631,12 @@ async function consumeRunEvents(
           }
           void consumeRunEvents(store, workOrderId, fallbackRun, activeRuns, {
             resultProcessor: options.resultProcessor,
+            clearRunTimeout: options.clearRunTimeout,
+            finishReason: options.finishReason,
           });
           return;
         } else if (event.exitCode === 0 && options.resultProcessor) {
+          options.clearRunTimeout?.();
           const verifying = store.beginResultProcessing(workOrderId, event.message);
           try {
             const result = await options.resultProcessor.process(verifying);
@@ -568,6 +649,7 @@ async function consumeRunEvents(
             store.recordResultProcessingFailure(workOrderId);
           }
         } else {
+          options.clearRunTimeout?.();
           store.recordExit(workOrderId, event.exitCode, event.message);
         }
       }
@@ -577,8 +659,10 @@ async function consumeRunEvents(
       await run.exited;
     }
     if (store.get(workOrderId)?.runStatus === "stopping") {
-      store.recordInterrupted(workOrderId);
+      options.clearRunTimeout?.();
+      store.recordInterrupted(workOrderId, options.finishReason?.());
     } else {
+      options.clearRunTimeout?.();
       store.recordExit(
         workOrderId,
         -1,
@@ -633,4 +717,10 @@ function safeCodexStartError(error: unknown): string {
     return "找不到 Codex，请先安装并登录 Codex";
   }
   return "Codex 无法启动，请确认本机 Codex 安装和配置后重试";
+}
+
+function scheduleTimeout(callback: () => void, delayMs: number): () => void {
+  const timeout = setTimeout(callback, delayMs);
+  timeout.unref?.();
+  return () => clearTimeout(timeout);
 }

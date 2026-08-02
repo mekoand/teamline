@@ -20,6 +20,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -765,6 +766,16 @@ textarea:focus {
 
 .execution-facts {
   grid-template-columns: repeat(2, minmax(0, 180px));
+}
+
+.execution-setting select {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(32, 34, 31, 0.16);
+  border-radius: 9px;
+  color: #353a32;
+  background: #fffefb;
 }
 
 .start-actions {
