@@ -288,6 +288,65 @@ describe("material work orders API", () => {
     }
   });
 
+  test("runs two distinct ordinary folders in parallel", async () => {
+    const firstPath = mkdtempSync(`${tmpdir()}/teamline-directory-parallel-a-`);
+    const secondPath = mkdtempSync(`${tmpdir()}/teamline-directory-parallel-b-`);
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const starts: string[] = [];
+      const app = createApp({
+        store,
+        codexRunner: {
+          async start({ workspacePath }) {
+            starts.push(workspacePath);
+            return { events: noEvents() };
+          },
+          async resume() {
+            throw new Error("not used");
+          },
+        },
+        worktreeManager: {
+          async prepare() {
+            throw new Error("ordinary folders must not create worktrees");
+          },
+        },
+      });
+      const orders = [firstPath, secondPath].map((path, index) => {
+        const created = store.create({
+          goal: `整理本地文档 ${index + 1}`,
+          workspace: { kind: "directory", path: realpathSync(path) },
+        });
+        store.savePlan(created.id, [
+          {
+            outcome: "文档已经整理",
+            scope: path,
+            verification: "人工检查目录",
+          },
+        ]);
+        return created;
+      });
+
+      const responses = await Promise.all(
+        orders.map((order) =>
+          app.fetch(
+            new Request(`http://teamline.local/api/work-orders/${order.id}/start`, {
+              method: "POST",
+            }),
+          ),
+        ),
+      );
+
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(starts.sort()).toEqual(
+        [realpathSync(firstPath), realpathSync(secondPath)].sort(),
+      );
+      expect(store.activeRunIds()).toHaveLength(2);
+    } finally {
+      rmSync(firstPath, { recursive: true, force: true });
+      rmSync(secondPath, { recursive: true, force: true });
+    }
+  });
+
   test("collects verification results after a run in an ordinary folder", async () => {
     const workspacePath = mkdtempSync(`${tmpdir()}/teamline-directory-result-`);
     try {
