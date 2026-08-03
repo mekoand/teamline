@@ -188,6 +188,8 @@ describe("resource API", () => {
   test("reads Codex subscription windows through the local app-server protocol", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-resource-test-"));
     const executable = join(directory, "fake-codex");
+    const shortReset = Math.floor(Date.now() / 1_000) + 60 * 60;
+    const longReset = shortReset + 7 * 24 * 60 * 60;
     writeFileSync(
       executable,
       [
@@ -195,7 +197,7 @@ describe("resource API", () => {
         "read initialize",
         "read initialized",
         "read rate_limits",
-        `printf '%s\\n' '{"id":6,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":32,"windowDurationMins":300,"resetsAt":1785733200},"secondary":{"usedPercent":67,"windowDurationMins":10080,"resetsAt":1786251600},"rateLimitReachedType":null}}}'`,
+        `printf '%s\\n' '{"id":6,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":32,"windowDurationMins":300,"resetsAt":${shortReset}},"secondary":{"usedPercent":67,"windowDurationMins":10080,"resetsAt":${longReset}},"rateLimitReachedType":null}}}'`,
       ].join("\n"),
     );
     chmodSync(executable, 0o755);
@@ -219,12 +221,12 @@ describe("resource API", () => {
         shortWindow: {
           usedPercent: 32,
           windowMinutes: 300,
-          resetsAt: "2026-08-03T05:00:00.000Z",
+          resetsAt: new Date(shortReset * 1_000).toISOString(),
         },
         longWindow: {
           usedPercent: 67,
           windowMinutes: 10_080,
-          resetsAt: "2026-08-09T05:00:00.000Z",
+          resetsAt: new Date(longReset * 1_000).toISOString(),
         },
       });
       expect(result.openaiApi).toMatchObject({
@@ -892,6 +894,7 @@ describe("resource API", () => {
   test("uses TEAMLINE_CODEX_PATH in the server resource-provider wiring", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-resource-test-"));
     const executable = join(directory, "fake-codex");
+    const resetAt = Math.floor(Date.now() / 1_000) + 60 * 60;
     writeFileSync(
       executable,
       [
@@ -899,7 +902,7 @@ describe("resource API", () => {
         "read initialize",
         "read initialized",
         "read rate_limits",
-        `printf '%s\\n' '{"id":6,"result":{"rateLimits":{"primary":{"usedPercent":22,"windowDurationMins":300,"resetsAt":1785733200}}}}'`,
+        `printf '%s\\n' '{"id":6,"result":{"rateLimits":{"primary":{"usedPercent":22,"windowDurationMins":300,"resetsAt":${resetAt}}}}}'`,
       ].join("\n"),
     );
     chmodSync(executable, 0o755);
