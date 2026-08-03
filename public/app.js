@@ -411,9 +411,51 @@ function renderWorkspace(workOrder, feedback) {
         <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
       </section>
 
+      ${renderRecoveryPanel(workOrder)}
       ${renderRunPanel(workOrder)}
       ${renderResultPanel(workOrder)}
     </section>`;
+}
+
+function renderRecoveryPanel(workOrder) {
+  if (workOrder.status !== "interrupted") return "";
+  const checkpoints = currentPlanCheckpoints(workOrder);
+  const latestCheckpoint = checkpoints.at(-1);
+  const latestStageCheckpoint = checkpoints.filter((checkpoint) => checkpoint.kind === "stage").at(-1);
+  const completedStageIds = new Set(
+    checkpoints
+      .filter((checkpoint) => checkpoint.kind === "stage" && checkpoint.stageId)
+      .map((checkpoint) => checkpoint.stageId),
+  );
+  const finalStage = workOrder.plan?.stages.at(-1);
+  const currentStage = latestStageCheckpoint?.stageId === finalStage?.id
+    ? finalStage
+    : workOrder.plan?.stages.find((stage) => !completedStageIds.has(stage.id));
+  return `
+    <section class="recovery-panel">
+      <div class="section-heading compact">
+        <div><p class="overline">执行中断</p><h2>现场仍保留在工作空间</h2></div>
+        <span class="status-pill response">需响应</span>
+      </div>
+      <dl class="recovery-facts">
+        <div><dt>最近完成节点</dt><dd>${escapeHtml(latestStageCheckpoint?.stageOutcome || "还没有完成节点")}</dd></div>
+        <div><dt>当前节点</dt><dd>${escapeHtml(currentStage?.outcome || "等待继续处理")}</dd></div>
+        <div><dt>当前现场</dt><dd><code>${escapeHtml(shortPath(workOrder.worktreePath || workOrder.workspace?.path || "未找到"))}</code><pre>${escapeHtml(workOrder.recoverySite?.statusShort || "现场变化保留在当前工作空间")}</pre></dd></div>
+        <div><dt>中断原因</dt><dd>${escapeHtml(workOrder.lastError || workOrder.currentSummary)}</dd></div>
+      </dl>
+      <p class="recovery-note">${latestCheckpoint
+        ? latestCheckpoint.kind === "stage"
+          ? "可以保留当前修改继续，也可以回到最近完成节点后重新执行当前节点。"
+          : "可以保留当前修改继续，也可以回到本轮起始位置重新执行。"
+        : "当前没有可用的完整恢复位置，只能继续当前现场。"}</p>
+    </section>`;
+}
+
+function currentPlanCheckpoints(workOrder) {
+  const planVersion = workOrder.plan?.version;
+  return (workOrder.checkpoints ?? []).filter(
+    (checkpoint) => checkpoint.planVersion === planVersion,
+  );
 }
 
 function renderPlanArea(workOrder, stages, canEditPlan) {
@@ -722,7 +764,16 @@ function renderContextAction(workOrder) {
     return `<section class="context-action"><p>${escapeHtml(workOrder.currentSummary)}</p><button class="secondary-button full-button" type="button" disabled>处理中…</button></section>`;
   }
   if (workOrder.status === "interrupted") {
-    return `<section class="context-action"><p>${escapeHtml(workOrder.lastError || workOrder.currentSummary)}</p><button class="primary-button full-button" id="continue-work-order" type="button">继续委托</button></section>`;
+    const latestCheckpoint = currentPlanCheckpoints(workOrder).at(-1);
+    const canReexecute = workOrder.workspace?.kind === "git" && latestCheckpoint;
+    return `
+      <section class="context-action recovery-actions">
+        <p>选择如何处理当前中断。</p>
+        <button class="primary-button full-button" id="continue-work-order" type="button">继续当前现场</button>
+        ${canReexecute
+          ? `<button class="secondary-button full-button" id="reexecute-work-order" type="button">${latestCheckpoint.kind === "stage" ? "从最近阶段重新执行" : "从起始位置重新执行"}</button>`
+          : '<p class="muted">普通文件夹暂不提供检查点回退。</p>'}
+      </section>`;
   }
   if (workOrder.status === "review") {
     return `
@@ -855,7 +906,8 @@ function bindRenderedEvents() {
 
   bindAction("#start-work-order", "正在准备…", "确认计划并启动", "start", "Teamline 正在创建委托工作区并启动 Codex。");
   bindAction("#interrupt-work-order", "正在停止…", "中断运行", "interrupt", "正在请求 Codex 停止。");
-  bindAction("#continue-work-order", "正在继续…", "继续委托", "continue", "正在从现有进度继续委托。");
+  bindAction("#continue-work-order", "正在继续…", "继续当前现场", "continue", "正在从现有进度继续委托。");
+  bindAction("#reexecute-work-order", "正在恢复…", "从最近阶段重新执行", "reexecute", "正在恢复最近完整位置并启动新的运行。");
   bindAction("#deliver-work-order", "正在确认…", "确认完成", "deliver", "");
 
   document.querySelector("#workspace-form")?.addEventListener("submit", async (event) => {

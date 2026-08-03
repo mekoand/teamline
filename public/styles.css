@@ -510,6 +510,7 @@ pre {
 }
 
 .map-panel,
+.recovery-panel,
 .run-panel,
 .result-panel,
 .resource-orders-panel {
@@ -519,6 +520,57 @@ pre {
   border-radius: 15px;
   background: var(--panel);
   box-shadow: 0 12px 38px rgba(32, 34, 31, 0.03);
+}
+
+.recovery-panel {
+  border-color: color-mix(in srgb, var(--attention) 35%, var(--line));
+}
+
+.recovery-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.recovery-facts > div {
+  min-width: 0;
+  padding: 13px;
+  background: var(--panel-soft);
+}
+
+.recovery-facts dt {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.recovery-facts dd {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.recovery-facts pre {
+  margin-top: 7px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: var(--panel-strong);
+  color: var(--text-soft);
+  font-size: 10px;
+  white-space: pre-wrap;
+}
+
+.recovery-note {
+  margin-top: 14px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .resource-overview {
@@ -1195,6 +1247,10 @@ textarea {
   margin-top: 18px;
 }
 
+.recovery-actions .secondary-button {
+  margin-top: 9px;
+}
+
 .completed-action {
   color: var(--accent);
 }
@@ -1482,6 +1538,10 @@ dialog::backdrop {
   }
 
   .fact-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .recovery-facts {
     grid-template-columns: 1fr;
   }
 

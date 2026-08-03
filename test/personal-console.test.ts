@@ -29,6 +29,9 @@ describe("personal console", () => {
     expect(script).toContain('localStorage.setItem("teamline-theme"');
     expect(script).toContain('"/api/execution-settings"');
     expect(script).toContain("state.workOrders.some((workOrder)");
+    expect(script).toContain("最近完成节点");
+    expect(script).toContain("继续当前现场");
+    expect(script).toContain("从最近阶段重新执行");
   });
 
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {

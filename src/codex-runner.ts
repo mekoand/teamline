@@ -13,6 +13,7 @@ export type CodexRunEvent =
 export type ContinuationContext = {
   recentProgress: string[];
   gitStatus: string;
+  reexecuteStage?: { id: string; outcome: string };
 };
 
 export type StartedCodexRun = {
@@ -269,7 +270,11 @@ function buildExecutionPrompt(
         continuation.recentProgress.length
           ? continuation.recentProgress.map((message) => `- ${message}`).join("\n")
           : "暂无已保存进展"
-      }\n\n当前工作空间状态：\n${continuation.gitStatus || "工作区干净"}`
+      }\n\n当前工作空间状态：\n${continuation.gitStatus || "工作区干净"}${
+        continuation.reexecuteStage
+          ? `\n\n当前现场已恢复到最近完整检查点。只重新执行当前节点“${continuation.reexecuteStage.outcome}”（${continuation.reexecuteStage.id}），不要重做已经完成的节点。`
+          : ""
+      }`
     : "";
 
   const workspaceRule =

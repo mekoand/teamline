@@ -25,6 +25,18 @@ export type WorkOrderRunEvent = {
   createdAt: string;
 };
 
+export type WorkOrderCheckpoint = {
+  id: string;
+  kind: "baseline" | "stage";
+  planVersion: number;
+  stageId: string | null;
+  stageOutcome: string | null;
+  runNumber: number;
+  sequence: number;
+  treeHash: string;
+  createdAt: string;
+};
+
 export type PlanNodeStatus =
   | "planning"
   | "running"
@@ -154,6 +166,8 @@ export type WorkOrder = {
   runEndedAt: string | null;
   runPid: number | null;
   runNumber: number;
+  checkpoints: WorkOrderCheckpoint[];
+  recoverySite?: { diffStat: string; statusShort: string };
   runtimeMs: number;
   maxRunMinutes: number;
   lastError: string | null;
@@ -214,6 +228,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     runEndedAt: null,
     runPid: null,
     runNumber: 0,
+    checkpoints: [],
     runtimeMs: 0,
     maxRunMinutes: 60,
     lastError: null,

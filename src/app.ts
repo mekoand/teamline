@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
+import type { CheckpointManager } from "./checkpoint-manager";
 import { presentConsoleWorkOrders } from "./console-presentation";
 import type { WorkOrderResultProcessor } from "./result-processor";
 import type {
@@ -12,7 +13,10 @@ import type {
 import {
   workOrderMaterialKinds,
   type PlanStageInput,
+  type PlanStage,
   type WorkOrderMaterialKind,
+  type WorkOrderCheckpoint,
+  type WorkOrder,
 } from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
 import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
@@ -35,6 +39,7 @@ type AppDependencies = {
     delayMs: number,
   ) => () => void;
   resourceProvider?: ResourceProvider;
+  checkpointManager?: CheckpointManager;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -56,6 +61,7 @@ export function createApp({
   resultProcessor,
   runTimeoutScheduler = scheduleTimeout,
   resourceProvider,
+  checkpointManager,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
@@ -317,6 +323,32 @@ export function createApp({
               { status: 500 },
             );
           }
+          if (workOrder.workspace.kind === "git" && checkpointManager) {
+            const checkpointId = crypto.randomUUID();
+            try {
+              const treeHash = await checkpointManager.capture(
+                workspacePath!,
+                checkpointReference("checkpoints", id, checkpointId),
+              );
+              store.saveCheckpoint(id, {
+                id: checkpointId,
+                kind: "baseline",
+                planVersion: startedWorkOrder.plan!.version,
+                stageId: null,
+                stageOutcome: null,
+                runNumber: startedWorkOrder.runNumber,
+                treeHash,
+              });
+              startedWorkOrder = store.get(id)!;
+            } catch {
+              const message = "无法保存执行起始位置，Codex 尚未启动";
+              store.recordStartFailure(id, message, "起始位置保存失败，请处理后重试");
+              return Response.json(
+                { code: "CHECKPOINT_SAVE_FAILED", error: message },
+                { status: 500 },
+              );
+            }
+          }
           let run;
           try {
             run = await codexRunner.start({
@@ -339,6 +371,7 @@ export function createApp({
             resultProcessor,
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
+            checkpointManager,
           });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {
@@ -505,6 +538,7 @@ export function createApp({
             resultProcessor,
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
+            checkpointManager,
             fallback:
               workOrder.sessionId && codexRunner
                 ? async () => {
@@ -529,6 +563,146 @@ export function createApp({
                 : undefined,
           });
           return Response.json({ workOrder: continued });
+        } finally {
+          startingWorkOrderIds.delete(id);
+          startingWorkspacePaths.delete(id);
+        }
+      }
+
+      const reexecuteMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/reexecute$/,
+      );
+      if (request.method === "POST" && reexecuteMatch) {
+        const id = decodeURIComponent(reexecuteMatch[1]);
+        const workOrder = store.get(id);
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        if (workOrder.status !== "interrupted") {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的委托可以重新执行" },
+            { status: 409 },
+          );
+        }
+        if (
+          !codexRunner ||
+          !checkpointManager ||
+          workOrder.workspace?.kind !== "git"
+        ) {
+          return Response.json(
+            {
+              code: "CHECKPOINT_RECOVERY_UNAVAILABLE",
+              error: "当前工作空间不支持从阶段检查点重新执行，可以继续当前现场",
+            },
+            { status: 409 },
+          );
+        }
+        if (!workOrder.worktreePath || !workOrder.plan) {
+          return Response.json(
+            { code: "WORKTREE_MISSING", error: "委托工作区不存在，无法重新执行" },
+            { status: 409 },
+          );
+        }
+        const resolvedWorkspace = resolveExecutionWorkspace(
+          store,
+          id,
+          "git",
+          workOrder.worktreePath,
+        );
+        if ("error" in resolvedWorkspace) {
+          return Response.json(
+            { code: "WORKTREE_MISSING", error: "委托工作区不存在，无法重新执行" },
+            { status: 409 },
+          );
+        }
+        const checkpoint = store.latestRecoveryCheckpoint(id);
+        if (!checkpoint) {
+          return Response.json(
+            { code: "CHECKPOINT_MISSING", error: "没有可用的完整恢复位置" },
+            { status: 409 },
+          );
+        }
+        if (executionCapacityReached()) {
+          const { maxConcurrency } = store.getExecutionSettings();
+          return Response.json(
+            {
+              code: "CONCURRENCY_LIMIT_REACHED",
+              error: `已达到本机最大并发数（${maxConcurrency}），请等待一项委托结束或调整设置`,
+            },
+            { status: 409 },
+          );
+        }
+        if (workspaceOwner(id, resolvedWorkspace.path)) {
+          return Response.json(
+            {
+              code: "WORKSPACE_IN_USE",
+              error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+            },
+            { status: 409 },
+          );
+        }
+
+        startingWorkOrderIds.add(id);
+        startingWorkspacePaths.set(id, resolvedWorkspace.path);
+        try {
+          const residueId = crypto.randomUUID();
+          try {
+            await checkpointManager.restore(
+              resolvedWorkspace.path,
+              checkpoint.treeHash,
+              checkpointReference("residue", id, residueId),
+            );
+          } catch {
+            return Response.json(
+              {
+                code: "CHECKPOINT_RESTORE_FAILED",
+                error: "无法恢复最近完整位置，新的运行尚未启动；请检查工作区后重试",
+              },
+              { status: 500 },
+            );
+          }
+
+          const currentStage = recoveryStage(workOrder, checkpoint);
+          const reexecuted = store.markReexecuted(id);
+          store.recordProgress(
+            id,
+            checkpoint.kind === "stage"
+              ? `已恢复到“${checkpoint.stageOutcome}”检查点，开始重新执行${currentStage ? `“${currentStage.outcome}”` : "当前节点"}`
+              : `已恢复到执行起始位置，开始重新执行${currentStage ? `“${currentStage.outcome}”` : "当前节点"}`,
+          );
+          let run;
+          try {
+            run = await codexRunner.start({
+              workOrder: reexecuted,
+              workspacePath: resolvedWorkspace.path,
+              continuation: {
+                ...(await continuationContext(store, id, resolvedWorkspace.path)),
+                reexecuteStage: currentStage
+                  ? { id: currentStage.id, outcome: currentStage.outcome }
+                  : undefined,
+              },
+            });
+          } catch (error) {
+            const message = safeCodexStartError(error);
+            store.recordExit(id, -1, message);
+            return Response.json(
+              { code: "CODEX_REEXECUTE_FAILED", error: message },
+              { status: 502 },
+            );
+          }
+          store.recordRunPid(id, run.pid ?? null);
+          activeRuns.set(id, run);
+          startRunTimeout(id);
+          void consumeRunEvents(store, id, run, activeRuns, {
+            resultProcessor,
+            checkpointManager,
+            clearRunTimeout: () => clearRunTimeout(id),
+            finishReason: () => finishReason(id),
+          });
+          return Response.json({ workOrder: store.get(id)! });
         } finally {
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
@@ -770,7 +944,9 @@ export function createApp({
             { status: 404 },
           );
         }
-        return Response.json({ workOrder });
+        return Response.json({
+          workOrder: await withRecoverySite(workOrder, checkpointManager),
+        });
       }
 
       if (request.method === "POST" && url.pathname === "/api/work-orders") {
@@ -834,6 +1010,7 @@ async function consumeRunEvents(
     resultProcessor?: WorkOrderResultProcessor;
     clearRunTimeout?: () => void;
     finishReason?: () => string | undefined;
+    checkpointManager?: CheckpointManager;
   } = {},
 ): Promise<void> {
   try {
@@ -882,6 +1059,7 @@ async function consumeRunEvents(
           }
           void consumeRunEvents(store, workOrderId, fallbackRun, activeRuns, {
             resultProcessor: options.resultProcessor,
+            checkpointManager: options.checkpointManager,
             clearRunTimeout: options.clearRunTimeout,
             finishReason: options.finishReason,
           });
@@ -891,6 +1069,12 @@ async function consumeRunEvents(
           const verifying = store.beginResultProcessing(workOrderId, event.message);
           try {
             const result = await options.resultProcessor.process(verifying);
+            await saveVerifiedBoundaryCheckpoint(
+              store,
+              workOrderId,
+              result,
+              options.checkpointManager,
+            );
             if (result.verifications.some((verification) => verification.status === "failed")) {
               store.recordVerificationFailure(workOrderId, result);
             } else {
@@ -925,6 +1109,47 @@ async function consumeRunEvents(
       activeRuns.delete(workOrderId);
     }
   }
+}
+
+async function saveVerifiedBoundaryCheckpoint(
+  store: WorkOrderStore,
+  workOrderId: string,
+  result: Awaited<ReturnType<WorkOrderResultProcessor["process"]>>,
+  checkpointManager?: CheckpointManager,
+): Promise<void> {
+  const workOrder = store.get(workOrderId);
+  if (
+    !checkpointManager ||
+    !workOrder?.plan ||
+    workOrder.workspace?.kind !== "git" ||
+    !workOrder.worktreePath
+  ) {
+    return;
+  }
+  const verificationsByStage = new Map(
+    result.verifications.map((verification) => [verification.stageId, verification]),
+  );
+  const completeBoundary = workOrder.plan.stages.every(
+    (stage) => verificationsByStage.get(stage.id)?.status === "passed",
+  );
+  if (!completeBoundary) return;
+
+  const finalStage = workOrder.plan.stages.at(-1);
+  if (!finalStage) return;
+  const checkpointId = crypto.randomUUID();
+  const treeHash = await checkpointManager.capture(
+    workOrder.worktreePath,
+    checkpointReference("checkpoints", workOrderId, checkpointId),
+  );
+  store.saveCheckpoint(workOrderId, {
+    id: checkpointId,
+    kind: "stage",
+    planVersion: result.planVersion,
+    stageId: finalStage.id,
+    stageOutcome: finalStage.outcome,
+    runNumber: workOrder.runNumber,
+    treeHash,
+  });
 }
 
 async function continuationContext(
@@ -1078,4 +1303,68 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
 function canonicalWorkspacePath(workspacePath: string): string {
   const absolutePath = resolve(workspacePath);
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
+}
+
+function checkpointReference(
+  kind: "checkpoints" | "residue",
+  workOrderId: string,
+  recordId: string,
+): string {
+  return `refs/teamline/${kind}/${workOrderId}/${recordId}`;
+}
+
+function recoveryStage(
+  workOrder: WorkOrder,
+  checkpoint: WorkOrderCheckpoint,
+): PlanStage | null {
+  if (!workOrder.plan) return null;
+  const finalStage = workOrder.plan.stages.at(-1) ?? null;
+  if (checkpoint.kind === "stage" && checkpoint.stageId === finalStage?.id) {
+    return finalStage;
+  }
+  const completedStageIds = new Set(
+    workOrder.checkpoints
+      .filter(
+        (candidate) =>
+          candidate.kind === "stage" &&
+          candidate.planVersion === workOrder.plan!.version &&
+          candidate.sequence <= checkpoint.sequence &&
+          candidate.stageId,
+      )
+      .map((candidate) => candidate.stageId!),
+  );
+  return (
+    workOrder.plan.stages.find((stage) => !completedStageIds.has(stage.id)) ??
+    finalStage ??
+    null
+  );
+}
+
+async function withRecoverySite(
+  workOrder: WorkOrder,
+  checkpointManager?: CheckpointManager,
+): Promise<WorkOrder> {
+  if (
+    workOrder.status !== "interrupted" ||
+    workOrder.workspace?.kind !== "git" ||
+    !workOrder.worktreePath ||
+    !checkpointManager
+  ) {
+    return workOrder;
+  }
+  const checkpoint = workOrder.checkpoints
+    .filter((candidate) => candidate.planVersion === workOrder.plan?.version)
+    .at(-1);
+  if (!checkpoint) return workOrder;
+  try {
+    return {
+      ...workOrder,
+      recoverySite: await checkpointManager.describe(
+        workOrder.worktreePath,
+        checkpoint.treeHash,
+      ),
+    };
+  } catch {
+    return workOrder;
+  }
 }

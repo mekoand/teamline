@@ -6,6 +6,7 @@ import {
   type PlanStageInput,
   type PlanWorkspace,
   type WorkOrder,
+  type WorkOrderCheckpoint,
   type WorkOrderPlan,
   type WorkOrderRunEvent,
   type WorkOrderResult,
@@ -47,6 +48,18 @@ type RunEventRow = {
   event_type: WorkOrderRunEvent["type"];
   message: string;
   run_number: number;
+  created_at: string;
+};
+
+type CheckpointRow = {
+  id: string;
+  checkpoint_kind: WorkOrderCheckpoint["kind"];
+  plan_version: number;
+  stage_id: string | null;
+  stage_outcome: string | null;
+  run_number: number;
+  sequence: number;
+  tree_hash: string;
   created_at: string;
 };
 
@@ -94,6 +107,23 @@ export class WorkOrderStore {
         updated_at TEXT NOT NULL
       )
     `);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS work_order_checkpoints (
+        id TEXT PRIMARY KEY,
+        work_order_id TEXT NOT NULL,
+        checkpoint_kind TEXT NOT NULL,
+        plan_version INTEGER NOT NULL,
+        stage_id TEXT,
+        stage_outcome TEXT,
+        run_number INTEGER NOT NULL,
+        sequence INTEGER NOT NULL,
+        tree_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
+      );
+      CREATE INDEX IF NOT EXISTS work_order_checkpoints_lookup
+      ON work_order_checkpoints(work_order_id, sequence);
+    `);
     this.addRunEventColumnsToExistingDatabase();
     this.backfillLegacyRunNumbers();
     this.database.exec(`
@@ -111,7 +141,7 @@ export class WorkOrderStore {
       .query<WorkOrderRow, []>("SELECT * FROM work_orders ORDER BY created_at DESC")
       .all();
 
-    return rows.map(mapRow);
+    return rows.map((row) => mapRow(row, this.listCheckpoints(row.id)));
   }
 
   get(id: string): WorkOrder | null {
@@ -119,7 +149,70 @@ export class WorkOrderStore {
       .query<WorkOrderRow, [string]>("SELECT * FROM work_orders WHERE id = ?")
       .get(id);
 
-    return row ? mapRow(row) : null;
+    return row ? mapRow(row, this.listCheckpoints(row.id)) : null;
+  }
+
+  listCheckpoints(id: string): WorkOrderCheckpoint[] {
+    return this.database
+      .query<CheckpointRow, [string]>(`
+        SELECT id, checkpoint_kind, plan_version, stage_id, stage_outcome,
+               run_number, sequence, tree_hash, created_at
+        FROM work_order_checkpoints
+        WHERE work_order_id = ?
+        ORDER BY sequence ASC
+      `)
+      .all(id)
+      .map(mapCheckpointRow);
+  }
+
+  saveCheckpoint(
+    id: string,
+    checkpoint: Omit<WorkOrderCheckpoint, "sequence" | "createdAt">,
+  ): WorkOrderCheckpoint {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这项委托");
+    if (checkpoint.planVersion !== workOrder.plan?.version) {
+      throw new Error("检查点与当前计划版本不一致");
+    }
+    const sequence =
+      (this.database
+        .query<{ sequence: number }, [string]>(`
+          SELECT sequence FROM work_order_checkpoints
+          WHERE work_order_id = ?
+          ORDER BY sequence DESC LIMIT 1
+        `)
+        .get(id)?.sequence ?? 0) + 1;
+    const createdAt = new Date().toISOString();
+    this.database
+      .query(`
+        INSERT INTO work_order_checkpoints (
+          id, work_order_id, checkpoint_kind, plan_version, stage_id,
+          stage_outcome, run_number, sequence, tree_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        checkpoint.id,
+        id,
+        checkpoint.kind,
+        checkpoint.planVersion,
+        checkpoint.stageId,
+        checkpoint.stageOutcome,
+        checkpoint.runNumber,
+        sequence,
+        checkpoint.treeHash,
+        createdAt,
+      );
+    return { ...checkpoint, sequence, createdAt };
+  }
+
+  latestRecoveryCheckpoint(id: string): WorkOrderCheckpoint | null {
+    const workOrder = this.get(id);
+    if (!workOrder?.plan) return null;
+    return (
+      workOrder.checkpoints
+        .filter((checkpoint) => checkpoint.planVersion === workOrder.plan!.version)
+        .at(-1) ?? null
+    );
   }
 
   getExecutionMapView(): "map" | "list" {
@@ -389,14 +482,30 @@ export class WorkOrderStore {
     return this.get(id)!;
   }
 
-  markContinued(id: string): WorkOrder {
+  markContinued(id: string, summary = "正在继续 Codex"): WorkOrder {
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'running', current_summary = '正在继续 Codex',
+        SET status = 'running', current_summary = ?,
             run_status = 'running', run_number = run_number + 1,
             run_pid = NULL,
+            run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
+            last_error = NULL, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(summary, now, now, now, id);
+    return this.get(id)!;
+  }
+
+  markReexecuted(id: string): WorkOrder {
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = 'running', current_summary = '正在从最近阶段重新执行',
+            run_status = 'running', run_number = run_number + 1,
+            session_id = NULL, run_pid = NULL,
             run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
             last_error = NULL, updated_at = ?
         WHERE id = ?
@@ -522,7 +631,11 @@ export class WorkOrderStore {
     const hasConfiguredCommand = result.verifications.some(
       (verification) => verification.status !== "not_configured",
     );
-    const plan = planWithVerificationStatuses(workOrder?.plan ?? null, result);
+    const plan = planWithVerificationStatuses(
+      workOrder?.plan ?? null,
+      result,
+      checkpointedStageIds(workOrder),
+    );
     const now = new Date().toISOString();
     this.database
       .query(`
@@ -543,7 +656,11 @@ export class WorkOrderStore {
 
   recordVerificationFailure(id: string, result: WorkOrderResult): WorkOrder {
     const workOrder = this.get(id);
-    const plan = planWithVerificationStatuses(workOrder?.plan ?? null, result);
+    const plan = planWithVerificationStatuses(
+      workOrder?.plan ?? null,
+      result,
+      checkpointedStageIds(workOrder),
+    );
     const now = new Date().toISOString();
     const error = "自动验证未通过，请查看验证结果后继续处理";
     this.database
@@ -839,7 +956,10 @@ export class WorkOrderStore {
   }
 }
 
-function mapRow(row: WorkOrderRow): WorkOrder {
+function mapRow(
+  row: WorkOrderRow,
+  checkpoints: WorkOrderCheckpoint[] = [],
+): WorkOrder {
   return {
     id: row.id,
     title: row.title,
@@ -871,11 +991,26 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     runEndedAt: row.run_ended_at,
     runPid: row.run_pid,
     runNumber: row.run_number,
+    checkpoints,
     runtimeMs: currentRuntime(row),
     maxRunMinutes: row.max_run_minutes ?? 60,
     lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapCheckpointRow(row: CheckpointRow): WorkOrderCheckpoint {
+  return {
+    id: row.id,
+    kind: row.checkpoint_kind,
+    planVersion: row.plan_version,
+    stageId: row.stage_id,
+    stageOutcome: row.stage_outcome,
+    runNumber: row.run_number,
+    sequence: row.sequence,
+    treeHash: row.tree_hash,
+    createdAt: row.created_at,
   };
 }
 
@@ -905,6 +1040,7 @@ function normalizeStoredPlan(
 function planWithVerificationStatuses(
   plan: WorkOrderPlan | null,
   result: WorkOrderResult,
+  checkpointedStages = new Set<string>(),
 ): WorkOrderPlan | null {
   if (!plan || result.planVersion !== plan.version) return plan;
   const evidenceByStage = new Map(
@@ -918,8 +1054,10 @@ function planWithVerificationStatuses(
       if (verification.status === "passed") {
         return {
           ...stage,
-          status: "response",
-          statusReason: "自动验证通过，等待阶段检查点",
+          status: checkpointedStages.has(stage.id) ? "completed" : "response",
+          statusReason: checkpointedStages.has(stage.id)
+            ? "验证通过，检查点已保存"
+            : "自动验证通过，等待阶段检查点",
         };
       }
       if (verification.status === "failed") {
@@ -928,6 +1066,24 @@ function planWithVerificationStatuses(
       return { ...stage, status: "response", statusReason: "等待人工验收" };
     }),
   };
+}
+
+function checkpointedStageIds(workOrder: WorkOrder | null | undefined): Set<string> {
+  if (!workOrder?.plan) return new Set();
+  const stageCheckpoints = workOrder.checkpoints.filter(
+    (checkpoint) =>
+      checkpoint.kind === "stage" &&
+      checkpoint.planVersion === workOrder.plan!.version &&
+      checkpoint.stageId,
+  );
+  const finalStageId = workOrder.plan.stages.at(-1)?.id;
+  if (
+    finalStageId &&
+    stageCheckpoints.some((checkpoint) => checkpoint.stageId === finalStageId)
+  ) {
+    return new Set(workOrder.plan.stages.map((stage) => stage.id));
+  }
+  return new Set(stageCheckpoints.map((checkpoint) => checkpoint.stageId!));
 }
 
 function normalizeDependencies(value: unknown): string[] {
