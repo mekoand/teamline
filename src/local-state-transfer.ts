@@ -74,7 +74,7 @@ type ExportedWorkOrder = {
 };
 
 export type RestoreAttention = {
-  kind: "workspace" | "reference" | "session";
+  kind: "workspace" | "reference" | "session" | "resource" | "command";
   label: string;
   location: string;
   status: "needs_attention" | "unverified";
@@ -280,8 +280,20 @@ function redactObject<T>(value: T): T {
 
 function redactString(value: string): string {
   let redacted = value
+    .replace(
+      /\bAuthorization\s*:\s*(Basic|Bearer)\s+[^\s,;]+/gi,
+      "Authorization: $1 [已隐藏凭据]",
+    )
     .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [已隐藏凭据]")
-    .replace(/\b(sk-[A-Za-z0-9_-]{8,}|gh[opsu]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,})\b/g, "[已隐藏凭据]")
+    .replace(
+      /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi,
+      "[已隐藏私钥]",
+    )
+    .replace(/\b(sk-[A-Za-z0-9_-]{8,}|gh[opsu]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, "[已隐藏凭据]")
+    .replace(
+      /\b([A-Z][A-Z0-9_]*(?:API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PASSWORD|SECRET|CREDENTIALS?))\s*[:=]\s*[^\s,;&]+/gi,
+      "$1=[已隐藏凭据]",
+    )
     .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s*[:=]\s*[^\s,;&]+/gi, "$1=[已隐藏凭据]");
   redacted = redacted.replace(/https?:\/\/[^\s<>"']+/gi, (candidate) =>
     sanitizeUrl(candidate),
@@ -325,10 +337,28 @@ function inspectReferences(workOrder: ExportedWorkOrder): RestoreAttention[] {
       reason: "导出不复制运行现场，恢复后不会自动继续旧运行",
     });
   }
+  if (workOrder.resourcePlan.runWhenQuotaAvailable) {
+    attention.push({
+      kind: "resource",
+      label: "自动运行",
+      location: workOrder.title,
+      status: "needs_attention",
+      reason: "恢复不会沿用自动运行授权，请重新确认后手动开启",
+    });
+  }
   for (const material of workOrder.materials) {
     inspectLocation(attention, "reference", material.kind, material.value, material.kind);
   }
   for (const stage of workOrder.executionMap?.stages ?? []) {
+    if (stage.verificationCommand) {
+      attention.push({
+        kind: "command",
+        label: `验证命令 · ${stage.outcome}`,
+        location: stage.verificationCommand,
+        status: "needs_attention",
+        reason: "恢复不会直接启用命令，请在计划中重新确认",
+      });
+    }
     for (const reference of [...stage.materials, ...stage.artifacts]) {
       inspectLocation(attention, "reference", reference.label, reference.location, reference.type);
     }
@@ -443,11 +473,17 @@ function insertWorkOrder(
   id: string,
   copy: boolean,
 ): void {
-  const status = source.status === "running" ? "interrupted" : source.status;
-  const summary =
-    source.status === "running"
-      ? "已恢复委托状态；原运行不会自动继续，请先确认工作空间和会话"
-      : source.currentSummary;
+  const needsReconfirmation = ["ready", "running", "interrupted"].includes(source.status);
+  const status = needsReconfirmation ? "draft" : source.status;
+  const summary = needsReconfirmation
+    ? "已恢复委托状态；请确认计划、工作空间和资源后再运行"
+    : source.currentSummary;
+  const executionMap = safeRestoredPlan(source.executionMap);
+  const resourcePlan = {
+    ...source.resourcePlan,
+    runWhenQuotaAvailable: false,
+    autoRunReason: null,
+  };
   const runNumber = source.checkpoints.reduce(
     (maximum, checkpoint) => Math.max(maximum, checkpoint.runNumber),
     0,
@@ -476,20 +512,18 @@ function insertWorkOrder(
       source.sessionReferences.imported
         ? JSON.stringify(source.sessionReferences.imported)
         : null,
-      JSON.stringify(source.resourcePlan),
+      JSON.stringify(resourcePlan),
       source.goal,
       source.acceptance,
       status,
       summary,
-      source.executionMap ? JSON.stringify(source.executionMap) : null,
+      executionMap ? JSON.stringify(executionMap) : null,
       source.pendingClarification ? JSON.stringify(source.pendingClarification) : null,
       source.revisionNote,
       source.sessionReferences.active,
       runNumber,
       source.maxRunMinutes,
-      status === "interrupted"
-        ? "从本地导出恢复；请确认工作空间和会话后继续"
-        : null,
+      null,
       source.createdAt,
       source.updatedAt,
     );
@@ -533,6 +567,25 @@ function insertWorkOrder(
         message.createdAt,
       );
   }
+}
+
+function safeRestoredPlan(plan: WorkOrderPlan | null): WorkOrderPlan | null {
+  if (!plan) return null;
+  return {
+    ...plan,
+    confirmationRequired: true,
+    stages: plan.stages.map((stage) => {
+      const { verificationCommand: _verificationCommand, ...restored } = stage;
+      return {
+        ...restored,
+        status: stage.status === "running" ? "response" : stage.status,
+        statusReason:
+          stage.status === "running"
+            ? "恢复后需重新确认并启动"
+            : stage.statusReason,
+      };
+    }),
+  };
 }
 
 function parseBundle(value: unknown): LocalStateBundle {
@@ -658,9 +711,11 @@ function parseSessionReferences(value: unknown): ExportedWorkOrder["sessionRefer
 function parsePlan(value: unknown): WorkOrderPlan {
   const plan = object(value, "执行地图格式无法识别");
   exactKeys(plan, ["version", "stages", "confirmationRequired", "updatedAt"], true);
+  const stages = array(plan.stages, parseStage, 10_000);
+  validatePlanGraph(stages);
   return {
     version: integer(plan.version, 1, Number.MAX_SAFE_INTEGER),
-    stages: array(plan.stages, parseStage, 10_000),
+    stages,
     ...(plan.confirmationRequired === true ? { confirmationRequired: true } : {}),
     updatedAt: dateString(plan.updatedAt),
   };
@@ -731,6 +786,10 @@ function parseCheckpoint(value: unknown): WorkOrderCheckpoint {
     "id", "kind", "planVersion", "stageId", "stageOutcome", "runNumber",
     "sequence", "treeHash", "createdAt",
   ]);
+  const treeHash = nonempty(checkpoint.treeHash);
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(treeHash)) {
+    throw new InvalidStateBundleError("检查点引用格式无法识别");
+  }
   return {
     id: nonempty(checkpoint.id),
     kind: oneOf(checkpoint.kind, ["baseline", "stage"] as const),
@@ -739,9 +798,39 @@ function parseCheckpoint(value: unknown): WorkOrderCheckpoint {
     stageOutcome: nullableString(checkpoint.stageOutcome),
     runNumber: integer(checkpoint.runNumber, 0, Number.MAX_SAFE_INTEGER),
     sequence: integer(checkpoint.sequence, 1, Number.MAX_SAFE_INTEGER),
-    treeHash: nonempty(checkpoint.treeHash),
+    treeHash,
     createdAt: dateString(checkpoint.createdAt),
   };
+}
+
+function validatePlanGraph(stages: PlanStage[]): void {
+  if (!stages.length) throw new InvalidStateBundleError("执行地图不能为空");
+  const ids = stages.map((stage) => stage.id);
+  const known = new Set(ids);
+  if (known.size !== ids.length) {
+    throw new InvalidStateBundleError("执行节点标识不能重复");
+  }
+  for (const stage of stages) {
+    if (
+      new Set(stage.dependsOn).size !== stage.dependsOn.length ||
+      stage.dependsOn.includes(stage.id) ||
+      stage.dependsOn.some((dependency) => !known.has(dependency))
+    ) {
+      throw new InvalidStateBundleError("执行节点依赖无法识别");
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const dependencies = new Map(stages.map((stage) => [stage.id, stage.dependsOn]));
+  const visit = (id: string): void => {
+    if (visiting.has(id)) throw new InvalidStateBundleError("执行地图不能包含循环依赖");
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dependency of dependencies.get(id) ?? []) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of ids) visit(id);
 }
 
 function parseDecision(value: unknown): ExportedWorkOrder["conversationDecisions"][number] {

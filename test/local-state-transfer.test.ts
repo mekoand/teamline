@@ -18,7 +18,7 @@ function request(path: string, body?: unknown) {
 function sourceState() {
   const store = new WorkOrderStore(new Database(":memory:"));
   const created = store.create({
-    goal: "恢复本地委托，不要泄露 api_key=super-secret-value",
+    goal: "恢复本地委托，不要泄露 api_key=super-secret-value；Authorization: Basic dXNlcjpwYXNz；GEMINI_API_KEY=AIzaSyDUMMYSECRET1234567890",
     acceptance: "在新数据库预览后恢复；不要访问 https://inline:password@example.test/path?auth=hidden-value",
     workspace: { kind: "directory", path: "/missing/teamline-workspace" },
     materials: [
@@ -69,7 +69,7 @@ function sourceState() {
     stageId: planned.plan!.stages[0]!.id,
     stageOutcome: planned.plan!.stages[0]!.outcome,
     runNumber: 1,
-    treeHash: "0123456789abcdef",
+    treeHash: "0123456789abcdef0123456789abcdef01234567",
   });
   store.database
     .query("UPDATE work_orders SET session_id = ? WHERE id = ?")
@@ -106,7 +106,7 @@ describe("local Teamline state transfer", () => {
             active: "session-runtime-reference",
           },
           executionMap: { version: 1 },
-          checkpoints: [{ treeHash: "0123456789abcdef" }],
+          checkpoints: [{ treeHash: "0123456789abcdef0123456789abcdef01234567" }],
           conversationDecisions: [{ kind: "decision" }],
         },
       ],
@@ -118,6 +118,8 @@ describe("local Teamline state transfer", () => {
     expect(serialized).not.toContain("inline:password");
     expect(serialized).not.toContain("hidden-value");
     expect(serialized).not.toContain("hunter2");
+    expect(serialized).not.toContain("dXNlcjpwYXNz");
+    expect(serialized).not.toContain("AIzaSyDUMMYSECRET1234567890");
     expect(serialized).not.toContain("run_events");
     expect(serialized).not.toContain("runEvents");
     expect(serialized).not.toContain("runPid");
@@ -175,13 +177,17 @@ describe("local Teamline state transfer", () => {
     expect(restored).toMatchObject({
       id: source.id,
       workspace: { kind: "directory", path: "/missing/teamline-workspace" },
-      resourcePlan: { priority: "high", pace: "saving", runWhenQuotaAvailable: true },
+      status: "draft",
+      resourcePlan: { priority: "high", pace: "saving", runWhenQuotaAvailable: false },
       maxRunMinutes: 120,
       sessionId: "session-runtime-reference",
       runStatus: null,
       runPid: null,
-      plan: { stages: [{ artifacts: [{ location: "not-a-link" }] }] },
-      checkpoints: [{ treeHash: "0123456789abcdef" }],
+      plan: {
+        confirmationRequired: true,
+        stages: [{ artifacts: [{ location: "not-a-link" }] }],
+      },
+      checkpoints: [{ treeHash: "0123456789abcdef0123456789abcdef01234567" }],
       conversation: [{ kind: "decision" }],
     });
     expect(targetStore.getExecutionSettings()).toEqual({ maxConcurrency: 3 });
@@ -284,6 +290,77 @@ describe("local Teamline state transfer", () => {
     expect(response.status).toBe(409);
     expect((await response.json()).code).toBe("RESTORE_PREVIEW_STALE");
     expect(targetStore.get(source.id)).toBeNull();
+  });
+
+  test("revokes imported execution authorization and requires plan confirmation", async () => {
+    const source = sourceState();
+    const bundle = await (
+      await createApp({ store: source.store }).fetch(request("/api/local-state/export"))
+    ).json();
+    bundle.workOrders[0].status = "running";
+    bundle.workOrders[0].resourcePlan.runWhenQuotaAvailable = true;
+    bundle.workOrders[0].executionMap.stages[0].verificationCommand =
+      "touch /tmp/teamline-restore-must-not-run";
+    bundle.workOrders[0].executionMap.stages[0].status = "running";
+    const targetStore = new WorkOrderStore(new Database(":memory:"));
+    const target = createApp({ store: targetStore });
+
+    const previewResponse = await target.fetch(
+      request("/api/local-state/restore/preview", { bundle }),
+    );
+    const preview = await previewResponse.json();
+    expect(preview.workOrders[0].attention).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "resource", status: "needs_attention" }),
+        expect.objectContaining({ kind: "command", status: "needs_attention" }),
+        expect.objectContaining({ kind: "workspace", status: "needs_attention" }),
+      ]),
+    );
+
+    const confirmed = await target.fetch(
+      request("/api/local-state/restore/confirm", { previewId: preview.previewId }),
+    );
+    expect(confirmed.status).toBe(201);
+    const restored = targetStore.get(source.id)!;
+    expect(restored).toMatchObject({
+      status: "draft",
+      runStatus: null,
+      worktreePath: null,
+      resourcePlan: { runWhenQuotaAvailable: false, autoRunReason: null },
+      plan: {
+        confirmationRequired: true,
+        stages: [{ status: "response", statusReason: "恢复后需重新确认并启动" }],
+      },
+    });
+    expect(restored.plan!.stages[0]!.verificationCommand).toBeUndefined();
+    expect(() =>
+      targetStore.saveWorkspace(source.id, { kind: "directory", path: "/tmp" }),
+    ).not.toThrow();
+  });
+
+  test("rejects invalid checkpoint references and cyclic execution maps", async () => {
+    const source = sourceState();
+    const exported = await (
+      await createApp({ store: source.store }).fetch(request("/api/local-state/export"))
+    ).json();
+    const target = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+
+    const invalidCheckpoint = structuredClone(exported);
+    invalidCheckpoint.workOrders[0].checkpoints[0].treeHash = "deadbeef";
+    const checkpointResponse = await target.fetch(
+      request("/api/local-state/restore/preview", { bundle: invalidCheckpoint }),
+    );
+    expect(checkpointResponse.status).toBe(400);
+    expect((await checkpointResponse.json()).code).toBe("INVALID_STATE_BUNDLE");
+
+    const cyclicPlan = structuredClone(exported);
+    const stageId = cyclicPlan.workOrders[0].executionMap.stages[0].id;
+    cyclicPlan.workOrders[0].executionMap.stages[0].dependsOn = [stageId];
+    const cycleResponse = await target.fetch(
+      request("/api/local-state/restore/preview", { bundle: cyclicPlan }),
+    );
+    expect(cycleResponse.status).toBe(400);
+    expect((await cycleResponse.json()).code).toBe("INVALID_STATE_BUNDLE");
   });
 
   test("rejects unknown fields and embedded credential properties before preview", async () => {
