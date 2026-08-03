@@ -75,6 +75,7 @@ function blockingReason(
 ): string | null {
   if (workOrder.status !== "ready" || !workOrder.plan) return "等待确认计划";
   if (workOrder.plan.confirmationRequired) return "计划已更新，等待重新确认";
+  if (hasRunnableExternalStage(workOrder)) return "等待完成外部节点";
   if (!workOrder.workspace) return "等待选择工作空间";
   if (!hasRunnableStage(workOrder)) return "等待前置节点完成";
   if (!Number.isFinite(workOrder.maxRunMinutes) || workOrder.maxRunMinutes <= 0) {
@@ -99,6 +100,18 @@ function blockingReason(
   return null;
 }
 
+function hasRunnableExternalStage(workOrder: WorkOrder): boolean {
+  const plan = workOrder.plan;
+  if (!plan) return false;
+  const completed = completedStageIds(workOrder);
+  return plan.stages.some(
+    (stage) =>
+      stage.executionMethod === "external" &&
+      stage.status !== "completed" &&
+      stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
+  );
+}
+
 function canonicalWorkspacePath(workspacePath: string): string {
   const absolutePath = resolve(workspacePath);
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
@@ -107,6 +120,18 @@ function canonicalWorkspacePath(workspacePath: string): string {
 function hasRunnableStage(workOrder: WorkOrder): boolean {
   const plan = workOrder.plan;
   if (!plan) return false;
+  const completed = completedStageIds(workOrder);
+  return plan.stages.some(
+    (stage) =>
+      stage.executionMethod === "codex" &&
+      ["planning", "queued"].includes(stage.status) &&
+      stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
+  );
+}
+
+function completedStageIds(workOrder: WorkOrder): Set<string> {
+  const plan = workOrder.plan;
+  if (!plan) return new Set();
   const completed = new Set(
     plan.stages
       .filter((stage) => stage.status === "completed")
@@ -121,12 +146,7 @@ function hasRunnableStage(workOrder: WorkOrder): boolean {
       completed.add(checkpoint.stageId);
     }
   }
-  return plan.stages.some(
-    (stage) =>
-      stage.executionMethod === "codex" &&
-      ["planning", "queued"].includes(stage.status) &&
-      stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
-  );
+  return completed;
 }
 
 function quotaBlockingReason(

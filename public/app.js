@@ -672,7 +672,15 @@ function renderPlanForm(stages) {
               <label><span>目标结果</span><textarea name="outcome" rows="2" required>${escapeHtml(stage.outcome ?? "")}</textarea></label>
               <label><span>预计影响范围</span><textarea name="scope" rows="2" required>${escapeHtml(stage.scope ?? "")}</textarea></label>
               <label><span>验证方式</span><textarea name="verification" rows="2" required>${escapeHtml(stage.verification ?? "")}</textarea></label>
-              <label><span>自动验证命令 <em>可选</em></span><input name="verificationCommand" value="${escapeHtml(stage.verificationCommand ?? "")}" placeholder="例如：bun test" /></label>
+              <label><span>执行方式</span>
+                <select name="executionMethod" data-execution-method>
+                  <option value="codex" ${stage.executionMethod !== "external" ? "selected" : ""}>AI 执行</option>
+                  <option value="external" ${stage.executionMethod === "external" ? "selected" : ""}>外部工作</option>
+                </select>
+              </label>
+              ${stage.executionMethod === "external"
+                ? ""
+                : `<label><span>自动验证命令 <em>可选</em></span><input name="verificationCommand" value="${escapeHtml(stage.verificationCommand ?? "")}" placeholder="例如：bun test" /></label>`}
               <label><span>依赖节点 <em>可多选</em></span>
                 <select name="dependsOn" multiple size="${Math.min(3, Math.max(2, stages.length - 1))}">
                   ${stages
@@ -685,7 +693,6 @@ function renderPlanForm(stages) {
                 </select>
               </label>
               <div class="plan-stage-metadata">
-                <span>执行方式：${escapeHtml(executionMethodLabel(stage.executionMethod))}</span>
                 <span>工作空间：${escapeHtml(workspaceLabel(stage.workspace))}</span>
               </div>
             </article>`,
@@ -824,10 +831,13 @@ function renderContextTabContent(workOrder, stage) {
       <div class="context-stage context-tab-panel" role="tabpanel">
         <h3>节点成果</h3>
         <div class="reference-list">
+          ${stage.externalResult?.conclusion
+            ? `<article class="reference-card"><span>完成结论</span><strong>${escapeHtml(stage.externalResult.conclusion)}</strong><code>${formatDate(stage.externalResult.completedAt)}</code></article>`
+            : ""}
           ${references.length ? references.map(renderReference).join("") : ""}
           ${verification
             ? `<article class="reference-card"><span>验证结果</span><strong>${escapeHtml(verificationLabel(verification.status))}</strong><code>${escapeHtml(verification.command || "人工检查")}</code></article>`
-            : references.length ? "" : '<p class="muted">执行后，成果引用与验证结果会集中显示在这里。</p>'}
+            : references.length || stage.externalResult?.conclusion ? "" : '<p class="muted">执行后，成果引用与验证结果会集中显示在这里。</p>'}
         </div>
       </div>`;
   }
@@ -839,9 +849,9 @@ function renderContextTabContent(workOrder, stage) {
       <dl class="context-list">
         <div><dt>影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
         <div><dt>执行方式</dt><dd>${escapeHtml(executionMethodLabel(stage.executionMethod))}</dd></div>
-        <div><dt>工作空间</dt><dd><code>${escapeHtml(resolvedWorkspacePath(workOrder, stage))}</code></dd></div>
+        <div><dt>${stage.executionMethod === "external" ? "成果位置" : "工作空间"}</dt><dd><code>${escapeHtml(stage.executionMethod === "external" ? "保留在原位置" : resolvedWorkspacePath(workOrder, stage))}</code></dd></div>
         <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
-        <div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>
+        ${stage.executionMethod === "external" ? "" : `<div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>`}
         <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
         <div><dt>补充上下文</dt><dd>${stage.contextNotes?.length ? stage.contextNotes.map(escapeHtml).join("；") : "暂无"}</dd></div>
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
@@ -861,6 +871,71 @@ function renderReference(reference) {
 }
 
 function renderContextAction(workOrder) {
+  if (state.draftStages !== null) {
+    return '<section class="context-action"><p class="overline">正在编辑计划</p><strong>先保存计划再继续</strong><p>执行和成果登记会使用保存后的节点。</p></section>';
+  }
+  const stage = workOrder.plan?.stages?.[state.selectedStageIndex];
+  const needsStageConfirmation = workOrder.plan?.stages?.some(
+    (candidate) =>
+      candidate.executionMethod === "codex" &&
+      candidate.status === "response" &&
+      workOrder.result?.verifications?.some(
+        (verification) =>
+          verification.stageId === candidate.id && verification.status === "not_configured",
+      ),
+  ) && workOrder.plan?.stages?.some((candidate) => candidate.executionMethod === "external");
+  if (workOrder.status === "ready" && !workOrder.runStatus && stage?.executionMethod === "external") {
+    if (stage.status === "completed") {
+      return '<section class="context-action completed-action"><strong>这个外部节点已完成。</strong><p>成果仍保留在原位置；选择后续节点继续。</p></section>';
+    }
+    if (!stageDependenciesCompleted(workOrder, stage)) {
+      return '<section class="context-action"><p class="overline">下一步</p><strong>等待前置节点完成</strong><p>依赖完成后，这里会显示外部成果登记入口。</p></section>';
+    }
+    return `
+      <section class="context-action">
+        <p class="overline">下一步</p>
+        <strong>在外部完成后登记结果</strong>
+        <p>Teamline 只保存结论和原始位置，不复制或自动核验正文。</p>
+        <form id="external-completion-form">
+          <label><span>简短结论 <em>可选</em></span><textarea name="conclusion" rows="3" placeholder="说明完成了什么"></textarea></label>
+          <label><span>成果引用 <em>可选</em></span>
+            <select name="referenceType">
+              <option value="">不添加引用</option>
+              <option value="file">本地文件</option>
+              <option value="link">外部链接</option>
+            </select>
+          </label>
+          <label><span>原始位置</span><input name="referenceLocation" placeholder="本地文件路径或 https:// 链接" autocomplete="off" /></label>
+          <button class="primary-button full-button" id="complete-external-stage" type="submit">标记节点完成</button>
+        </form>
+      </section>`;
+  }
+  if (
+    needsStageConfirmation &&
+    (workOrder.status === "ready" || workOrder.status === "review")
+  ) {
+    return `
+      <section class="context-action">
+        <p class="overline">下一步</p>
+        <strong>确认当前 AI 节点结果</strong>
+        <p>这个节点没有自动核验命令。确认后，Teamline 才会把该 AI 节点记为完成。</p>
+        <button class="primary-button full-button" id="confirm-stage-results" type="button">确认节点结果并继续</button>
+      </section>`;
+  }
+  if (
+    workOrder.status === "ready" &&
+    !workOrder.runStatus &&
+    stage?.executionMethod === "codex" &&
+    !stageDependenciesCompleted(workOrder, stage)
+  ) {
+    return '<section class="context-action"><p class="overline">下一步</p><strong>等待前置节点完成</strong><p>依赖完成后可以启动 Codex。</p></section>';
+  }
+  const waitingExternalStage = workOrder.plan?.stages?.find(
+    (candidate) => candidate.executionMethod === "external" && candidate.status === "response",
+  );
+  if (workOrder.status === "ready" && !workOrder.runStatus && waitingExternalStage) {
+    return `<section class="context-action"><p class="overline">下一步</p><strong>先完成外部节点</strong><p>请先处理“${escapeHtml(waitingExternalStage.outcome)}”，登记结果后再启动 Codex。</p></section>`;
+  }
   if (workOrder.status === "ready" && !workOrder.runStatus) {
     const queued = visibleStatus(workOrder, state.workOrders).status === "queued";
     const suggestedPath = workOrder.materials?.find(
@@ -1052,6 +1127,12 @@ function bindRenderedEvents() {
       renderConsole();
     });
   });
+  document.querySelectorAll("[data-execution-method]").forEach((select) => {
+    select.addEventListener("change", () => {
+      state.draftStages = readPlanStages();
+      renderConsole();
+    });
+  });
 
   document.querySelector("#max-run-minutes")?.addEventListener("change", async (event) => {
     const select = event.currentTarget;
@@ -1068,6 +1149,50 @@ function bindRenderedEvents() {
       setFeedback("execution-feedback", messageFrom(error, "无法保存最长运行时间。"), true);
     }
   });
+
+  document.querySelector("#external-completion-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const stage = state.selected?.plan?.stages?.[state.selectedStageIndex];
+    if (!stage) return;
+    const data = new FormData(event.currentTarget);
+    const conclusion = String(data.get("conclusion") ?? "");
+    const referenceType = String(data.get("referenceType") ?? "");
+    const referenceLocation = String(data.get("referenceLocation") ?? "");
+    const button = document.querySelector("#complete-external-stage");
+    setBusy(button, "正在保存…");
+    try {
+      const result = await requestJson(
+        `/api/work-orders/${encodedSelectedId()}/plan-stages/${encodeURIComponent(stage.id)}/complete-external`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            conclusion,
+            ...(referenceType
+              ? {
+                  reference: {
+                    type: referenceType,
+                    location: referenceLocation,
+                  },
+                }
+              : {}),
+          }),
+        },
+      );
+      await acceptWorkOrderResult(result.workOrder, "外部节点已完成，后续节点可以继续。");
+    } catch (error) {
+      resetBusy(button, "标记节点完成");
+      setFeedback("execution-feedback", messageFrom(error, "无法保存外部成果。"), true);
+    }
+  });
+
+  bindAction(
+    "#confirm-stage-results",
+    "正在确认…",
+    "确认节点结果并继续",
+    "confirm-stage-results",
+    "正在确认当前 AI 节点结果。",
+  );
 
   bindAction("#start-work-order", "正在准备…", "确认计划并启动", "start", "Teamline 正在创建委托工作区并启动 Codex。");
   bindAction("#interrupt-work-order", "正在停止…", "中断运行", "interrupt", "正在请求 Codex 停止。");
@@ -1135,6 +1260,7 @@ function bindAction(selector, busyLabel, idleLabel, endpoint, pendingMessage) {
 }
 
 async function acceptWorkOrderResult(workOrder, feedback = "") {
+  state.draftStages = null;
   state.selected = workOrder;
   await refreshConsole({ polling: true });
   if (feedback) setFeedback("plan-feedback", feedback, false);
@@ -1370,12 +1496,17 @@ function readPlanStages() {
       outcome: stage.querySelector('[name="outcome"]').value,
       scope: stage.querySelector('[name="scope"]').value,
       verification: stage.querySelector('[name="verification"]').value,
-      verificationCommand: stage.querySelector('[name="verificationCommand"]').value,
+      verificationCommand: stage.querySelector('[name="verificationCommand"]')?.value ?? "",
       dependsOn: [...stage.querySelector('[name="dependsOn"]').selectedOptions].map(
         (option) => option.value,
       ),
-      executionMethod: source.executionMethod ?? "codex",
-      workspace: source.workspace ?? { kind: "git", path: state.selected.repositoryPath },
+      executionMethod: stage.querySelector('[name="executionMethod"]').value,
+      workspace:
+        stage.querySelector('[name="executionMethod"]').value === "external"
+          ? { kind: "external", path: null }
+          : source.workspace?.kind === "external"
+            ? { kind: state.selected.workspace?.kind ?? "git", path: state.selected.workspace?.path ?? null }
+            : source.workspace ?? { kind: "git", path: state.selected.repositoryPath },
       materials: source.materials ?? [],
       artifacts: source.artifacts ?? [],
     };
@@ -1516,10 +1647,20 @@ function shortPath(path) {
 }
 
 function executionMethodLabel(method) {
-  return method === "external" ? "外部工作" : "Codex · AI 执行";
+  return method === "external" ? "外部工作" : "AI 执行";
+}
+
+function stageDependenciesCompleted(workOrder, stage) {
+  const completed = new Set(
+    (workOrder.plan?.stages ?? [])
+      .filter((candidate) => candidate.status === "completed")
+      .map((candidate) => candidate.id),
+  );
+  return (stage.dependsOn ?? []).every((dependencyId) => completed.has(dependencyId));
 }
 
 function workspaceLabel(workspace) {
+  if (workspace?.kind === "external") return "成果保留原位置";
   if (!workspace?.path) return "启动前选择";
   return {
     git: "Git 委托工作区",
@@ -1529,6 +1670,7 @@ function workspaceLabel(workspace) {
 }
 
 function resolvedWorkspacePath(workOrder, stage) {
+  if (stage.workspace?.kind === "external") return "成果保留原位置";
   if (stage.workspace?.kind === "git") {
     return (
       workOrder.worktreePath ||

@@ -50,6 +50,17 @@ describe("personal console", () => {
     expect(script).toContain('/workspace`');
   });
 
+  test("offers external work selection and a result-reference next step", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain('<select name="executionMethod" data-execution-method>');
+    expect(script).toContain('<option value="external"');
+    expect(script).toContain('id="external-completion-form"');
+    expect(script).toContain("Teamline 只保存结论和原始位置，不复制或自动核验正文。");
+    expect(script).toContain("/complete-external`");
+  });
+
   test("serves the resource summary and resource-page navigation", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
 

@@ -137,6 +137,20 @@ describe("work-order resource scheduling", () => {
     decision = decideAutoRun(store.list(), availableQuota(), 2);
     expect(decision.reasons.get(noWorkspace.id)).toBe("等待选择工作空间");
 
+    const external = store.create({ goal: "等待外部设计" });
+    store.savePlan(external.id, [
+      {
+        outcome: "完成设计",
+        scope: "外部工具",
+        verification: "用户确认",
+        executionMethod: "external",
+      },
+    ]);
+    enable(store, external.id);
+    decision = decideAutoRun(store.list(), availableQuota(), 2);
+    expect(decision.candidateId).toBeNull();
+    expect(decision.reasons.get(external.id)).toBe("等待完成外部节点");
+
     store.saveWorkspace(noWorkspace.id, { kind: "directory", path: "/tmp/teamline" });
     decision = decideAutoRun(
       store.list(),

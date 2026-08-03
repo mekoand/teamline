@@ -493,6 +493,25 @@ export function createApp({
             { status: 409 },
           );
         }
+        const runnableStages = nextRunnableStages(workOrder);
+        const externalStage = runnableStages.find(
+          (stage) => stage.executionMethod === "external",
+        );
+        if (externalStage) {
+          return Response.json(
+            {
+              code: "EXTERNAL_STAGE_ACTION_REQUIRED",
+              error: `请先在外部完成“${externalStage.outcome}”，再回到 Teamline 标记结果`,
+            },
+            { status: 409 },
+          );
+        }
+        if (!runnableStages.some((stage) => stage.executionMethod === "codex")) {
+          return Response.json(
+            { code: "NO_RUNNABLE_CODEX_STAGE", error: "当前没有可以启动的 Codex 节点" },
+            { status: 409 },
+          );
+        }
         if (!workOrder.workspace) {
           return Response.json(
             {
@@ -604,7 +623,7 @@ export function createApp({
           let run;
           try {
             run = await codexRunner.start({
-              workOrder: startedWorkOrder,
+              workOrder: codexRunWorkOrder(startedWorkOrder),
               workspacePath: workspacePath!,
             });
           } catch (error) {
@@ -768,7 +787,7 @@ export function createApp({
                   sessionId: workOrder.sessionId,
                 })
               : await codexRunner.start({
-                  workOrder: continued,
+                  workOrder: codexRunWorkOrder(continued),
                   workspacePath,
                   continuation: await continuationContext(
                     store,
@@ -809,7 +828,7 @@ export function createApp({
                       "保存的 Codex 会话不可用，已使用当前现场启动新的执行",
                     );
                     return codexRunner.start({
-                      workOrder: store.get(id)!,
+                      workOrder: codexRunWorkOrder(store.get(id)!),
                       workspacePath,
                       continuation: context,
                     });
@@ -930,7 +949,7 @@ export function createApp({
           let run;
           try {
             run = await codexRunner.start({
-              workOrder: reexecuted,
+              workOrder: codexRunWorkOrder(reexecuted),
               workspacePath: resolvedWorkspace.path,
               continuation: {
                 ...(await continuationContext(store, id, resolvedWorkspace.path)),
@@ -1018,6 +1037,75 @@ export function createApp({
               error: message,
             },
             { status: invalidState ? 409 : 400 },
+          );
+        }
+      }
+
+      const externalStageMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/plan-stages\/([^/]+)\/complete-external$/,
+      );
+      if (request.method === "POST" && externalStageMatch) {
+        const id = decodeURIComponent(externalStageMatch[1]);
+        const stageId = decodeURIComponent(externalStageMatch[2]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as {
+            conclusion?: string;
+            reference?: { type?: string; label?: string; location?: string };
+          };
+          const reference = body.reference
+            ? {
+                type: body.reference.type as "file" | "link",
+                label: body.reference.label,
+                location: body.reference.location ?? "",
+              }
+            : undefined;
+          const workOrder = store.completeExternalStage(id, stageId, {
+            conclusion: body.conclusion,
+            reference,
+          });
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "无法标记外部节点完成";
+          return Response.json(
+            {
+              code:
+                error instanceof PlanLockedError
+                  ? "EXTERNAL_STAGE_LOCKED"
+                  : "INVALID_EXTERNAL_STAGE_RESULT",
+              error: message,
+            },
+            { status: error instanceof PlanLockedError ? 409 : 400 },
+          );
+        }
+      }
+
+      const confirmStageResultsMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/confirm-stage-results$/,
+      );
+      if (request.method === "POST" && confirmStageResultsMatch) {
+        const id = decodeURIComponent(confirmStageResultsMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          const workOrder = store.confirmCurrentCodexResults(id);
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "无法确认 AI 节点结果";
+          return Response.json(
+            { code: "STAGE_RESULT_CONFIRMATION_LOCKED", error: message },
+            { status: error instanceof PlanLockedError ? 409 : 400 },
           );
         }
       }
@@ -1476,7 +1564,9 @@ async function consumeRunEvents(
           options.clearRunTimeout?.();
           const verifying = store.beginResultProcessing(workOrderId, event.message);
           try {
-            const result = await options.resultProcessor.process(verifying);
+            const result = await options.resultProcessor.process(
+              codexRunWorkOrder(verifying),
+            );
             await saveVerifiedBoundaryCheckpoint(
               store,
               workOrderId,
@@ -1541,12 +1631,14 @@ async function saveVerifiedBoundaryCheckpoint(
   const verificationsByStage = new Map(
     result.verifications.map((verification) => [verification.stageId, verification]),
   );
-  const completeBoundary = workOrder.plan.stages.every(
-    (stage) => verificationsByStage.get(stage.id)?.status === "passed",
-  );
+  const completeBoundary =
+    result.verifications.length > 0 &&
+    result.verifications.every((verification) => verification.status === "passed");
   if (!completeBoundary) return;
 
-  const finalStage = workOrder.plan.stages.at(-1);
+  const finalStage = workOrder.plan.stages
+    .filter((stage) => verificationsByStage.has(stage.id))
+    .at(-1);
   if (!finalStage) return;
   const checkpointId = crypto.randomUUID();
   const treeHash = await checkpointManager.capture(
@@ -1764,6 +1856,36 @@ function findImportedSession(
 
 function planIsEditable(workOrder: { status: string; runStatus: string | null }): boolean {
   return workOrder.runStatus === null && ["draft", "ready"].includes(workOrder.status);
+}
+
+function nextRunnableStages(workOrder: WorkOrder): PlanStage[] {
+  if (!workOrder.plan) return [];
+  const completed = new Set(
+    workOrder.plan.stages
+      .filter((stage) => stage.status === "completed")
+      .map((stage) => stage.id),
+  );
+  return workOrder.plan.stages.filter(
+    (stage) =>
+      (stage.executionMethod === "external"
+        ? stage.status === "response"
+        : stage.status === "planning" || stage.status === "running") &&
+      stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
+  );
+}
+
+function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
+  if (!workOrder.plan) return workOrder;
+  const running = workOrder.plan.stages.filter(
+    (stage) => stage.executionMethod === "codex" && stage.status === "running",
+  );
+  const stages = running.length
+    ? running
+    : nextRunnableStages(workOrder).filter((stage) => stage.executionMethod === "codex");
+  return {
+    ...workOrder,
+    plan: { ...workOrder.plan, stages },
+  };
 }
 
 function safeCodexStartError(error: unknown): string {

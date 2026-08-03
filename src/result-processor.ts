@@ -20,7 +20,9 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
     }
 
     const verifications: VerificationResult[] = [];
-    for (const stage of workOrder.plan.stages) {
+    for (const stage of workOrder.plan.stages.filter(
+      (candidate) => candidate.executionMethod === "codex",
+    )) {
       const command = stage.verificationCommand?.trim();
       if (!command) {
         verifications.push({

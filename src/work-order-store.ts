@@ -684,7 +684,10 @@ export class WorkOrderStore {
     const normalizedStages = stages.map((stage, index) => {
       const dependsOn = normalizeDependencies(stage.dependsOn);
       const executionMethod = normalizeExecutionMethod(stage.executionMethod);
-      const workspace = normalizeWorkspace(stage.workspace, expectedWorkspace);
+      const workspace =
+        executionMethod === "external"
+          ? ({ kind: "external", path: null } as const)
+          : normalizeWorkspace(stage.workspace, expectedWorkspace);
       if (
         dependsOn.includes(stageIds[index]!) ||
         dependsOn.some((dependencyId) => !validStageIds.has(dependencyId))
@@ -692,9 +695,9 @@ export class WorkOrderStore {
         throw new Error("计划节点依赖无效");
       }
       if (
-        executionMethod !== "codex" ||
-        workspace.kind !== expectedWorkspace.kind ||
-        workspace.path !== expectedWorkspace.path
+        executionMethod === "codex" &&
+        (workspace.kind !== expectedWorkspace.kind ||
+          workspace.path !== expectedWorkspace.path)
       ) {
         throw new Error("计划节点必须使用当前委托选择的执行工作空间");
       }
@@ -703,7 +706,8 @@ export class WorkOrderStore {
         outcome: stage.outcome.trim(),
         scope: stage.scope.trim(),
         verification: stage.verification.trim(),
-        ...(typeof stage.verificationCommand === "string" &&
+        ...(executionMethod === "codex" &&
+        typeof stage.verificationCommand === "string" &&
         stage.verificationCommand.trim()
           ? { verificationCommand: stage.verificationCommand.trim() }
           : {}),
@@ -715,8 +719,16 @@ export class WorkOrderStore {
         ...(normalizeContextNotes(stage.contextNotes).length
           ? { contextNotes: normalizeContextNotes(stage.contextNotes) }
           : {}),
-        status: "planning" as const,
-        statusReason: "等待确认并启动",
+        status: executionMethod === "external" && dependsOn.length === 0
+          ? ("response" as const)
+          : executionMethod === "external"
+            ? ("queued" as const)
+            : ("planning" as const),
+        statusReason: executionMethod === "external"
+          ? dependsOn.length === 0
+            ? "等待你在外部完成并标记"
+            : "等待前置节点完成"
+          : "等待确认并启动",
       };
     });
 
@@ -747,6 +759,106 @@ export class WorkOrderStore {
       `)
       .run(JSON.stringify(plan), "ready", "计划等待确认", now, id);
 
+    return this.get(id)!;
+  }
+
+  completeExternalStage(
+    id: string,
+    stageId: string,
+    input: {
+      conclusion?: string;
+      reference?: { type: "file" | "link"; label?: string; location: string };
+    },
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder?.plan) throw new Error("找不到可更新的委托计划");
+    if (workOrder.runStatus !== null || workOrder.status !== "ready") {
+      throw new PlanLockedError("当前状态不能标记外部节点完成");
+    }
+    const stage = workOrder.plan.stages.find((candidate) => candidate.id === stageId);
+    if (!stage) throw new Error("找不到这个计划节点");
+    if (stage.executionMethod !== "external") {
+      throw new Error("只有外部工作节点可以这样完成");
+    }
+    if (stage.status === "completed") throw new Error("这个外部节点已经完成");
+
+    const completedIds = new Set(
+      workOrder.plan.stages
+        .filter((candidate) => candidate.status === "completed")
+        .map((candidate) => candidate.id),
+    );
+    if (!stage.dependsOn.every((dependencyId) => completedIds.has(dependencyId))) {
+      throw new Error("请先完成这个节点的前置工作");
+    }
+
+    const conclusion = input.conclusion?.trim() || null;
+    const reference = normalizeExternalCompletionReference(input.reference);
+    if (!conclusion && !reference) {
+      throw new Error("请填写简短结论，或添加本地文件或外部链接");
+    }
+
+    const now = new Date().toISOString();
+    completedIds.add(stageId);
+    const nextPlan: WorkOrderPlan = {
+      ...workOrder.plan,
+      updatedAt: now,
+      stages: workOrder.plan.stages.map((candidate) => {
+        if (candidate.id === stageId) {
+          return {
+            ...candidate,
+            artifacts: reference ? [...candidate.artifacts, reference] : candidate.artifacts,
+            externalResult: { conclusion, completedAt: now },
+            status: "completed" as const,
+            statusReason: "已由你标记完成",
+          };
+        }
+        if (candidate.status === "completed") return candidate;
+        const dependenciesReady = candidate.dependsOn.every((dependencyId) =>
+          completedIds.has(dependencyId),
+        );
+        if (candidate.executionMethod === "external") {
+          return {
+            ...candidate,
+            status: dependenciesReady ? ("response" as const) : ("queued" as const),
+            statusReason: dependenciesReady
+              ? "等待你在外部完成并标记"
+              : "等待前置节点完成",
+          };
+        }
+        if (candidate.status === "response") return candidate;
+        return {
+          ...candidate,
+          status: dependenciesReady ? ("planning" as const) : ("queued" as const),
+          statusReason: dependenciesReady
+            ? "前置节点已完成，可以启动 Codex"
+            : "等待前置节点完成",
+        };
+      }),
+    };
+    const allCompleted = nextPlan.stages.every((candidate) => candidate.status === "completed");
+    const hasReadyWork = nextPlan.stages.some(
+      (candidate) =>
+        (candidate.executionMethod === "external" && candidate.status === "response") ||
+        (candidate.executionMethod === "codex" && candidate.status === "planning"),
+    );
+    const summary = allCompleted
+      ? "全部节点已完成，等待验收"
+      : hasReadyWork
+        ? nextPlanSummary(nextPlan)
+        : "等待人工验收";
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET plan_json = ?, status = ?, current_summary = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        JSON.stringify(nextPlan),
+        allCompleted || !hasReadyWork ? "review" : "ready",
+        summary,
+        now,
+        id,
+      );
     return this.get(id)!;
   }
 
@@ -828,7 +940,17 @@ export class WorkOrderStore {
   markStarted(id: string): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder?.plan) throw new Error("找不到可执行的委托计划");
-    const confirmedPlan = { ...workOrder.plan, confirmationRequired: false };
+    const runnableStageIds = codexStageIdsForNextRun(workOrder.plan);
+    if (runnableStageIds.size === 0) throw new Error("当前没有可以启动的 Codex 节点");
+    const confirmedPlan = {
+      ...workOrder.plan,
+      confirmationRequired: false,
+      stages: workOrder.plan.stages.map((stage) =>
+        runnableStageIds.has(stage.id)
+          ? { ...stage, status: "running" as const, statusReason: "Codex 执行中" }
+          : stage,
+      ),
+    };
     const now = new Date().toISOString();
     this.database
       .query(`
@@ -878,15 +1000,17 @@ export class WorkOrderStore {
   }
 
   recordStartFailure(id: string, error: string, summary: string): WorkOrder {
+    const workOrder = this.get(id);
     const now = new Date().toISOString();
+    const plan = workOrder?.plan ? resetRunningCodexStages(workOrder.plan) : null;
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'ready', current_summary = ?, run_status = NULL,
+        SET status = 'ready', current_summary = ?, run_status = NULL, plan_json = ?,
             last_error = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(summary, error, now, id);
+      .run(summary, plan ? JSON.stringify(plan) : null, error, now, id);
     return this.get(id)!;
   }
 
@@ -994,23 +1118,103 @@ export class WorkOrderStore {
     const hasConfiguredCommand = result.verifications.some(
       (verification) => verification.status !== "not_configured",
     );
-    const plan = planWithVerificationStatuses(
+    let plan = planWithVerificationStatuses(
       workOrder?.plan ?? null,
       result,
       checkpointedStageIds(workOrder),
     );
+    const mergedResult = mergeResults(workOrder?.result ?? null, result);
+    const pendingExternal = plan?.stages.some(
+      (stage) => stage.executionMethod === "external" && stage.status !== "completed",
+    ) === true;
+    if (pendingExternal && plan) {
+      plan = advanceAfterCodexRun(plan, result);
+    }
+    const externalReady = plan?.stages.some(
+      (stage) => stage.executionMethod === "external" && stage.status === "response",
+    ) === true;
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'review', run_status = 'completed', result_json = ?, plan_json = ?,
+        SET status = ?, run_status = ?, result_json = ?, plan_json = ?,
             current_summary = ?, last_error = NULL, updated_at = ?
         WHERE id = ? AND run_status = 'verifying'
       `)
       .run(
-        JSON.stringify(result),
+        externalReady ? "ready" : "review",
+        externalReady ? null : "completed",
+        JSON.stringify(mergedResult),
         plan ? JSON.stringify(plan) : null,
-        hasConfiguredCommand ? "自动验证通过，等待人工验收" : "等待人工验收",
+        externalReady
+          ? nextPlanSummary(plan)
+          : pendingExternal
+            ? "请确认当前 AI 节点结果后继续"
+            : hasConfiguredCommand
+              ? "自动验证通过，等待人工验收"
+              : "等待人工验收",
+        now,
+        id,
+      );
+    return this.get(id)!;
+  }
+
+  confirmCurrentCodexResults(id: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (
+      !workOrder?.plan ||
+      !workOrder.result ||
+      workOrder.result.planVersion !== workOrder.plan.version ||
+      !(
+        (workOrder.status === "review" &&
+          (workOrder.runStatus === "completed" || workOrder.runStatus === null)) ||
+        (workOrder.status === "ready" && workOrder.runStatus === null)
+      )
+    ) {
+      throw new PlanLockedError("当前没有需要确认的 AI 节点结果");
+    }
+    const hasExternalStage = workOrder.plan.stages.some(
+      (stage) => stage.executionMethod === "external",
+    );
+    const verificationByStage = new Map(
+      workOrder.result.verifications.map((verification) => [verification.stageId, verification]),
+    );
+    const confirmedIds = new Set(
+      workOrder.plan.stages
+        .filter(
+          (stage) =>
+            stage.executionMethod === "codex" &&
+            stage.status === "response" &&
+            verificationByStage.get(stage.id)?.status === "not_configured",
+        )
+        .map((stage) => stage.id),
+    );
+    if (!hasExternalStage || confirmedIds.size === 0) {
+      throw new PlanLockedError("当前没有需要确认的 AI 节点结果");
+    }
+
+    const now = new Date().toISOString();
+    const plan = advancePlanWithCompletedStages(
+      workOrder.plan,
+      confirmedIds,
+      "已由你确认完成",
+    );
+    const hasReadyWork = plan.stages.some(
+      (stage) =>
+        (stage.executionMethod === "external" && stage.status === "response") ||
+        (stage.executionMethod === "codex" && stage.status === "planning"),
+    );
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET status = ?, run_status = ?, plan_json = ?, current_summary = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        hasReadyWork ? "ready" : "review",
+        hasReadyWork ? null : "completed",
+        JSON.stringify(plan),
+        hasReadyWork ? nextPlanSummary(plan) : "等待人工验收",
         now,
         id,
       );
@@ -1568,22 +1772,68 @@ function normalizeStoredPlan(
   return {
     ...plan,
     ...(plan.confirmationRequired === true ? { confirmationRequired: true } : {}),
-    stages: plan.stages.map((stage) => ({
-      ...stage,
-      dependsOn: normalizeDependencies(stage.dependsOn),
-      executionMethod: normalizeExecutionMethod(stage.executionMethod),
-      workspace:
-        normalizeExecutionMethod(stage.executionMethod) === "codex"
-          ? expectedWorkspace
-          : normalizeWorkspace(stage.workspace, expectedWorkspace),
-      materials: normalizeReferences(stage.materials),
-      artifacts: normalizeReferences(stage.artifacts),
-      ...(normalizeContextNotes(stage.contextNotes).length
-        ? { contextNotes: normalizeContextNotes(stage.contextNotes) }
-        : {}),
-      status: stage.status ?? "planning",
-      statusReason: stage.statusReason?.trim() || "等待确认并启动",
-    })),
+    stages: plan.stages.map((stage) => {
+      const executionMethod = normalizeExecutionMethod(stage.executionMethod);
+      const externalResult = normalizeExternalResult(stage.externalResult);
+      const contextNotes = normalizeContextNotes(stage.contextNotes);
+      return {
+        ...stage,
+        dependsOn: normalizeDependencies(stage.dependsOn),
+        executionMethod,
+        workspace:
+          executionMethod === "codex"
+            ? expectedWorkspace
+            : normalizeWorkspace(stage.workspace, expectedWorkspace),
+        materials: normalizeReferences(stage.materials),
+        artifacts: normalizeReferences(stage.artifacts),
+        ...(externalResult ? { externalResult } : {}),
+        ...(contextNotes.length ? { contextNotes } : {}),
+        status: stage.status ?? "planning",
+        statusReason: stage.statusReason?.trim() || "等待确认并启动",
+      };
+    }),
+  };
+}
+
+function normalizeExternalResult(value: unknown): PlanStage["externalResult"] {
+  if (!value || typeof value !== "object") return undefined;
+  const result = value as NonNullable<PlanStage["externalResult"]>;
+  const conclusion = typeof result.conclusion === "string" && result.conclusion.trim()
+    ? result.conclusion.trim()
+    : null;
+  if (
+    typeof result.completedAt !== "string" ||
+    !Number.isFinite(Date.parse(result.completedAt))
+  ) {
+    return undefined;
+  }
+  return { conclusion, completedAt: result.completedAt };
+}
+
+function normalizeExternalCompletionReference(
+  value: { type: "file" | "link"; label?: string; location: string } | undefined,
+): PlanReference | null {
+  if (value === undefined) return null;
+  const location = value.location?.trim() ?? "";
+  if ((value.type !== "file" && value.type !== "link") || !location) {
+    throw new Error("成果引用必须是本地文件或外部链接");
+  }
+  if (value.type === "link") {
+    let url: URL;
+    try {
+      url = new URL(location);
+    } catch {
+      throw new Error("请填写有效的 http 或 https 外部链接");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("请填写有效的 http 或 https 外部链接");
+    }
+  }
+  return {
+    id: crypto.randomUUID(),
+    type: value.type,
+    label: value.label?.trim() || (value.type === "file" ? "外部成果文件" : "外部成果链接"),
+    location,
   };
 }
 
@@ -1616,6 +1866,132 @@ function planWithVerificationStatuses(
       return { ...stage, status: "response", statusReason: "等待人工验收" };
     }),
   };
+}
+
+function codexStageIdsForNextRun(plan: WorkOrderPlan): Set<string> {
+  const stageById = new Map(plan.stages.map((stage) => [stage.id, stage]));
+  const blockedCache = new Map<string, boolean>();
+  const blockedByExternalDependency = (stageId: string, visiting = new Set<string>()): boolean => {
+    const cached = blockedCache.get(stageId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(stageId)) return true;
+    visiting.add(stageId);
+    const stage = stageById.get(stageId);
+    const blocked = (stage?.dependsOn ?? []).some((dependencyId) => {
+      const dependency = stageById.get(dependencyId);
+      if (!dependency) return true;
+      if (dependency.executionMethod === "external") {
+        return dependency.status !== "completed";
+      }
+      return blockedByExternalDependency(dependencyId, visiting);
+    });
+    visiting.delete(stageId);
+    blockedCache.set(stageId, blocked);
+    return blocked;
+  };
+  return new Set(
+    plan.stages
+      .filter(
+        (stage) =>
+          stage.executionMethod === "codex" &&
+          (stage.status === "planning" || stage.status === "running") &&
+          !blockedByExternalDependency(stage.id),
+      )
+      .map((stage) => stage.id),
+  );
+}
+
+function resetRunningCodexStages(plan: WorkOrderPlan): WorkOrderPlan {
+  return {
+    ...plan,
+    stages: plan.stages.map((stage) =>
+      stage.executionMethod === "codex" && stage.status === "running"
+        ? { ...stage, status: "planning", statusReason: "等待确认并启动" }
+        : stage,
+    ),
+  };
+}
+
+function advanceAfterCodexRun(
+  plan: WorkOrderPlan,
+  result: WorkOrderResult,
+): WorkOrderPlan {
+  const completedIds = new Set<string>();
+  for (const verification of result.verifications) {
+    if (verification.status === "passed") completedIds.add(verification.stageId);
+  }
+  return advancePlanWithCompletedStages(plan, completedIds, "Codex 本轮已完成");
+}
+
+function advancePlanWithCompletedStages(
+  plan: WorkOrderPlan,
+  newlyCompletedIds: ReadonlySet<string>,
+  statusReason: string,
+): WorkOrderPlan {
+  const completedIds = new Set([
+    ...plan.stages
+      .filter((stage) => stage.status === "completed")
+      .map((stage) => stage.id),
+    ...newlyCompletedIds,
+  ]);
+  return {
+    ...plan,
+    stages: plan.stages.map((stage) => {
+      if (completedIds.has(stage.id)) {
+        return stage.status === "completed"
+          ? stage
+          : { ...stage, status: "completed" as const, statusReason };
+      }
+      const dependenciesReady = stage.dependsOn.every((dependencyId) =>
+        completedIds.has(dependencyId),
+      );
+      if (stage.executionMethod === "external") {
+        return {
+          ...stage,
+          status: dependenciesReady ? ("response" as const) : ("queued" as const),
+          statusReason: dependenciesReady
+            ? "等待你在外部完成并标记"
+            : "等待前置节点完成",
+        };
+      }
+      if (stage.status === "response") return stage;
+      return {
+        ...stage,
+        status: dependenciesReady ? ("planning" as const) : ("queued" as const),
+        statusReason: dependenciesReady
+          ? "前置节点已完成，可以启动 Codex"
+          : "等待前置节点完成",
+      };
+    }),
+  };
+}
+
+function mergeResults(
+  previous: WorkOrderResult | null,
+  current: WorkOrderResult,
+): WorkOrderResult {
+  if (!previous || previous.planVersion !== current.planVersion) return current;
+  const byStage = new Map(
+    previous.verifications.map((verification) => [verification.stageId, verification]),
+  );
+  for (const verification of current.verifications) {
+    byStage.set(verification.stageId, verification);
+  }
+  return {
+    ...current,
+    verifications: [...byStage.values()],
+  };
+}
+
+function nextPlanSummary(plan: WorkOrderPlan | null): string {
+  const external = plan?.stages.find(
+    (stage) => stage.executionMethod === "external" && stage.status === "response",
+  );
+  if (external) return `请完成外部工作“${external.outcome}”`;
+  const codex = plan?.stages.find(
+    (stage) => stage.executionMethod === "codex" && stage.status === "planning",
+  );
+  return codex ? `可以启动“${codex.outcome}”` : "等待前置节点完成";
 }
 
 function checkpointedStageIds(workOrder: WorkOrder | null | undefined): Set<string> {

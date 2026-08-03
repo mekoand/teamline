@@ -136,7 +136,7 @@ ${workOrder.goal}${acceptance}${materials}${conversation}${currentPlan}${resourc
 - verification：如何检查这一阶段完成
 - verificationCommand：只有存在明确、可直接运行的自动验证命令时才填写，否则填写 null。不要把自然语言说明复制为命令
 - dependsOn：这个阶段依赖的前置阶段 id；没有依赖时填写空数组。不要仅因书写顺序假定依赖，可以并行时保持为空
-- executionMethod：当前版本固定填写 codex
+- executionMethod：需要 Codex 修改或检查本地工作空间时填写 codex；需要用户在设计、文档协作或其他外部工具中完成时填写 external。外部节点只记录状态和成果引用，不要要求 Teamline 控制、复制或自动核验外部正文
 
 不要执行计划，只返回符合指定 JSON Schema 的结果。`;
 }

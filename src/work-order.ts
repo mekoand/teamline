@@ -67,6 +67,10 @@ export type PlanStage = {
   workspace: PlanWorkspace;
   materials: PlanReference[];
   artifacts: PlanReference[];
+  externalResult?: {
+    conclusion: string | null;
+    completedAt: string;
+  };
   contextNotes?: string[];
   status: PlanNodeStatus;
   statusReason: string;
