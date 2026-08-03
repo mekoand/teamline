@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createApp } from "../src/app";
 import type {
   CodexSessionDiscoveryResult,
@@ -98,6 +101,12 @@ describe("Codex session import API", () => {
     expect(store.list()).toHaveLength(1);
     expect(store.list()[0]).toMatchObject({
       goal: "完成设置页面重构",
+      importSource: {
+        kind: "codex_session",
+        id: "session-a",
+        lastActiveAt: "2026-08-03T02:00:00.000Z",
+        version: 1,
+      },
       workspace: null,
       status: "ready",
       runStatus: null,
@@ -133,6 +142,67 @@ describe("Codex session import API", () => {
     expect(body.imported).toEqual([]);
     expect(body.existing).toHaveLength(1);
     expect(store.list()).toHaveLength(1);
+  });
+
+  test("does not mistake a manually added file material for an imported session", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const manual = store.create({
+      goal: "手工整理会话记录",
+      materials: [{ kind: "file", value: "/tmp/codex/session-a.jsonl" }],
+    });
+    const app = createApp({ store, codexSessionProvider: provider(discovery) });
+
+    const listResponse = await app.fetch(
+      new Request("http://teamline.local/api/codex-sessions?q=session-a"),
+    );
+    expect((await listResponse.json()).sessions[0].importedWorkOrderId).toBeNull();
+
+    const response = await app.fetch(
+      new Request("http://teamline.local/api/codex-sessions/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessions: [{ id: "session-a", goal: "完成设置页面重构" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(store.list()).toHaveLength(2);
+    expect(store.get(manual.id)?.importSource).toBeNull();
+    expect(store.list().find((workOrder) => workOrder.id !== manual.id)?.importSource?.id).toBe(
+      "session-a",
+    );
+  });
+
+  test("keeps the stable import source after reopening SQLite", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-import-source-"));
+    const databasePath = join(directory, "teamline.db");
+    try {
+      const firstDatabase = new Database(databasePath, { create: true });
+      const firstStore = new WorkOrderStore(firstDatabase);
+      const app = createApp({ store: firstStore, codexSessionProvider: provider(discovery) });
+      const response = await app.fetch(
+        new Request("http://teamline.local/api/codex-sessions/import", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessions: [{ id: "session-a", goal: "完成设置页面重构" }] }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const workOrderId = (await response.json()).imported[0].id;
+      firstDatabase.close();
+
+      const reopenedDatabase = new Database(databasePath);
+      const reopened = new WorkOrderStore(reopenedDatabase).get(workOrderId);
+      expect(reopened?.importSource).toEqual({
+        kind: "codex_session",
+        id: "session-a",
+        lastActiveAt: "2026-08-03T02:00:00.000Z",
+        version: 1,
+      });
+      reopenedDatabase.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("rejects unavailable sessions before writing anything", async () => {

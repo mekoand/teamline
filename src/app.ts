@@ -290,7 +290,7 @@ export function createApp({
           const existing: WorkOrder[] = [];
           for (const request of requested) {
             const candidate = candidates.get(request.id)!;
-            const duplicate = findImportedSession(store.list(), candidate.sourcePath!);
+            const duplicate = findImportedSession(store.list(), candidate.id);
             if (duplicate) {
               existing.push(duplicate);
               continue;
@@ -301,7 +301,16 @@ export function createApp({
                 : []),
               { kind: "file", value: candidate.sourcePath! },
             ];
-            const workOrder = store.create({ goal: request.goal, materials });
+            const workOrder = store.create({
+              goal: request.goal,
+              materials,
+              importSource: {
+                kind: "codex_session",
+                id: candidate.id,
+                lastActiveAt: candidate.lastActiveAt,
+                version: 1,
+              },
+            });
             const planned = store.savePlan(workOrder.id, [
               {
                 outcome: request.goal,
@@ -1556,9 +1565,7 @@ function matchesSessionSearch(session: DiscoveredCodexSession, query: string): b
 }
 
 function presentCodexSession(session: DiscoveredCodexSession, workOrders: WorkOrder[]) {
-  const imported = session.sourcePath
-    ? findImportedSession(workOrders, session.sourcePath)
-    : null;
+  const imported = findImportedSession(workOrders, session.id);
   const suggested = session.workspacePath
     ? workOrders.find(
         (workOrder) =>
@@ -1586,13 +1593,13 @@ function presentCodexSession(session: DiscoveredCodexSession, workOrders: WorkOr
 
 function findImportedSession(
   workOrders: WorkOrder[],
-  sourcePath: string,
+  sourceId: string,
 ): WorkOrder | null {
   return (
-    workOrders.find((workOrder) =>
-      workOrder.materials.some(
-        (material) => material.kind === "file" && material.value === sourcePath,
-      ),
+    workOrders.find(
+      (workOrder) =>
+        workOrder.importSource?.kind === "codex_session" &&
+        workOrder.importSource.id === sourceId,
     ) ?? null
   );
 }

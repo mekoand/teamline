@@ -87,6 +87,13 @@ export type WorkOrderMaterial = {
   value: string;
 };
 
+export type WorkOrderImportSource = {
+  kind: "codex_session";
+  id: string;
+  lastActiveAt: string;
+  version: 1;
+};
+
 export type WorkOrderWorkspace = {
   kind: "git" | "directory";
   path: string;
@@ -163,6 +170,7 @@ export type WorkOrder = {
   repositoryPath: string;
   workspace: WorkOrderWorkspace | null;
   materials: WorkOrderMaterial[];
+  importSource: WorkOrderImportSource | null;
   resourcePlan: WorkOrderResourcePlan;
   goal: string;
   acceptance: string | null;
@@ -193,6 +201,7 @@ export type CreateWorkOrderInput = {
   repositoryPath?: string;
   workspace?: WorkOrderWorkspace | null;
   materials?: Array<{ kind: WorkOrderMaterialKind; value: string }>;
+  importSource?: WorkOrderImportSource;
   goal: string;
   acceptance?: string;
 };
@@ -226,6 +235,14 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
       kind: material.kind,
       value: material.value.trim(),
     })),
+    importSource: input.importSource
+      ? {
+          kind: "codex_session",
+          id: input.importSource.id.trim(),
+          lastActiveAt: input.importSource.lastActiveAt,
+          version: 1,
+        }
+      : null,
     resourcePlan: {
       priority: "normal",
       pace: "balanced",

@@ -25,4 +25,28 @@ describe("work orders", () => {
       "请描述想完成的工作",
     );
   });
+
+  test("adds the import source column to an existing database", () => {
+    const database = new Database(":memory:");
+    database.exec(`
+      CREATE TABLE work_orders (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        repository_path TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        acceptance TEXT,
+        status TEXT NOT NULL,
+        current_summary TEXT NOT NULL,
+        plan_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    new WorkOrderStore(database);
+    const columns = database
+      .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+      .all()
+      .map((column) => column.name);
+    expect(columns).toContain("import_source_json");
+  });
 });

@@ -101,6 +101,43 @@ describe("local Codex session discovery", () => {
     }
   });
 
+  test("reports an oversized index as partial when rollout metadata remains readable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-codex-sessions-"));
+    const id = "019fc374-5a5b-78b0-81da-c5bf1452cebf";
+    const directory = join(root, "sessions", "2026", "08", "03");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(root, "session_index.jsonl"), "x".repeat(10 * 1024 * 1024 + 1));
+    writeFileSync(
+      join(directory, `rollout-2026-08-03T01-10-10-${id}.jsonl`),
+      `${JSON.stringify({ type: "session_meta", payload: { id, cwd: root } })}\n`,
+    );
+
+    try {
+      const result = await new LocalCodexSessionProvider(root).discover();
+      expect(result.status).toBe("partial");
+      expect(result.message).toContain("索引过大");
+      expect(result.sessions).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not report available when the existing index cannot be parsed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-codex-sessions-"));
+    mkdirSync(join(root, "sessions"));
+    writeFileSync(join(root, "session_index.jsonl"), "{not-json}\n");
+    try {
+      const result = await new LocalCodexSessionProvider(root).discover();
+      expect(result).toEqual({
+        status: "unavailable",
+        message: "Codex 会话索引为空或无法解析",
+        sessions: [],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("reports an unavailable source instead of failing", async () => {
     const root = mkdtempSync(join(tmpdir(), "teamline-codex-sessions-"));
     try {

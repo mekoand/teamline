@@ -13,6 +13,7 @@ import {
   type WorkOrderPace,
   type WorkOrderPriority,
   type WorkOrderResourcePlan,
+  type WorkOrderImportSource,
   type WorkOrderWorkspace,
   workOrderPaces,
   workOrderPriorities,
@@ -24,6 +25,7 @@ type WorkOrderRow = {
   repository_path: string;
   workspace_kind: "git" | "directory" | null;
   materials_json: string | null;
+  import_source_json: string | null;
   resource_plan_json: string | null;
   goal: string;
   acceptance: string | null;
@@ -94,6 +96,7 @@ export class WorkOrderStore {
     this.addExecutionColumnsToExistingDatabase();
     this.addResultColumnsToExistingDatabase();
     this.addMaterialColumnsToExistingDatabase();
+    this.addImportSourceColumnToExistingDatabase();
     this.addResourcePlanColumnToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
@@ -330,9 +333,9 @@ export class WorkOrderStore {
     this.database
       .query(`
         INSERT INTO work_orders (
-          id, title, repository_path, workspace_kind, materials_json,
+          id, title, repository_path, workspace_kind, materials_json, import_source_json,
           goal, acceptance, status, current_summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
@@ -340,6 +343,7 @@ export class WorkOrderStore {
         workOrder.repositoryPath,
         workOrder.workspace?.kind ?? null,
         JSON.stringify(workOrder.materials),
+        workOrder.importSource ? JSON.stringify(workOrder.importSource) : null,
         workOrder.goal,
         workOrder.acceptance,
         workOrder.status,
@@ -1006,6 +1010,18 @@ export class WorkOrderStore {
     }
   }
 
+  private addImportSourceColumnToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("import_source_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN import_source_json TEXT");
+    }
+  }
+
   private migrateDeliveredStatus(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -1040,6 +1056,7 @@ function mapRow(
       ? { kind: row.workspace_kind, path: row.repository_path }
       : null,
     materials: row.materials_json ? JSON.parse(row.materials_json) : [],
+    importSource: normalizeImportSource(row.import_source_json),
     resourcePlan: normalizeResourcePlan(row.resource_plan_json),
     goal: row.goal,
     acceptance: row.acceptance,
@@ -1071,6 +1088,31 @@ function mapRow(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeImportSource(value: string | null): WorkOrderImportSource | null {
+  if (!value) return null;
+  try {
+    const stored = JSON.parse(value) as Partial<WorkOrderImportSource>;
+    if (
+      stored.kind !== "codex_session" ||
+      typeof stored.id !== "string" ||
+      !stored.id.trim() ||
+      typeof stored.lastActiveAt !== "string" ||
+      !Number.isFinite(Date.parse(stored.lastActiveAt)) ||
+      stored.version !== 1
+    ) {
+      return null;
+    }
+    return {
+      kind: "codex_session",
+      id: stored.id.trim(),
+      lastActiveAt: new Date(stored.lastActiveAt).toISOString(),
+      version: 1,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {

@@ -1478,6 +1478,11 @@ dialog::backdrop {
   line-height: 1.5;
 }
 
+.session-select small,
+.session-source-message {
+  overflow-wrap: anywhere;
+}
+
 .session-select em {
   padding: 3px 7px;
   border-radius: 999px;

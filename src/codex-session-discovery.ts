@@ -37,6 +37,12 @@ type SessionIndexEntry = {
   updatedAt: string | null;
 };
 
+type SessionIndexReadResult = {
+  entries: Map<string, SessionIndexEntry>;
+  status: "available" | "degraded" | "unavailable";
+  message: string | null;
+};
+
 type RolloutMetadata = {
   id: string;
   cwd: string | null;
@@ -54,7 +60,8 @@ export class LocalCodexSessionProvider implements CodexSessionProvider {
   async discover(): Promise<CodexSessionDiscoveryResult> {
     const indexPath = join(this.codexHome, "session_index.jsonl");
     const sessionsRoot = join(this.codexHome, "sessions");
-    const index = readSessionIndex(indexPath);
+    const indexRead = readSessionIndex(indexPath);
+    const index = indexRead.entries;
     const rolloutFiles = listRecentRolloutFiles(sessionsRoot);
     const sessions = new Map<string, DiscoveredCodexSession>();
 
@@ -116,28 +123,58 @@ export class LocalCodexSessionProvider implements CodexSessionProvider {
         sessions: [],
       };
     }
-    const partial = sorted.some((session) => session.availability !== "available");
+    if (sorted.length === 0) {
+      return {
+        status: "unavailable",
+        message:
+          indexRead.message || "Codex 会话来源存在，但没有可读取的会话元数据",
+        sessions: [],
+      };
+    }
+    const partial =
+      indexRead.status !== "available" ||
+      sorted.some((session) => session.availability !== "available");
     return {
       status: partial ? "partial" : "available",
-      message: partial
-        ? "部分会话缺少标题、文件夹或来源文件，Teamline 已按可读取字段展示"
-        : "只读取本机 Codex 会话索引和必要元数据",
+      message:
+        indexRead.message ||
+        (partial
+          ? "部分会话缺少标题、文件夹或来源文件，Teamline 已按可读取字段展示"
+          : "只读取本机 Codex 会话索引和必要元数据"),
       sessions: sorted,
     };
   }
 }
 
-function readSessionIndex(path: string): Map<string, SessionIndexEntry> {
+function readSessionIndex(path: string): SessionIndexReadResult {
   const entries = new Map<string, SessionIndexEntry>();
-  if (!existsSync(path)) return entries;
+  if (!existsSync(path)) {
+    return {
+      entries,
+      status: "unavailable",
+      message: "Codex 会话索引不可用，已按来源文件中的可读取字段展示",
+    };
+  }
   try {
     const size = statSync(path).size;
-    if (size > MAX_INDEX_BYTES) return entries;
+    if (size > MAX_INDEX_BYTES) {
+      return {
+        entries,
+        status: "unavailable",
+        message: "Codex 会话索引过大，Teamline 未读取其内容",
+      };
+    }
+    let invalidLines = 0;
+    let nonEmptyLines = 0;
     for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
       if (!line.trim()) continue;
+      nonEmptyLines += 1;
       try {
         const value = JSON.parse(line) as Record<string, unknown>;
-        if (typeof value.id !== "string" || !value.id.trim()) continue;
+        if (typeof value.id !== "string" || !value.id.trim()) {
+          invalidLines += 1;
+          continue;
+        }
         const current = entries.get(value.id);
         const updatedAt = validTimestamp(value.updated_at);
         if (current && Date.parse(current.updatedAt ?? "") > Date.parse(updatedAt ?? "")) {
@@ -152,13 +189,31 @@ function readSessionIndex(path: string): Map<string, SessionIndexEntry> {
           updatedAt,
         });
       } catch {
-        // A damaged index line should not hide other local sessions.
+        invalidLines += 1;
       }
     }
+    if (nonEmptyLines === 0 || entries.size === 0) {
+      return {
+        entries,
+        status: "unavailable",
+        message: "Codex 会话索引为空或无法解析",
+      };
+    }
+    return {
+      entries,
+      status: invalidLines > 0 ? "degraded" : "available",
+      message:
+        invalidLines > 0
+          ? "Codex 会话索引有部分内容无法解析，已按可读取字段展示"
+          : null,
+    };
   } catch {
-    return entries;
+    return {
+      entries,
+      status: "unavailable",
+      message: "Codex 会话索引读取失败，已按来源文件中的可读取字段展示",
+    };
   }
-  return entries;
 }
 
 function listRecentRolloutFiles(root: string): Array<{
