@@ -47,6 +47,30 @@ describe("personal console", () => {
     expect(script).toContain('/workspace`');
   });
 
+  test("serves the resource summary and resource-page navigation", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+
+    const [pageResponse, scriptResponse] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/resources")),
+      app.fetch(new Request("http://teamline.local/app.js")),
+    ]);
+    const page = await pageResponse.text();
+    const script = await scriptResponse.text();
+
+    expect(pageResponse.status).toBe(200);
+    expect(page).toContain('id="resource-summary"');
+    expect(page).toContain('id="open-resources"');
+    expect(script).toContain('requestJson("/api/resources")');
+    expect(script).toContain('loading: "正在读取"');
+    expect(script).toContain('state.resources?.openaiApi.status === "loading"');
+    expect(script).toContain("refreshResources");
+    expect(script).not.toContain(
+      'const [{ workOrders }, resources] = await Promise.all',
+    );
+    expect(script).toContain("resource-workspace");
+    expect(script).toContain("workOrder.usage.message");
+  });
+
   test("restores persisted work and exposes the five user-facing states", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-console-"));
     const databasePath = join(directory, "teamline.db");

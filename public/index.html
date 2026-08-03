@@ -23,6 +23,9 @@
           <span class="brand-mark">T</span>
           <span>Teamline</span>
         </a>
+        <div id="resource-summary" class="resource-summary" aria-live="polite">
+          <span>Codex 额度正在读取…</span>
+        </div>
         <div class="topbar-status" aria-label="本地服务状态">
           <span class="local-status"><i></i> 本地运行</span>
           <label class="concurrency-control" title="同时运行的委托上限">
@@ -43,6 +46,9 @@
           </div>
           <span id="work-order-count" class="count">0</span>
         </div>
+        <button class="sidebar-nav" id="open-resources" type="button">
+          <span>资源</span><small>额度与用量</small>
+        </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ 新建委托</button>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
       </aside>

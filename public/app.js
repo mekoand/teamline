@@ -15,6 +15,10 @@ const state = {
   contextTab: "details",
   events: [],
   executionSettings: { maxConcurrency: 2 },
+  resources: null,
+  resourceError: "",
+  resourceRefreshInFlight: false,
+  resourceProgressTimer: null,
   refreshTimer: null,
   theme: readTheme(),
 };
@@ -27,6 +31,7 @@ const createDialog = document.querySelector("#create-dialog");
 const createForm = document.querySelector("#create-form");
 const formError = document.querySelector("#form-error");
 const createButton = document.querySelector("#submit-create");
+const resourceSummaryElement = document.querySelector("#resource-summary");
 
 applyTheme(state.theme);
 bindShellEvents();
@@ -44,6 +49,11 @@ function bindShellEvents() {
   document.querySelector("#open-create").addEventListener("click", () => {
     createDialog.showModal();
     createDialog.querySelector('[name="goal"]').focus();
+  });
+  document.querySelector("#open-resources").addEventListener("click", () => {
+    history.pushState({}, "", "/resources");
+    state.draftStages = null;
+    refreshConsole();
   });
   document.querySelector("#close-create").addEventListener("click", closeCreateDialog);
   document.querySelector("#cancel-create").addEventListener("click", closeCreateDialog);
@@ -73,6 +83,14 @@ async function refreshConsole({ polling = false } = {}) {
     document.querySelector("#max-concurrency").value = String(
       executionSettings.maxConcurrency,
     );
+    void refreshResources();
+    if (isResourceView()) {
+      state.selected = null;
+      state.events = [];
+      renderConsole();
+      scheduleRefresh();
+      return;
+    }
     const requestedId = selectedIdFromPath();
     const selectedId = requestedId ?? state.selected?.id ?? workOrders[0]?.id ?? null;
 
@@ -128,8 +146,40 @@ async function saveMaxConcurrency(event) {
   }
 }
 
+async function refreshResources() {
+  if (state.resourceRefreshInFlight) return;
+  clearTimeout(state.resourceProgressTimer);
+  state.resourceRefreshInFlight = true;
+  try {
+    state.resources = await requestJson("/api/resources");
+    state.resourceError = "";
+  } catch (error) {
+    state.resources = null;
+    state.resourceError = messageFrom(error, "资源状态读取失败，请稍后重试。");
+  } finally {
+    state.resourceRefreshInFlight = false;
+    renderResourceSummary();
+    if (isResourceView()) renderConsole();
+    if (state.resources?.openaiApi.status === "loading") {
+      state.resourceProgressTimer = setTimeout(() => void refreshResources(), 500);
+    }
+  }
+}
+
 function renderConsole(feedback = "") {
   renderWorkOrderList();
+  document.querySelector("#open-resources")?.classList.toggle("selected", isResourceView());
+  if (isResourceView()) {
+    workspaceElement.innerHTML = renderResourceWorkspace();
+    contextElement.innerHTML = renderResourceContext();
+    document.querySelector("#retry-resources")?.addEventListener("click", () => {
+      state.resourceError = "";
+      state.resources = null;
+      renderConsole();
+      void refreshResources();
+    });
+    return;
+  }
   if (!state.selected) {
     workspaceElement.innerHTML = `
       <section class="empty-console">
@@ -187,6 +237,130 @@ function renderWorkOrderList() {
   document.querySelectorAll("[data-work-order-id]").forEach((button) => {
     button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
   });
+}
+
+function renderResourceSummary() {
+  if (!state.resources) {
+    resourceSummaryElement.innerHTML = state.resourceError
+      ? `<button type="button" data-open-resource-summary><strong>Codex 额度读取失败</strong><span>工作台仍可使用</span></button>`
+      : "<span>Codex 额度正在读取…</span>";
+    resourceSummaryElement.querySelector("button")?.addEventListener("click", () => {
+      history.pushState({}, "", "/resources");
+      renderConsole();
+    });
+    return;
+  }
+  const { codex, runningCount } = state.resources;
+  if (codex.status !== "available") {
+    resourceSummaryElement.innerHTML = `
+      <button type="button" data-open-resource-summary>
+        <strong>Codex ${resourceStatusLabel(codex.status)}</strong><span>${runningCount} 项运行中</span>
+      </button>`;
+  } else {
+    const nextReset = [codex.shortWindow, codex.longWindow]
+      .filter(Boolean)
+      .sort((left, right) => Date.parse(left.resetsAt) - Date.parse(right.resetsAt))[0];
+    resourceSummaryElement.innerHTML = `
+      <button type="button" data-open-resource-summary>
+        <span>短周期 <strong>${formatRemaining(codex.shortWindow)}</strong></span>
+        <span>长期 <strong>${formatRemaining(codex.longWindow)}</strong></span>
+        <span>${nextReset ? `最近${formatReset(nextReset.resetsAt)}` : "重置时间不可用"}</span>
+        <span>${runningCount} 项运行中</span>
+      </button>`;
+  }
+  resourceSummaryElement.querySelector("button")?.addEventListener("click", () => {
+    history.pushState({}, "", "/resources");
+    renderConsole();
+  });
+}
+
+function renderResourceWorkspace() {
+  const resources = state.resources;
+  if (state.resourceError) {
+    return `<section class="empty-console error-state resource-workspace"><span class="empty-symbol">!</span><h2>资源状态读取失败</h2><p>${escapeHtml(state.resourceError)}</p><button class="secondary-button" id="retry-resources" type="button">重新读取资源</button></section>`;
+  }
+  if (!resources) return '<div class="loading-state">正在读取资源状态…</div>';
+  return `
+    <section class="workspace-content resource-workspace">
+      <header class="workspace-heading">
+        <div><p class="overline">资源</p><h1>额度与当前安排</h1><p>只展示来源明确的资源信号；不可用、过期或无法归因的数据不会被当作精确值。</p></div>
+        <span class="saved-state">更新于 ${formatDate(resources.observedAt)}</span>
+      </header>
+      <section class="resource-overview">
+        ${renderCodexResourceCard(resources.codex, resources.runningCount)}
+        ${renderApiResourceCard(resources.openaiApi)}
+      </section>
+      <section class="resource-orders-panel">
+        <div class="section-heading compact">
+          <div><p class="overline">按委托</p><h2>本期安排与用量</h2></div>
+          <span class="subtle-label">${resources.workOrders.length} 项委托</span>
+        </div>
+        ${resources.workOrders.length
+          ? `<div class="resource-order-list">${resources.workOrders.map(renderResourceOrder).join("")}</div>`
+          : '<p class="muted">还没有委托。创建委托后会在这里显示资源安排。</p>'}
+      </section>
+    </section>`;
+}
+
+function renderCodexResourceCard(codex, runningCount) {
+  const available = codex.status === "available";
+  return `
+    <article class="resource-card ${available ? "available" : "unavailable"}">
+      <div class="resource-card-heading"><div><p class="overline">Codex 订阅</p><h2>${available ? "额度可读取" : resourceStatusLabel(codex.status)}</h2></div><span class="status-pill ${available ? "running" : "response"}">${runningCount} 项运行中</span></div>
+      ${available
+        ? `<div class="quota-windows">${renderQuotaWindow("短周期", codex.shortWindow)}${renderQuotaWindow("长期", codex.longWindow)}</div>`
+        : `<p class="resource-message">${escapeHtml(codex.message || "暂时没有可用额度数据")}</p>`}
+      <p class="resource-source">来源：Codex 本地 app-server · 采集于 ${formatDate(codex.observedAt)}</p>
+    </article>`;
+}
+
+function renderQuotaWindow(label, window) {
+  if (!window) {
+    return `<div><span>${label}</span><strong>不可用</strong><small>没有返回可靠窗口</small></div>`;
+  }
+  return `<div><span>${label}</span><strong>${formatRemaining(window)}</strong><small>${formatReset(window.resetsAt)}</small></div>`;
+}
+
+function renderApiResourceCard(api) {
+  const available = api.status === "available" && api.usage;
+  return `
+    <article class="resource-card ${available ? "available" : "unavailable"}">
+      <div class="resource-card-heading"><div><p class="overline">OpenAI API</p><h2>${available ? "账户用量" : resourceStatusLabel(api.status)}</h2></div><span class="subtle-label">可选连接</span></div>
+      ${available
+        ? `<strong class="account-usage">${formatUsage(api.usage)}</strong><p class="resource-message">${scopeLabel(api.scope)}聚合，未自动归入委托</p>`
+        : `<p class="resource-message">${escapeHtml(api.message || "需要连接后才能读取 API 用量和费用")}</p>`}
+      <p class="resource-source">采集于 ${formatDate(api.observedAt)} · 不会阻塞 Codex 订阅额度和首次使用</p>
+    </article>`;
+}
+
+function renderResourceOrder(workOrder) {
+  const usage = workOrder.usage.status === "available"
+    ? formatUsage(workOrder.usage)
+    : escapeHtml(workOrder.usage.message || "不可用");
+  return `
+    <article class="resource-order-row">
+      <div class="resource-order-title"><span class="status-dot ${workOrder.status}"></span><div><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></div></div>
+      <dl>
+        <div><dt>优先级</dt><dd>${workOrder.priority ? escapeHtml(workOrder.priority) : "未设置"}</dd></div>
+        <div><dt>执行节奏</dt><dd>${workOrder.pace ? escapeHtml(workOrder.pace) : "手动启动"}</dd></div>
+        <div><dt>当前用量</dt><dd>${usage}</dd></div>
+        <div><dt>运行建议</dt><dd>${escapeHtml(workOrder.recommendation)}</dd></div>
+      </dl>
+    </article>`;
+}
+
+function renderResourceContext() {
+  if (state.resourceError) {
+    return `<section class="context-empty"><p class="overline">资源</p><h2>工作台仍可使用</h2><p>资源读取与委托读取相互独立。你可以继续查看和处理委托，稍后再重试资源。</p></section>`;
+  }
+  const api = state.resources?.openaiApi;
+  return `
+    <section class="context-content">
+      <div class="context-heading"><div><p class="overline">数据说明</p><h2>可靠性优先</h2></div></div>
+      <p class="context-summary">额度数据来自当前登录的 Codex 本地接口。读取失败时显示不可用，不会把未知值当作 0。</p>
+      <div class="context-section"><p class="overline">OpenAI API</p><p class="context-summary">${escapeHtml(api?.message || "API 用量是可选连接，未连接时保持为空。")}</p></div>
+      <div class="context-section"><p class="overline">委托归属</p><p class="context-summary">只有能明确归因到委托的数据才进入委托用量；组织、项目或 API Key 聚合保留为账户用量。</p></div>
+    </section>`;
 }
 
 function renderOrderRow(workOrder) {
@@ -784,6 +958,10 @@ function selectWorkOrder(id) {
   refreshConsole();
 }
 
+function isResourceView() {
+  return window.location.pathname === "/resources";
+}
+
 function closeCreateDialog() {
   createDialog.close();
   createForm.reset();
@@ -850,6 +1028,10 @@ function visibleStatus(workOrder, allWorkOrders) {
 
 function scheduleRefresh() {
   clearTimeout(state.refreshTimer);
+  if (isResourceView()) {
+    state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 30_000);
+    return;
+  }
   if (
     state.workOrders.some((workOrder) =>
       ["running", "stopping", "verifying"].includes(workOrder.runStatus),
@@ -977,6 +1159,36 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatRemaining(window) {
+  return window ? `${Math.max(0, 100 - window.usedPercent)}% 可用` : "不可用";
+}
+
+function formatReset(value) {
+  return `重置于 ${formatDate(value)}`;
+}
+
+function formatUsage(usage) {
+  if (!usage || typeof usage.amount !== "number") return "不可用";
+  if (usage.unit === "usd") {
+    return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "USD" }).format(usage.amount);
+  }
+  return `${new Intl.NumberFormat("zh-CN").format(usage.amount)} tokens`;
+}
+
+function resourceStatusLabel(status) {
+  return {
+    loading: "正在读取",
+    unavailable: "暂时不可用",
+    stale: "数据已过期",
+    error: "读取失败",
+    not_connected: "需要连接",
+  }[status] || "不可用";
+}
+
+function scopeLabel(scope) {
+  return { organization: "组织", project: "项目", api_key: "API Key" }[scope] || "账户";
 }
 
 function shortPath(path) {

@@ -16,6 +16,11 @@ import {
 } from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
 import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
+import {
+  unavailableResourceSnapshot,
+  type ResourceProvider,
+} from "./resource-provider";
+import { presentResources } from "./resource-presentation";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -29,6 +34,7 @@ type AppDependencies = {
     callback: () => void,
     delayMs: number,
   ) => () => void;
+  resourceProvider?: ResourceProvider;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -48,6 +54,7 @@ export function createApp({
   worktreeManager,
   resultProcessor,
   runTimeoutScheduler = scheduleTimeout,
+  resourceProvider,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
@@ -181,6 +188,22 @@ export function createApp({
           );
         }
         return Response.json({ view: store.saveExecutionMapView(body.view) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/resources") {
+        let snapshot;
+        try {
+          snapshot = resourceProvider
+            ? await resourceProvider.read()
+            : unavailableResourceSnapshot();
+        } catch {
+          snapshot = unavailableResourceSnapshot(
+            "Codex 额度读取失败，请稍后重试",
+            new Date().toISOString(),
+            "error",
+          );
+        }
+        return Response.json(presentResources(snapshot, store.list()));
       }
 
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
@@ -780,7 +803,10 @@ export function createApp({
         });
       }
 
-      if (request.method === "GET" && /^\/work-orders\/[^/]+$/.test(url.pathname)) {
+      if (
+        request.method === "GET" &&
+        (url.pathname === "/resources" || /^\/work-orders\/[^/]+$/.test(url.pathname))
+      ) {
         return new Response(Bun.file(join(projectRoot, "public/index.html")), {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
