@@ -10,8 +10,8 @@ const state = {
   workOrders: [],
   selected: null,
   selectedStageIndex: 0,
+  followCurrentStage: true,
   draftStages: null,
-  mapView: null,
   contextTab: "details",
   events: [],
   executionSettings: { maxConcurrency: 2 },
@@ -247,10 +247,6 @@ async function refreshConsole({
   }
 
   try {
-    if (state.mapView === null) {
-      const preference = await requestJson("/api/preferences/execution-map-view");
-      state.mapView = preference.view;
-    }
     const [consoleState, notificationState] = await Promise.all([
       requestJson("/api/console"),
       requestJson("/api/notifications"),
@@ -290,6 +286,7 @@ async function refreshConsole({
         );
         if (requestedStageIndex >= 0) {
           state.selectedStageIndex = requestedStageIndex;
+          state.followCurrentStage = false;
           const canonicalUrl = new URL(window.location.href);
           canonicalUrl.searchParams.delete("stage");
           history.replaceState(
@@ -298,6 +295,9 @@ async function refreshConsole({
             `${canonicalUrl.pathname}${canonicalUrl.search}`,
           );
         }
+      }
+      if (state.followCurrentStage) {
+        state.selectedStageIndex = preferredStageIndex(workOrder);
       }
       state.events = workOrder.runStatus
         ? (await requestJson(`/api/work-orders/${encodeURIComponent(selectedId)}/events`)).events
@@ -463,6 +463,7 @@ async function openLocalNotification(notification) {
   } finally {
     notificationDialog.close();
     state.selectedStageIndex = 0;
+    state.followCurrentStage = true;
     history.pushState({}, "", notification.targetUrl);
     await refreshConsole();
   }
@@ -813,7 +814,7 @@ function renderWorkspace(workOrder, feedback) {
       <section class="map-panel">
         <div class="section-heading">
           <div>
-            <p class="overline">执行地图</p>
+            <p class="overline">执行列表</p>
             <h2>${stages ? (canEditPlan ? "检查并编辑计划" : "当前计划") : "准备执行计划"}</h2>
           </div>
           <div class="map-heading-actions">
@@ -942,10 +943,13 @@ function stageLabel(workOrder, stageId) {
 
 function renderMapViewControls(workOrder) {
   const canEdit = workOrder.status === "ready" && !workOrder.runStatus;
+  const currentIndex = preferredStageIndex(workOrder);
+  const canReturnToCurrent =
+    !state.followCurrentStage && currentIndex !== state.selectedStageIndex;
+  if (!canEdit && !canReturnToCurrent) return "";
   return `
-    <div class="map-view-controls" aria-label="执行地图视图">
-      <button type="button" data-map-view="map" class="${state.mapView === "map" ? "active" : ""}" aria-pressed="${state.mapView === "map"}">节点图</button>
-      <button type="button" data-map-view="list" class="${state.mapView === "list" ? "active" : ""}" aria-pressed="${state.mapView === "list"}">纵向列表</button>
+    <div class="map-view-controls" aria-label="执行列表操作">
+      ${canReturnToCurrent ? '<button type="button" id="follow-current-stage">回到当前节点</button>' : ""}
       ${canEdit ? '<button type="button" id="edit-plan">编辑计划</button>' : ""}
     </div>`;
 }
@@ -953,11 +957,9 @@ function renderMapViewControls(workOrder) {
 function renderExecutionMap(workOrder, stages) {
   const stageById = new Map(stages.map((stage, index) => [stage.id, { stage, index }]));
   const singleStage = stages.length === 1;
-  const className = state.mapView === "list" || singleStage
-    ? "execution-map-list"
-    : "execution-map-graph";
+  const className = "execution-map-list";
   return `
-    <div class="${className}" data-map-mode="${escapeHtml(state.mapView ?? "map")}">
+    <div class="${className}" data-map-mode="list">
       ${stages.map((stage, index) => renderMapNode(stage, index, stageById, singleStage)).join("")}
     </div>
     ${workOrder.runStatus && stages.every((stage) => stage.status === "planning")
@@ -978,7 +980,7 @@ function renderMapNode(stage, index, stageById, singleStage) {
       </span>
       <strong>${escapeHtml(stage.outcome)}</strong>
       <small>${escapeHtml(stage.scope)}</small>
-      ${dependencies.length && !singleStage ? `<span class="dependency-label">依赖 ${escapeHtml(dependencies.join("；"))}</span>` : ""}
+      ${dependencies.length ? `<span class="dependency-label">依赖：${escapeHtml(dependencies.join("；"))}</span>` : '<span class="dependency-label">依赖：无</span>'}
     </button>`;
 }
 
@@ -1248,7 +1250,7 @@ function renderContextAction(workOrder) {
     !workOrder.runStatus &&
     workOrder.plan?.confirmationRequired
   ) {
-    return '<section class="context-action"><p class="overline">下一步</p><strong>检查恢复的计划</strong><p>请在执行地图中选择“编辑计划”，确认节点、工作空间和资源后保存。恢复不会直接沿用原来的执行授权。</p></section>';
+    return '<section class="context-action"><p class="overline">下一步</p><strong>检查并确认计划</strong><p>请在执行列表中选择“编辑计划”，确认节点、工作空间和资源后保存。</p></section>';
   }
   const stage = workOrder.plan?.stages?.[state.selectedStageIndex];
   const needsStageConfirmation = workOrder.plan?.stages?.some(
@@ -1376,26 +1378,15 @@ function bindRenderedEvents() {
   document.querySelectorAll("[data-stage-index]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedStageIndex = Number(button.dataset.stageIndex);
+      state.followCurrentStage = false;
       renderConsole();
     });
   });
 
-  document.querySelectorAll("[data-map-view]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const view = button.dataset.mapView;
-      if (view === state.mapView) return;
-      try {
-        const saved = await requestJson("/api/preferences/execution-map-view", {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ view }),
-        });
-        state.mapView = saved.view;
-        renderConsole();
-      } catch (error) {
-        setFeedback("plan-feedback", messageFrom(error, "无法保存视图偏好"), true);
-      }
-    });
+  document.querySelector("#follow-current-stage")?.addEventListener("click", () => {
+    state.followCurrentStage = true;
+    state.selectedStageIndex = preferredStageIndex(state.selected);
+    renderConsole();
   });
 
   document.querySelector("#edit-plan")?.addEventListener("click", () => {
@@ -1638,6 +1629,7 @@ function bindAction(selector, busyLabel, idleLabel, endpoint, pendingMessage) {
 async function acceptWorkOrderResult(workOrder, feedback = "") {
   state.draftStages = null;
   state.selected = workOrder;
+  if (workOrder.runStatus === "running") state.followCurrentStage = true;
   await refreshConsole({ polling: true });
   if (feedback) setFeedback("plan-feedback", feedback, false);
 }
@@ -1661,6 +1653,7 @@ async function createWorkOrder(event) {
     history.pushState({}, "", `/work-orders/${encodeURIComponent(workOrder.id)}`);
     state.selected = workOrder;
     state.selectedStageIndex = 0;
+    state.followCurrentStage = true;
     await refreshConsole();
   } catch (error) {
     formError.textContent = messageFrom(error, "创建委托失败");
@@ -1761,6 +1754,7 @@ async function importSelectedSessions(event) {
       history.pushState({}, "", `/work-orders/${encodeURIComponent(workOrder.id)}`);
       state.selected = workOrder;
       state.selectedStageIndex = 0;
+      state.followCurrentStage = true;
     }
     await refreshConsole();
   } catch (error) {
@@ -1774,6 +1768,7 @@ async function selectWorkOrder(id) {
   state.draftStages = null;
   if (id !== state.selected?.id) {
     state.selectedStageIndex = 0;
+    state.followCurrentStage = true;
     state.contextTab = "details";
     history.pushState({}, "", `/work-orders/${encodeURIComponent(id)}`);
   }
@@ -1906,6 +1901,29 @@ function selectedIdFromPath() {
 
 function selectedStageFromPath() {
   return new URL(window.location.href).searchParams.get("stage");
+}
+
+function preferredStageIndex(workOrder) {
+  const stages = workOrder?.plan?.stages ?? [];
+  if (!stages.length) return 0;
+  const running = stages.findIndex((stage) => stage.status === "running");
+  if (running >= 0) return running;
+  if (["review", "delivered"].includes(workOrder.status)) return stages.length - 1;
+  const response = stages.findIndex((stage) => stage.status === "response");
+  if (response >= 0) return response;
+  if (workOrder.runStatus === "running") {
+    const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+    const nextQueued = stages.findIndex(
+      (stage) =>
+        stage.status === "queued" &&
+        stage.dependsOn.every(
+          (dependencyId) => stageById.get(dependencyId)?.status === "completed",
+        ),
+    );
+    if (nextQueued >= 0) return nextQueued;
+  }
+  const planning = stages.findIndex((stage) => stage.status === "planning");
+  return planning >= 0 ? planning : Math.max(0, stages.length - 1);
 }
 
 function encodedSelectedId() {

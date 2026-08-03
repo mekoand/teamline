@@ -325,6 +325,7 @@ describe("work order API", () => {
       expect(readFileSync(invocationLog, "utf8")).toContain(
         "<exec>\n<--skip-git-repo-check>\n<--cd>",
       );
+      expect(readFileSync(invocationLog, "utf8")).toContain("TEAMLINE_STAGE_START:");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

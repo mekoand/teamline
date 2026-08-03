@@ -74,7 +74,7 @@ function blockingReason(
   now: Date,
 ): string | null {
   if (workOrder.status !== "ready" || !workOrder.plan) return "等待确认计划";
-  if (workOrder.plan.confirmationRequired) return "计划已更新，等待重新确认";
+  if (workOrder.plan.confirmationRequired) return "计划等待确认";
   if (hasRunnableExternalStage(workOrder)) return "等待完成外部节点";
   if (!workOrder.workspace) return "等待选择工作空间";
   if (!hasRunnableStage(workOrder)) return "等待前置节点完成";

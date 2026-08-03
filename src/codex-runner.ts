@@ -284,14 +284,14 @@ function buildExecutionPrompt(
     workOrder.workspace?.kind === "directory"
       ? "请在用户明确选择的当前本地文件夹中完成以下已确认的工作委托。"
       : "请在当前独立 Git worktree 中完成以下已确认的工作委托。";
-  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n已确认计划：\n${stages ?? "未提供"}${currentContext}`;
+  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n已确认计划：\n${stages ?? "未提供"}\n\n节点进度回报：\n- 开始每个节点前，单独输出一行 TEAMLINE_STAGE_START:<节点 ID>\n- 完成每个节点后，单独输出一行 TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- 不要把多个进度标记写在同一行${currentContext}`;
 }
 
 function buildResumePrompt(workOrder: WorkOrder): string {
   const revision = workOrder.revisionNote
     ? `\n补充要求：\n${workOrder.revisionNote}`
     : "";
-  return `请继续推进已确认的工作委托：${workOrder.goal}${revision}`;
+  return `请继续推进已确认的工作委托：${workOrder.goal}${revision}\n继续按节点执行；开始和完成节点时分别单独输出 TEAMLINE_STAGE_START:<节点 ID> 和 TEAMLINE_STAGE_COMPLETE:<节点 ID>。`;
 }
 
 function readableEventType(type: string): string {

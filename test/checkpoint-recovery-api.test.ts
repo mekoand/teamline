@@ -240,7 +240,7 @@ describe("stage checkpoints and recovery", () => {
       const interrupted = firstStore.get(created.id)!;
       expect(interrupted.checkpoints).toMatchObject([{ kind: "baseline", runNumber: 1 }]);
       expect(interrupted.plan!.stages).toMatchObject([
-        { status: "response", statusReason: "自动验证通过，等待阶段检查点" },
+        { status: "completed", statusReason: "自动验证通过" },
         { status: "response", statusReason: "自动验证未通过" },
       ]);
       const checkpointHash = interrupted.checkpoints.at(-1)!.treeHash;

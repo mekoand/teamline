@@ -659,7 +659,7 @@ export function createApp({
           return Response.json(
             {
               code: "PLAN_CONFIRMATION_REQUIRED",
-              error: "请先检查并保存恢复的委托计划",
+              error: "请先检查并保存当前委托计划",
             },
             { status: 409 },
           );
@@ -1709,7 +1709,11 @@ async function consumeRunEvents(
       if (event.type === "session") {
         store.recordSession(workOrderId, event.sessionId);
       } else if (event.type === "progress") {
-        store.recordProgress(workOrderId, event.message);
+        for (const signal of stageProgressSignals(event.message)) {
+          store.recordStageProgress(workOrderId, signal.stageId, signal.phase);
+        }
+        const visibleMessage = event.message.replace(stageProgressPattern, "").trim();
+        if (visibleMessage) store.recordProgress(workOrderId, visibleMessage);
       } else {
         if (store.get(workOrderId)?.runStatus === "stopping") {
           options.clearRunTimeout?.();
@@ -2112,7 +2116,12 @@ function nextRunnableStages(workOrder: WorkOrder): PlanStage[] {
 function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
   if (!workOrder.plan) return workOrder;
   const running = workOrder.plan.stages.filter(
-    (stage) => stage.executionMethod === "codex" && stage.status === "running",
+    (stage) =>
+      stage.executionMethod === "codex" &&
+      (stage.status === "running" ||
+        (stage.status === "completed" && stage.statusReason === "Codex 已完成，等待验证") ||
+        (stage.status === "queued" &&
+          ["等待 Codex 推进", "等待当前执行的前置节点"].includes(stage.statusReason))),
   );
   const stages = running.length
     ? running
@@ -2121,6 +2130,18 @@ function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
     ...workOrder,
     plan: { ...workOrder.plan, stages },
   };
+}
+
+const stageProgressPattern = /`?TEAMLINE_STAGE_(START|COMPLETE):([^\s`]+)`?/g;
+
+function stageProgressSignals(message: string): Array<{
+  stageId: string;
+  phase: "running" | "completed";
+}> {
+  return [...message.matchAll(stageProgressPattern)].map((match) => ({
+    stageId: match[2]!,
+    phase: match[1] === "START" ? "running" : "completed",
+  }));
 }
 
 function safeCodexStartError(error: unknown): string {

@@ -32,6 +32,9 @@ describe("personal console", () => {
     expect(script).toContain("最近完成节点");
     expect(script).toContain("继续当前现场");
     expect(script).toContain("从最近节点重新执行");
+    expect(script).toContain("回到当前节点");
+    expect(script).toContain('className = "execution-map-list"');
+    expect(script).not.toContain('>节点图</button>');
   });
 
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {

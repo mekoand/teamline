@@ -8,7 +8,148 @@ import { WorkOrderStore } from "../src/work-order-store";
 
 const repositoryPath = resolve(import.meta.dir, "..");
 
+async function waitFor(condition: () => boolean, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
+    await Bun.sleep(2);
+  }
+}
+
 describe("execution map", () => {
+  test("serial Codex nodes expose one current stage and advance in dependency order", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const created = store.create({ repositoryPath, goal: "依次完成三个文件" });
+    const firstId = crypto.randomUUID();
+    const secondId = crypto.randomUUID();
+    const thirdId = crypto.randomUUID();
+    const planned = store.savePlan(created.id, [
+      { id: firstId, outcome: "完成第一步", scope: "STEP1.md", verification: "检查文件" },
+      { id: secondId, outcome: "完成第二步", scope: "STEP2.md", verification: "检查文件", dependsOn: [firstId] },
+      { id: thirdId, outcome: "完成汇总", scope: "RESULT.md", verification: "检查文件", dependsOn: [secondId] },
+    ]);
+
+    const started = store.markStarted(planned.id);
+    expect(started.plan?.stages).toMatchObject([
+      { status: "running", statusReason: "Codex 执行中" },
+      { status: "queued", statusReason: "等待当前执行的前置节点" },
+      { status: "queued", statusReason: "等待当前执行的前置节点" },
+    ]);
+
+    store.recordStageProgress(created.id, thirdId, "running");
+    expect(store.get(created.id)?.plan?.stages).toMatchObject([
+      { status: "running" },
+      { status: "queued" },
+      { status: "queued" },
+    ]);
+
+    store.recordStageProgress(created.id, secondId, "running");
+    expect(store.get(created.id)?.plan?.stages).toMatchObject([
+      { status: "running" },
+      { status: "queued" },
+      { status: "queued" },
+    ]);
+
+    store.recordStageProgress(created.id, firstId, "completed");
+    store.recordStageProgress(created.id, secondId, "running");
+    expect(store.get(created.id)?.plan?.stages).toMatchObject([
+      { status: "completed", statusReason: "Codex 已完成，等待验证" },
+      { status: "running", statusReason: "Codex 执行中" },
+      { status: "queued", statusReason: "等待当前执行的前置节点" },
+    ]);
+
+    store.recordStageProgress(created.id, secondId, "completed");
+    store.recordStageProgress(created.id, thirdId, "running");
+    expect(store.get(created.id)?.plan?.stages).toMatchObject([
+      { status: "completed" },
+      { status: "completed", statusReason: "Codex 已完成，等待验证" },
+      { status: "running", statusReason: "Codex 执行中" },
+    ]);
+  });
+
+  test("starts a dependency root even when the saved list is not topological", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const created = store.create({ repositoryPath, goal: "按依赖执行乱序计划" });
+    const firstId = crypto.randomUUID();
+    const secondId = crypto.randomUUID();
+    store.savePlan(created.id, [
+      { id: secondId, outcome: "完成第二步", scope: "STEP2.md", verification: "检查文件", dependsOn: [firstId] },
+      { id: firstId, outcome: "完成第一步", scope: "STEP1.md", verification: "检查文件" },
+    ]);
+
+    const started = store.markStarted(created.id);
+    expect(started.plan?.stages).toMatchObject([
+      { id: secondId, status: "queued", statusReason: "等待当前执行的前置节点" },
+      { id: firstId, status: "running", statusReason: "Codex 执行中" },
+    ]);
+
+    store.recordStageProgress(created.id, secondId, "running");
+    expect(store.get(created.id)?.plan?.stages).toMatchObject([
+      { status: "queued" },
+      { status: "running" },
+    ]);
+  });
+
+  test("Codex stage markers advance the stored current node without entering the run log", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const created = store.create({ repositoryPath, goal: "按节点回报进度" });
+    const firstId = crypto.randomUUID();
+    const secondId = crypto.randomUUID();
+    store.savePlan(created.id, [
+      { id: firstId, outcome: "完成第一步", scope: "STEP1.md", verification: "检查文件" },
+      { id: secondId, outcome: "完成第二步", scope: "STEP2.md", verification: "检查文件", dependsOn: [firstId] },
+    ]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const app = createApp({
+      store,
+      worktreeManager: {
+        async prepare() {
+          return { path: repositoryPath, branch: "teamline/stage-progress", baseCommit: "012345" };
+        },
+      },
+      codexRunner: {
+        async start() {
+          return {
+            interrupt() {
+              release();
+            },
+            events: (async function* () {
+              yield { type: "progress" as const, message: `TEAMLINE_STAGE_START:${firstId}` };
+              yield {
+                type: "progress" as const,
+                message: `TEAMLINE_STAGE_COMPLETE:${firstId}\nTEAMLINE_STAGE_START:${secondId}`,
+              };
+              await held;
+              yield { type: "exit" as const, exitCode: 1, message: "test stopped" };
+            })(),
+          };
+        },
+        async resume() {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    const response = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${created.id}/start`, {
+        method: "POST",
+      }),
+    );
+    expect(response.status).toBe(200);
+    await waitFor(() => store.get(created.id)?.plan?.stages[1]?.status === "running");
+    expect(store.get(created.id)?.plan?.stages).toMatchObject([
+      { status: "completed", statusReason: "Codex 已完成，等待验证" },
+      { status: "running", statusReason: "Codex 执行中" },
+    ]);
+    expect(store.listRunEvents(created.id).map((event) => event.message).join("\n")).not.toContain(
+      "TEAMLINE_STAGE_",
+    );
+    release();
+  });
+
   test("a structured execution map survives reopening the local database", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-map-test-"));
     const databasePath = join(directory, "teamline.db");
@@ -266,7 +407,7 @@ describe("execution map", () => {
     );
     expect((await whileRunning.json()).workOrder.plan.stages).toMatchObject([
       { id: planned.plan!.stages[0]!.id, status: "running" },
-      { id: planned.plan!.stages[1]!.id, status: "running" },
+      { id: planned.plan!.stages[1]!.id, status: "queued" },
     ]);
 
     finish();
@@ -281,8 +422,8 @@ describe("execution map", () => {
     expect((await reviewed.clone().json()).workOrder.plan.stages).toMatchObject([
       {
         id: planned.plan!.stages[0]!.id,
-        status: "response",
-        statusReason: "自动验证通过，等待阶段检查点",
+        status: "completed",
+        statusReason: "自动验证通过",
       },
       {
         id: planned.plan!.stages[1]!.id,

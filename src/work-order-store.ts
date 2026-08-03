@@ -1182,14 +1182,30 @@ export class WorkOrderStore {
     if (!workOrder?.plan) throw new Error("找不到可执行的委托计划");
     const runnableStageIds = codexStageIdsForNextRun(workOrder.plan);
     if (runnableStageIds.size === 0) throw new Error("当前没有可以启动的 Codex 节点");
+    const stageById = new Map(workOrder.plan.stages.map((stage) => [stage.id, stage]));
+    const firstRunningStageId = workOrder.plan.stages.find(
+      (stage) =>
+        runnableStageIds.has(stage.id) &&
+        stage.dependsOn.every(
+          (dependencyId) => stageById.get(dependencyId)?.status === "completed",
+        ),
+    )?.id;
     const confirmedPlan = {
       ...workOrder.plan,
       confirmationRequired: false,
-      stages: workOrder.plan.stages.map((stage) =>
-        runnableStageIds.has(stage.id)
-          ? { ...stage, status: "running" as const, statusReason: "Codex 执行中" }
-          : stage,
-      ),
+      stages: workOrder.plan.stages.map((stage) => {
+        if (stage.id === firstRunningStageId) {
+          return { ...stage, status: "running" as const, statusReason: "Codex 执行中" };
+        }
+        if (!runnableStageIds.has(stage.id)) return stage;
+        return {
+          ...stage,
+          status: "queued" as const,
+          statusReason: stage.dependsOn.length
+            ? "等待当前执行的前置节点"
+            : "等待 Codex 推进",
+        };
+      }),
     };
     const now = new Date().toISOString();
     this.database
@@ -1308,6 +1324,59 @@ export class WorkOrderStore {
 
   recordProgress(id: string, message: string): void {
     this.appendRunEvent(id, "progress", message, { summary: message });
+  }
+
+  recordStageProgress(
+    id: string,
+    stageId: string,
+    phase: "running" | "completed",
+  ): void {
+    const workOrder = this.get(id);
+    const stage = workOrder?.plan?.stages.find((candidate) => candidate.id === stageId);
+    if (!workOrder?.plan || workOrder.runStatus !== "running" || stage?.executionMethod !== "codex") {
+      return;
+    }
+    if (phase === "completed" && stage.status !== "running") return;
+    if (
+      phase === "running" &&
+      (workOrder.plan.stages.some(
+        (candidate) => candidate.id !== stageId && candidate.status === "running",
+      ) ||
+        !stage.dependsOn.every((dependencyId) => {
+          const dependency = workOrder.plan!.stages.find(
+            (candidate) => candidate.id === dependencyId,
+          );
+          return dependency?.status === "completed";
+        }))
+    ) {
+      return;
+    }
+    const plan: WorkOrderPlan = {
+      ...workOrder.plan,
+      stages: workOrder.plan.stages.map((candidate) => {
+        if (candidate.id === stageId) {
+          return phase === "running"
+            ? { ...candidate, status: "running" as const, statusReason: "Codex 执行中" }
+            : {
+                ...candidate,
+                status: "completed" as const,
+                statusReason: "Codex 已完成，等待验证",
+              };
+        }
+        return candidate;
+      }),
+    };
+    const summary = phase === "running"
+      ? `Codex 正在执行“${stage.outcome}”`
+      : `Codex 已完成“${stage.outcome}”`;
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET plan_json = ?, current_summary = ?, updated_at = ?
+        WHERE id = ? AND run_status = 'running'
+      `)
+      .run(JSON.stringify(plan), summary, now, id);
   }
 
   recordExit(id: string, exitCode: number, message: string): void {
@@ -2219,10 +2288,10 @@ function planWithVerificationStatuses(
       if (verification.status === "passed") {
         return {
           ...stage,
-          status: checkpointedStages.has(stage.id) ? "completed" : "response",
+          status: "completed",
           statusReason: checkpointedStages.has(stage.id)
             ? "验证通过，检查点已保存"
-            : "自动验证通过，等待阶段检查点",
+            : "自动验证通过",
         };
       }
       if (verification.status === "failed") {

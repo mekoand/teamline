@@ -369,7 +369,8 @@ describe("local Teamline state transfer", () => {
     const appSource = await (
       await target.fetch(new Request("http://teamline.local/app.js"))
     ).text();
-    expect(appSource).toContain("检查恢复的计划");
+    expect(appSource).toContain("检查并确认计划");
+    expect(appSource).not.toContain("检查恢复的计划");
     expect(appSource).toContain('id="edit-plan"');
 
     const confirmedPlan = await target.fetch(

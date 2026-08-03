@@ -56,7 +56,7 @@ function presentStatus(
   }
   if (workOrder.status === "ready") {
     if (workOrder.plan?.confirmationRequired) {
-      return { userStatus: "planning", statusReason: "待重新确认计划" };
+      return { userStatus: "planning", statusReason: "待确认计划" };
     }
     const externalStage = workOrder.plan?.stages.find(
       (stage) => stage.executionMethod === "external" && stage.status === "response",

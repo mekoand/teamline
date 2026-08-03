@@ -350,7 +350,7 @@ describe("interrupt and continue API", () => {
 
       const invocation = readFileSync(invocationLog, "utf8");
       expect(invocation).toContain(
-        "<exec>\n<--skip-git-repo-check>\n<resume>\n<session-missing>\n<请继续推进已确认的工作委托：为设置页面增加深色模式>\n<--json>",
+        "<exec>\n<--skip-git-repo-check>\n<resume>\n<session-missing>\n<请继续推进已确认的工作委托：为设置页面增加深色模式\n继续按节点执行；开始和完成节点时分别单独输出 TEAMLINE_STAGE_START:<节点 ID> 和 TEAMLINE_STAGE_COMPLETE:<节点 ID>。>\n<--json>",
       );
       expect(invocation.match(/<exec>/g)).toHaveLength(2);
       expect(invocation).toContain("工作目标：\n为设置页面增加深色模式");
