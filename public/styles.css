@@ -67,6 +67,16 @@ body {
 
 body {
   overflow: hidden;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2,
+h3,
+button,
+label > span {
+  text-wrap: balance;
 }
 
 button,
@@ -510,6 +520,7 @@ pre {
 }
 
 .map-panel,
+.conversation-panel,
 .recovery-panel,
 .run-panel,
 .result-panel,
@@ -520,6 +531,64 @@ pre {
   border-radius: 15px;
   background: var(--panel);
   box-shadow: 0 12px 38px rgba(32, 34, 31, 0.03);
+}
+
+.conversation-panel {
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+}
+
+.conversation-thread {
+  display: grid;
+  gap: 10px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.conversation-message {
+  width: min(84%, 620px);
+  padding: 12px 14px;
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.conversation-message.user {
+  justify-self: end;
+  background: var(--accent-soft);
+}
+
+.conversation-message > span,
+.conversation-message > small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.conversation-message p {
+  margin: 5px 0;
+  color: var(--text-soft);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.conversation-message small {
+  color: var(--accent);
+}
+
+.conversation-empty {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.conversation-form {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.conversation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
 }
 
 .recovery-panel {
@@ -1190,7 +1259,7 @@ textarea {
 
 .context-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 3px;
   margin-bottom: 20px;
   padding: 3px;
@@ -1728,6 +1797,15 @@ dialog::backdrop {
 
   .fact-grid {
     grid-template-columns: 1fr;
+  }
+
+  .conversation-message {
+    width: 92%;
+  }
+
+  .conversation-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .recovery-facts {

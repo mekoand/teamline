@@ -2,11 +2,14 @@ import { Database } from "bun:sqlite";
 import {
   createWorkOrder,
   type CreateWorkOrderInput,
+  type ClarificationQuestion,
   type PlanReference,
   type PlanStageInput,
   type PlanWorkspace,
   type WorkOrder,
   type WorkOrderCheckpoint,
+  type WorkOrderConversationMessage,
+  type WorkOrderClarification,
   type WorkOrderPlan,
   type WorkOrderRunEvent,
   type WorkOrderResult,
@@ -17,6 +20,7 @@ import {
   type WorkOrderWorkspace,
   workOrderPaces,
   workOrderPriorities,
+  workOrderMaterialKinds,
 } from "./work-order";
 
 type WorkOrderRow = {
@@ -32,6 +36,7 @@ type WorkOrderRow = {
   status: WorkOrder["status"] | "completed";
   current_summary: string;
   plan_json: string | null;
+  clarification_json: string | null;
   result_json: string | null;
   revision_note: string | null;
   worktree_path: string | null;
@@ -71,6 +76,17 @@ type CheckpointRow = {
   created_at: string;
 };
 
+type ConversationRow = {
+  id: number;
+  role: WorkOrderConversationMessage["role"];
+  message_kind: WorkOrderConversationMessage["kind"];
+  content: string;
+  stage_id: string | null;
+  decision_target: WorkOrderConversationMessage["decisionTarget"];
+  requires_plan_confirmation: number;
+  created_at: string;
+};
+
 export class PlanLockedError extends Error {}
 
 export class WorkOrderStore {
@@ -98,6 +114,7 @@ export class WorkOrderStore {
     this.addMaterialColumnsToExistingDatabase();
     this.addImportSourceColumnToExistingDatabase();
     this.addResourcePlanColumnToExistingDatabase();
+    this.addClarificationColumnToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
@@ -109,6 +126,22 @@ export class WorkOrderStore {
         created_at TEXT NOT NULL,
         FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
       )
+    `);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS work_order_conversation (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_order_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        message_kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        stage_id TEXT,
+        decision_target TEXT,
+        requires_plan_confirmation INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
+      );
+      CREATE INDEX IF NOT EXISTS work_order_conversation_lookup
+      ON work_order_conversation(work_order_id, id);
     `);
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS local_preferences (
@@ -151,7 +184,9 @@ export class WorkOrderStore {
       .query<WorkOrderRow, []>("SELECT * FROM work_orders ORDER BY created_at DESC")
       .all();
 
-    return rows.map((row) => mapRow(row, this.listCheckpoints(row.id)));
+    return rows.map((row) =>
+      mapRow(row, this.listCheckpoints(row.id), this.listConversation(row.id)),
+    );
   }
 
   get(id: string): WorkOrder | null {
@@ -159,7 +194,31 @@ export class WorkOrderStore {
       .query<WorkOrderRow, [string]>("SELECT * FROM work_orders WHERE id = ?")
       .get(id);
 
-    return row ? mapRow(row, this.listCheckpoints(row.id)) : null;
+    return row
+      ? mapRow(row, this.listCheckpoints(row.id), this.listConversation(row.id))
+      : null;
+  }
+
+  listConversation(id: string): WorkOrderConversationMessage[] {
+    return this.database
+      .query<ConversationRow, [string]>(`
+        SELECT id, role, message_kind, content, stage_id, decision_target,
+               requires_plan_confirmation, created_at
+        FROM work_order_conversation
+        WHERE work_order_id = ?
+        ORDER BY id ASC
+      `)
+      .all(id)
+      .map((row) => ({
+        id: row.id,
+        role: row.role,
+        kind: row.message_kind,
+        content: row.content,
+        stageId: row.stage_id,
+        decisionTarget: row.decision_target,
+        requiresPlanConfirmation: row.requires_plan_confirmation === 1,
+        createdAt: row.created_at,
+      }));
   }
 
   listCheckpoints(id: string): WorkOrderCheckpoint[] {
@@ -355,7 +414,240 @@ export class WorkOrderStore {
     return workOrder;
   }
 
-  savePlan(id: string, stages: PlanStageInput[]): WorkOrder {
+  saveClarification(
+    id: string,
+    questions: ClarificationQuestion[],
+    requiresPlanConfirmation = false,
+    pendingReply?: string,
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这项委托");
+    if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
+      throw new PlanLockedError("委托开始执行后不能直接修改计划");
+    }
+    const normalized = normalizeClarificationQuestions(questions);
+    if (normalized.length === 0) throw new Error("澄清问题不能为空");
+    const now = new Date().toISOString();
+    const clarification: WorkOrderClarification = {
+      questions: normalized,
+      requiresPlanConfirmation,
+      createdAt: now,
+    };
+    this.database.transaction(() => {
+      if (pendingReply) {
+        this.appendConversation(id, {
+          role: "user",
+          kind: "reply",
+          content: pendingReply,
+          stageId: null,
+          decisionTarget: workOrder.pendingClarification?.questions[0]?.target ?? "plan",
+          requiresPlanConfirmation,
+        }, now);
+      }
+      this.database
+        .query(`
+          UPDATE work_orders
+          SET clarification_json = ?, status = 'draft', current_summary = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          JSON.stringify(clarification),
+          normalized.length === 1 ? "需要补充一项关键信息" : `需要补充 ${normalized.length} 项关键信息`,
+          now,
+          id,
+        );
+      for (const question of normalized) {
+        this.appendConversation(id, {
+          role: "teamline",
+          kind: "question",
+          content: question.prompt,
+          stageId: null,
+          decisionTarget: question.target,
+          requiresPlanConfirmation,
+        }, now);
+      }
+    })();
+    return this.get(id)!;
+  }
+
+  addStageSupplement(id: string, stageId: string, content: string): WorkOrder {
+    const workOrder = this.get(id);
+    const note = content.trim();
+    if (!workOrder?.plan) throw new Error("请先生成委托计划");
+    if (!note) throw new Error("请填写补充内容");
+    if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
+      throw new PlanLockedError("当前状态不能补充节点上下文");
+    }
+    const stage = workOrder.plan.stages.find((candidate) => candidate.id === stageId);
+    if (!stage) throw new Error("找不到当前节点");
+    const now = new Date().toISOString();
+    const plan: WorkOrderPlan = {
+      ...workOrder.plan,
+      updatedAt: now,
+      stages: workOrder.plan.stages.map((candidate) =>
+        candidate.id === stageId
+          ? { ...candidate, contextNotes: [...(candidate.contextNotes ?? []), note] }
+          : candidate,
+      ),
+    };
+    this.database.transaction(() => {
+      this.database
+        .query("UPDATE work_orders SET plan_json = ?, current_summary = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(plan), `已补充“${stage.outcome}”节点`, now, id);
+      this.appendConversation(id, {
+        role: "user",
+        kind: "supplement",
+        content: note,
+        stageId,
+        decisionTarget: "stage",
+        requiresPlanConfirmation: false,
+      }, now);
+      this.appendConversation(id, {
+        role: "teamline",
+        kind: "decision",
+        content: `已归入“${stage.outcome}”节点，不改变计划结构。`,
+        stageId,
+        decisionTarget: "stage",
+        requiresPlanConfirmation: false,
+      }, now);
+    })();
+    return this.get(id)!;
+  }
+
+  applyGeneratedPlan(
+    id: string,
+    generated: {
+      stages: PlanStageInput[];
+      goal?: string;
+      acceptance?: string | null;
+      materials?: Array<{ kind: WorkOrder["materials"][number]["kind"]; value: string }>;
+      resourcePlan?: {
+        priority: WorkOrderPriority;
+        pace: WorkOrderPace;
+        runWhenQuotaAvailable: boolean;
+      };
+      message?: string;
+    },
+    requiresPlanConfirmation = false,
+    pendingReply?: string,
+  ): WorkOrder {
+    const current = this.get(id);
+    if (!current) throw new Error("找不到这项委托");
+    const clarificationTargets = new Set(
+      current.pendingClarification?.questions.map((question) => question.target) ?? [],
+    );
+    const canUpdateGoal =
+      requiresPlanConfirmation ||
+      clarificationTargets.has("goal") ||
+      clarificationTargets.has("acceptance") ||
+      clarificationTargets.has("plan");
+    const goal = canUpdateGoal
+      ? publicPlanningText(generated.goal?.trim() || current.goal)
+      : current.goal;
+    const title = titleForGoal(goal);
+    const acceptance = !canUpdateGoal || generated.acceptance === undefined
+      ? current.acceptance
+      : generated.acceptance?.trim()
+        ? publicPlanningText(generated.acceptance.trim())
+        : null;
+    const canUpdateMaterials = Boolean(pendingReply) && clarificationTargets.has("materials");
+    const materials = !canUpdateMaterials || generated.materials === undefined
+      ? current.materials
+      : normalizeMaterialInputs(generated.materials).map((material) => ({
+          id: crypto.randomUUID(),
+          ...material,
+        }));
+    const canUpdateResources = Boolean(pendingReply) && clarificationTargets.has("resources");
+    const resourcePlan = canUpdateResources && generated.resourcePlan
+      ? {
+          ...current.resourcePlan,
+          priority: generated.resourcePlan.priority,
+          pace: generated.resourcePlan.pace,
+          // Auto-run remains an explicit switch; planning text never grants execution.
+          runWhenQuotaAvailable: current.resourcePlan.runWhenQuotaAvailable,
+        }
+      : current.resourcePlan;
+    validateResourcePlan(resourcePlan);
+    const stages = inheritStableStageContext(
+      current.plan,
+      sanitizeGeneratedStages(generated.stages),
+    );
+    const structuralChange =
+      current.plan === null ||
+      planStructureChanged(current, stages, goal, acceptance);
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      if (pendingReply) {
+        this.appendConversation(id, {
+          role: "user",
+          kind: "reply",
+          content: pendingReply,
+          stageId: null,
+          decisionTarget: current.pendingClarification?.questions[0]?.target ?? "plan",
+          requiresPlanConfirmation,
+        }, now);
+      }
+      this.database
+        .query(`
+          UPDATE work_orders
+          SET title = ?, goal = ?, acceptance = ?, materials_json = ?, resource_plan_json = ?,
+              clarification_json = NULL, status = ?, current_summary = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          title,
+          goal,
+          acceptance,
+          JSON.stringify(materials),
+          JSON.stringify({
+            priority: resourcePlan.priority,
+            pace: resourcePlan.pace,
+            runWhenQuotaAvailable: resourcePlan.runWhenQuotaAvailable,
+            autoRunReason: resourcePlan.runWhenQuotaAvailable
+              ? current.resourcePlan.autoRunReason
+              : null,
+          }),
+          structuralChange ? current.status : "ready",
+          structuralChange
+            ? current.currentSummary
+            : canUpdateResources
+              ? "资源偏好已更新"
+              : "委托上下文已更新",
+          now,
+          id,
+        );
+      if (structuralChange) {
+        this.savePlan(id, stages, { confirmationRequired: true });
+      }
+      if (current.conversation.length > 0 || requiresPlanConfirmation) {
+        this.appendConversation(id, {
+          role: "teamline",
+          kind: "decision",
+          content: structuralChange
+            ? publicPlanningText(generated.message?.trim() || "计划已更新，请重新确认后再启动。")
+            : canUpdateResources
+              ? "资源偏好已更新，不改变计划版本。"
+              : "委托上下文已更新，不改变计划版本。",
+          stageId: null,
+          decisionTarget: structuralChange
+            ? "plan"
+            : canUpdateResources
+              ? "resources"
+              : canUpdateMaterials
+                ? "materials"
+                : "plan",
+          requiresPlanConfirmation: structuralChange,
+        });
+      }
+    })();
+    return this.get(id)!;
+  }
+
+  savePlan(
+    id: string,
+    stages: PlanStageInput[],
+    options: { confirmationRequired?: boolean } = {},
+  ): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder) {
       throw new Error("找不到这项委托");
@@ -420,6 +712,9 @@ export class WorkOrderStore {
         workspace,
         materials: normalizeReferences(stage.materials),
         artifacts: normalizeReferences(stage.artifacts),
+        ...(normalizeContextNotes(stage.contextNotes).length
+          ? { contextNotes: normalizeContextNotes(stage.contextNotes) }
+          : {}),
         status: "planning" as const,
         statusReason: "等待确认并启动",
       };
@@ -440,13 +735,14 @@ export class WorkOrderStore {
     const plan: WorkOrderPlan = {
       version: (workOrder.plan?.version ?? 0) + 1,
       stages: normalizedStages,
+      ...(options.confirmationRequired ? { confirmationRequired: true } : {}),
       updatedAt: now,
     };
 
     this.database
       .query(`
         UPDATE work_orders
-        SET plan_json = ?, status = ?, current_summary = ?, updated_at = ?
+        SET plan_json = ?, clarification_json = NULL, status = ?, current_summary = ?, updated_at = ?
         WHERE id = ?
       `)
       .run(JSON.stringify(plan), "ready", "计划等待确认", now, id);
@@ -530,11 +826,14 @@ export class WorkOrderStore {
   }
 
   markStarted(id: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder?.plan) throw new Error("找不到可执行的委托计划");
+    const confirmedPlan = { ...workOrder.plan, confirmationRequired: false };
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'running', current_summary = 'Codex 已启动',
+        SET status = 'running', current_summary = 'Codex 已启动', plan_json = ?,
             run_status = 'running', session_id = NULL,
             run_pid = NULL,
             run_number = run_number + 1,
@@ -542,7 +841,7 @@ export class WorkOrderStore {
             last_error = NULL, updated_at = ?
         WHERE id = ?
       `)
-      .run(now, now, now, id);
+      .run(JSON.stringify(confirmedPlan), now, now, now, id);
     return this.get(id)!;
   }
 
@@ -909,6 +1208,30 @@ export class WorkOrderStore {
     })();
   }
 
+  private appendConversation(
+    id: string,
+    message: Omit<WorkOrderConversationMessage, "id" | "createdAt">,
+    createdAt = new Date().toISOString(),
+  ): void {
+    this.database
+      .query(`
+        INSERT INTO work_order_conversation (
+          work_order_id, role, message_kind, content, stage_id,
+          decision_target, requires_plan_confirmation, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        id,
+        message.role,
+        message.kind,
+        message.content,
+        message.stageId,
+        message.decisionTarget,
+        message.requiresPlanConfirmation ? 1 : 0,
+        createdAt,
+      );
+  }
+
   private addPlanColumnToExistingDatabase(): void {
     const columns = this.database
       .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
@@ -1010,6 +1333,18 @@ export class WorkOrderStore {
     }
   }
 
+  private addClarificationColumnToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("clarification_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN clarification_json TEXT");
+    }
+  }
+
   private addImportSourceColumnToExistingDatabase(): void {
     const columns = new Set(
       this.database
@@ -1047,6 +1382,7 @@ export class WorkOrderStore {
 function mapRow(
   row: WorkOrderRow,
   checkpoints: WorkOrderCheckpoint[] = [],
+  conversation: WorkOrderConversationMessage[] = [],
 ): WorkOrder {
   return {
     id: row.id,
@@ -1070,6 +1406,8 @@ function mapRow(
             : null,
         )
       : null,
+    pendingClarification: normalizeClarification(row.clarification_json),
+    conversation,
     result: row.result_json ? (JSON.parse(row.result_json) as WorkOrderResult) : null,
     revisionNote: row.revision_note,
     worktreePath: row.worktree_path,
@@ -1149,6 +1487,65 @@ function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {
   }
 }
 
+function normalizeClarification(value: string | null): WorkOrderClarification | null {
+  if (!value) return null;
+  try {
+    const stored = JSON.parse(value) as Partial<WorkOrderClarification>;
+    const questions = normalizeClarificationQuestions(stored.questions ?? []);
+    if (!questions.length || typeof stored.createdAt !== "string") return null;
+    return {
+      questions,
+      requiresPlanConfirmation: stored.requiresPlanConfirmation === true,
+      createdAt: stored.createdAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeClarificationQuestions(value: unknown): ClarificationQuestion[] {
+  if (!Array.isArray(value)) throw new Error("澄清问题格式无法识别");
+  const targets = ["goal", "acceptance", "materials", "resources", "plan"];
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") throw new Error("澄清问题格式无法识别");
+    const question = item as Partial<ClarificationQuestion>;
+    const id = question.id?.trim() || `question-${index + 1}`;
+    const prompt = publicPlanningText(question.prompt?.trim() ?? "");
+    const reason = publicPlanningText(question.reason?.trim() ?? "");
+    if (!prompt || !reason || !targets.includes(question.target ?? "")) {
+      throw new Error("澄清问题格式无法识别");
+    }
+    return { id, prompt, reason, target: question.target! };
+  });
+}
+
+function normalizeMaterialInputs(
+  value: Array<{ kind: WorkOrder["materials"][number]["kind"]; value: string }>,
+): Array<{ kind: WorkOrder["materials"][number]["kind"]; value: string }> {
+  if (!Array.isArray(value)) throw new Error("素材格式无法识别");
+  return value.map((material) => {
+    const normalized = material.value?.trim() ?? "";
+    if (!workOrderMaterialKinds.includes(material.kind) || !normalized) {
+      throw new Error("素材格式无法识别");
+    }
+    return { kind: material.kind, value: normalized };
+  });
+}
+
+function validateResourcePlan(value: {
+  priority: WorkOrderPriority;
+  pace: WorkOrderPace;
+  runWhenQuotaAvailable: boolean;
+}): void {
+  if (
+    !workOrderPriorities.includes(value.priority) ||
+    !workOrderPaces.includes(value.pace) ||
+    typeof value.runWhenQuotaAvailable !== "boolean"
+  ) {
+    throw new Error("资源方案格式无法识别");
+  }
+}
+
 function mapCheckpointRow(row: CheckpointRow): WorkOrderCheckpoint {
   return {
     id: row.id,
@@ -1170,6 +1567,7 @@ function normalizeStoredPlan(
   const expectedWorkspace = planWorkspaceFor(workspace);
   return {
     ...plan,
+    ...(plan.confirmationRequired === true ? { confirmationRequired: true } : {}),
     stages: plan.stages.map((stage) => ({
       ...stage,
       dependsOn: normalizeDependencies(stage.dependsOn),
@@ -1180,6 +1578,9 @@ function normalizeStoredPlan(
           : normalizeWorkspace(stage.workspace, expectedWorkspace),
       materials: normalizeReferences(stage.materials),
       artifacts: normalizeReferences(stage.artifacts),
+      ...(normalizeContextNotes(stage.contextNotes).length
+        ? { contextNotes: normalizeContextNotes(stage.contextNotes) }
+        : {}),
       status: stage.status ?? "planning",
       statusReason: stage.statusReason?.trim() || "等待确认并启动",
     })),
@@ -1351,6 +1752,14 @@ function normalizeReferences(value: unknown): PlanReference[] {
   });
 }
 
+function normalizeContextNotes(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((note) => typeof note !== "string")) {
+    throw new Error("节点补充上下文无效");
+  }
+  return value.map((note) => note.trim()).filter(Boolean);
+}
+
 function currentRuntime(row: WorkOrderRow): number {
   if (
     !["running", "stopping"].includes(row.run_status ?? "") ||
@@ -1359,6 +1768,85 @@ function currentRuntime(row: WorkOrderRow): number {
     return row.runtime_ms;
   }
   return row.runtime_ms + Math.max(0, Date.now() - Date.parse(row.runtime_updated_at));
+}
+
+function titleForGoal(goal: string): string {
+  const firstLine = goal.split(/\r?\n/, 1)[0] ?? goal;
+  return firstLine.length > 56 ? `${firstLine.slice(0, 56)}…` : firstLine;
+}
+
+function publicPlanningText(value: string): string {
+  return value.replace(/Ask\s+Matt/gi, "Teamline");
+}
+
+function sanitizeGeneratedStages(stages: PlanStageInput[]): PlanStageInput[] {
+  return stages.map((stage) => ({
+    ...stage,
+    outcome: publicPlanningText(stage.outcome),
+    scope: publicPlanningText(stage.scope),
+    verification: publicPlanningText(stage.verification),
+    ...(stage.contextNotes
+      ? { contextNotes: stage.contextNotes.map(publicPlanningText) }
+      : {}),
+  }));
+}
+
+function inheritStableStageContext(
+  plan: WorkOrderPlan | null,
+  stages: PlanStageInput[],
+): PlanStageInput[] {
+  if (!plan) return stages;
+  const contextByStage = new Map(plan.stages.map((stage) => [stage.id, stage]));
+  return stages.map((stage) => {
+    const inherited = stage.id ? contextByStage.get(stage.id) : undefined;
+    if (!inherited) return stage;
+    return {
+      ...stage,
+      ...(!stage.contextNotes?.length && inherited.contextNotes?.length
+        ? { contextNotes: [...inherited.contextNotes] }
+        : {}),
+      ...(!stage.materials?.length && inherited.materials.length
+        ? { materials: inherited.materials.map((reference) => ({ ...reference })) }
+        : {}),
+      ...(!stage.artifacts?.length && inherited.artifacts.length
+        ? { artifacts: inherited.artifacts.map((reference) => ({ ...reference })) }
+        : {}),
+    };
+  });
+}
+
+function planStructureChanged(
+  workOrder: WorkOrder,
+  stages: PlanStageInput[],
+  goal: string,
+  acceptance: string | null,
+): boolean {
+  if (!workOrder.plan || goal !== workOrder.goal || acceptance !== workOrder.acceptance) {
+    return true;
+  }
+  if (stages.length !== workOrder.plan.stages.length) return true;
+  const expectedWorkspace = planWorkspaceFor(workOrder.workspace);
+  const candidate = stages.map((stage) => ({
+    id: stage.id?.trim() ?? "",
+    outcome: stage.outcome.trim(),
+    scope: stage.scope.trim(),
+    verification: stage.verification.trim(),
+    verificationCommand: stage.verificationCommand?.trim() || null,
+    dependsOn: [...normalizeDependencies(stage.dependsOn)].sort(),
+    executionMethod: normalizeExecutionMethod(stage.executionMethod),
+    workspace: normalizeWorkspace(stage.workspace, expectedWorkspace),
+  }));
+  const current = workOrder.plan.stages.map((stage) => ({
+    id: stage.id,
+    outcome: stage.outcome,
+    scope: stage.scope,
+    verification: stage.verification,
+    verificationCommand: stage.verificationCommand ?? null,
+    dependsOn: [...stage.dependsOn].sort(),
+    executionMethod: stage.executionMethod,
+    workspace: stage.workspace,
+  }));
+  return JSON.stringify(candidate) !== JSON.stringify(current);
 }
 
 function processIsAlive(pid: number): boolean {

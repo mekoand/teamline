@@ -468,6 +468,8 @@ function renderWorkspace(workOrder, feedback) {
         <span class="saved-state">已保存于本机</span>
       </header>
 
+      ${workOrder.pendingClarification ? renderConversationPanel(workOrder) : ""}
+
       <section class="map-panel">
         <div class="section-heading">
           <div>
@@ -483,6 +485,8 @@ function renderWorkspace(workOrder, feedback) {
         ${renderPlanArea(workOrder, stages, canEditPlan)}
         <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
       </section>
+
+      ${workOrder.pendingClarification ? "" : renderConversationPanel(workOrder)}
 
       ${renderRecoveryPanel(workOrder)}
       ${renderRunPanel(workOrder)}
@@ -532,6 +536,9 @@ function currentPlanCheckpoints(workOrder) {
 }
 
 function renderPlanArea(workOrder, stages, canEditPlan) {
+  if (workOrder.pendingClarification && !stages) {
+    return '<div class="plan-empty"><p>回答上方的关键问题后，Teamline 会继续整理计划。</p></div>';
+  }
   if (!stages) {
     return `
       <div class="plan-empty">
@@ -546,6 +553,51 @@ function renderPlanArea(workOrder, stages, canEditPlan) {
   }
   if (canEditPlan) return renderPlanForm(stages);
   return renderExecutionMap(workOrder, stages);
+}
+
+function renderConversationPanel(workOrder) {
+  if (!workOrder.plan && !workOrder.pendingClarification && !workOrder.conversation?.length) {
+    return "";
+  }
+  const pending = workOrder.pendingClarification;
+  const stages = workOrder.plan?.stages ?? [];
+  const stage = stages[Math.min(state.selectedStageIndex, Math.max(0, stages.length - 1))];
+  const editable = !workOrder.runStatus && ["draft", "ready"].includes(workOrder.status);
+  const messages = workOrder.conversation ?? [];
+  return `
+    <section class="conversation-panel" aria-labelledby="conversation-heading">
+      <div class="section-heading compact conversation-heading">
+        <div><p class="overline">委托对话</p><h2 id="conversation-heading">${pending ? "确认关键信息" : "补充当前工作"}</h2></div>
+        <span class="subtle-label">${pending ? "等待回复" : "一项委托一条对话"}</span>
+      </div>
+      <div class="conversation-thread" aria-live="polite">
+        ${messages.length
+          ? messages.map((message) => `
+              <article class="conversation-message ${message.role}">
+                <span>${message.role === "user" ? "你" : "Teamline"}${message.stageId ? ` · ${escapeHtml(stageLabel(workOrder, message.stageId))}` : ""}</span>
+                <p>${escapeHtml(message.content)}</p>
+                ${message.kind === "decision" ? `<small>${message.requiresPlanConfirmation ? "计划已更新，需重新确认" : "已写入节点上下文"}</small>` : ""}
+              </article>`).join("")
+          : '<p class="conversation-empty">补充细节会归入当前节点；调整目标、节点关系或资源安排时更新计划。</p>'}
+      </div>
+      ${editable ? `
+        <form id="conversation-form" class="conversation-form">
+          <label><span>${pending ? "你的回答" : `补充${stage ? `“${escapeHtml(stage.outcome)}”` : "委托"}`}</span><textarea name="message" rows="3" required placeholder="${pending ? "直接回答上面的问题" : "写下需要补充或调整的内容"}"></textarea></label>
+          <div class="conversation-actions">
+            ${pending
+              ? '<button class="primary-button" type="submit" data-conversation-mode="reply">提交回答</button>'
+              : stage
+                ? '<button class="primary-button" type="submit" data-conversation-mode="supplement">补充当前节点</button><button class="secondary-button" type="submit" data-conversation-mode="replan">更新目标或计划</button>'
+                : '<button class="secondary-button" type="submit" data-conversation-mode="replan">更新委托</button>'}
+          </div>
+          <p class="inline-feedback" id="conversation-feedback" role="status"></p>
+        </form>` : ""}
+    </section>`;
+}
+
+function stageLabel(workOrder, stageId) {
+  const index = workOrder.plan?.stages.findIndex((stage) => stage.id === stageId) ?? -1;
+  return index >= 0 ? `节点 ${index + 1}` : "节点";
 }
 
 function renderMapViewControls(workOrder) {
@@ -718,7 +770,6 @@ function renderContextTabs() {
     ["details", "详情"],
     ["materials", "素材"],
     ["artifacts", "成果"],
-    ["conversation", "对话"],
   ];
   return `
     <div class="context-tabs" role="tablist" aria-label="节点上下文">
@@ -766,17 +817,6 @@ function renderContextTabContent(workOrder, stage) {
       </div>`;
   }
 
-  if (state.contextTab === "conversation") {
-    return `
-      <div class="context-stage context-tab-panel" role="tabpanel">
-        <h3>节点对话</h3>
-        <p class="muted">对话是节点的辅助上下文，执行地图仍是主要工作界面。</p>
-        ${workOrder.sessionId
-          ? `<article class="reference-card"><span>Codex 会话</span><strong>${escapeHtml(workOrder.sessionId)}</strong><small>最近活动：${escapeHtml(state.events.at(-1)?.message ?? "暂无活动")}</small></article>`
-          : '<p class="muted">启动 Codex 后，这里会显示关联会话和最近活动。</p>'}
-      </div>`;
-  }
-
   return `
     <div class="context-stage context-tab-panel" role="tabpanel">
       <h3>${escapeHtml(stage.outcome)}</h3>
@@ -788,6 +828,7 @@ function renderContextTabContent(workOrder, stage) {
         <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
         <div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>
         <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
+        <div><dt>补充上下文</dt><dd>${stage.contextNotes?.length ? stage.contextNotes.map(escapeHtml).join("；") : "暂无"}</dd></div>
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
       <div class="context-section">
@@ -917,7 +958,10 @@ function bindRenderedEvents() {
         method: "POST",
       });
       state.draftStages = null;
-      await acceptWorkOrderResult(result.workOrder, "计划已经生成，你可以继续编辑。");
+      await acceptWorkOrderResult(
+        result.workOrder,
+        result.outcome === "clarification" ? "还需要你确认一项关键信息。" : "计划已经生成，你可以继续编辑。",
+      );
     } catch (error) {
       resetBusy(button, "生成计划");
       setFeedback("plan-feedback", messageFrom(error, "生成计划失败，你仍然可以手动填写。"), true);
@@ -927,6 +971,39 @@ function bindRenderedEvents() {
   document.querySelector("#manual-plan")?.addEventListener("click", () => {
     state.draftStages = [emptyStage()];
     renderConsole();
+  });
+
+  document.querySelector("#conversation-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = event.submitter;
+    const mode = button?.dataset.conversationMode ?? "reply";
+    const message = new FormData(event.currentTarget).get("message");
+    const stage = state.selected?.plan?.stages?.[state.selectedStageIndex];
+    setBusy(button, mode === "supplement" ? "正在保存…" : "正在整理…");
+    setFeedback(
+      "conversation-feedback",
+      mode === "supplement" ? "正在写入当前节点。" : "正在整理目标、计划和资源决定。",
+      false,
+    );
+    try {
+      const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/conversation`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message, mode, stageId: stage?.id }),
+      });
+      state.draftStages = null;
+      await acceptWorkOrderResult(
+        result.workOrder,
+        result.outcome === "clarification"
+          ? "还需要确认一项关键信息。"
+          : mode === "supplement"
+            ? "补充内容已归入当前节点。"
+            : "计划已更新，请重新确认。",
+      );
+    } catch (error) {
+      resetBusy(button, mode === "supplement" ? "补充当前节点" : mode === "replan" ? "更新目标或计划" : "提交回答");
+      setFeedback("conversation-feedback", messageFrom(error, "无法保存这次更新，请重试。"), true);
+    }
   });
 
   document.querySelector("#plan-form")?.addEventListener("submit", async (event) => {

@@ -67,6 +67,7 @@ export type PlanStage = {
   workspace: PlanWorkspace;
   materials: PlanReference[];
   artifacts: PlanReference[];
+  contextNotes?: string[];
   status: PlanNodeStatus;
   statusReason: string;
 };
@@ -136,7 +137,34 @@ export type WorkOrderResult = {
 export type WorkOrderPlan = {
   version: number;
   stages: PlanStage[];
+  confirmationRequired?: boolean;
   updatedAt: string;
+};
+
+export type ClarificationTarget = "goal" | "acceptance" | "materials" | "resources" | "plan";
+
+export type ClarificationQuestion = {
+  id: string;
+  prompt: string;
+  reason: string;
+  target: ClarificationTarget;
+};
+
+export type WorkOrderClarification = {
+  questions: ClarificationQuestion[];
+  requiresPlanConfirmation: boolean;
+  createdAt: string;
+};
+
+export type WorkOrderConversationMessage = {
+  id: number;
+  role: "user" | "teamline";
+  kind: "question" | "reply" | "decision" | "supplement";
+  content: string;
+  stageId: string | null;
+  decisionTarget: ClarificationTarget | "stage" | null;
+  requiresPlanConfirmation: boolean;
+  createdAt: string;
 };
 
 export type PlanStageInput = Omit<
@@ -158,6 +186,7 @@ export type PlanStageInput = Omit<
       | "workspace"
       | "materials"
       | "artifacts"
+      | "contextNotes"
       | "status"
       | "statusReason"
     >
@@ -177,6 +206,8 @@ export type WorkOrder = {
   status: WorkOrderStatus;
   currentSummary: string;
   plan: WorkOrderPlan | null;
+  pendingClarification: WorkOrderClarification | null;
+  conversation: WorkOrderConversationMessage[];
   result: WorkOrderResult | null;
   revisionNote: string | null;
   worktreePath: string | null;
@@ -254,6 +285,8 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     status: "draft",
     currentSummary: "等待生成计划",
     plan: null,
+    pendingClarification: null,
+    conversation: [],
     result: null,
     revisionNote: null,
     worktreePath: null,

@@ -72,7 +72,7 @@ export class CodexPlanGenerator implements PlanGenerator {
         throw new Error("Codex 返回的计划格式无法识别");
       }
 
-      return { stages: result.stages };
+      return result as GeneratedPlan;
     } catch (error) {
       if (error instanceof Error && error.message.includes("ENOENT")) {
         throw new Error("找不到 Codex，请先安装并登录 Codex");
@@ -94,11 +94,40 @@ function buildPrompt(workOrder: WorkOrder): string {
         .map((material) => `- ${material.kind}: ${material.value}`)
         .join("\n")}`
     : "";
+  const conversation = workOrder.conversation.length
+    ? `\n委托对话与已形成的决定：\n${workOrder.conversation
+        .map((message) => `- ${message.role === "user" ? "用户" : "Teamline"}：${message.content}${message.requiresPlanConfirmation ? "（要求更新计划）" : ""}`)
+        .join("\n")}`
+    : "";
+  const currentPlan = workOrder.plan
+    ? `\n当前计划：\n${JSON.stringify(workOrder.plan.stages.map((stage) => ({
+        id: stage.id,
+        outcome: stage.outcome,
+        scope: stage.scope,
+        verification: stage.verification,
+        verificationCommand: stage.verificationCommand ?? null,
+        dependsOn: stage.dependsOn,
+        executionMethod: stage.executionMethod,
+        contextNotes: stage.contextNotes ?? [],
+      })))}`
+    : "";
+  const resources = `\n当前资源偏好：\n${JSON.stringify({
+    priority: workOrder.resourcePlan.priority,
+    pace: workOrder.resourcePlan.pace,
+    runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
+  })}`;
 
   return `你正在为一项工作生成简短的委托计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
 
 工作目标：
-${workOrder.goal}${acceptance}${materials}
+${workOrder.goal}${acceptance}${materials}${conversation}${currentPlan}${resources}
+
+先判断这些信息是否足以形成可确认的计划。信息足够时必须直接返回计划，不要为了完善细节而提问。只有缺少会改变目标边界、节点关系、素材选择或资源安排的关键信息时，才返回 clarification；问题要少、短、可直接回答，不得提及内部 skill 或 Ask Matt 名称。
+
+始终返回目标、完成要求、素材和资源方案的完整快照。用户回答过澄清问题或要求更新计划时，把已经确认的决定写入这些快照和计划；不要只复述聊天。普通节点补充已经由 Teamline 归入节点上下文，不需要改动计划结构。
+
+返回 clarification 时：stages 填空数组，questions 填必须回答的问题，message 简要说明为何需要回答。
+返回 plan 时：questions 填空数组，stages 至少包含一个节点；message 简要说明计划或结构化决定已经更新。
 
 请把工作拆成少量能够独立检查的阶段。每个阶段填写：
 - id：在本计划内唯一、简短稳定的英文标识

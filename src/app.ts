@@ -78,6 +78,7 @@ export function createApp({
   codexSessionProvider,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
+  const planningWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
@@ -114,6 +115,66 @@ export function createApp({
       }
     }, maxRunMinutes * 60_000);
     runTimeouts.set(id, cancel);
+  };
+  const generateAndStorePlan = async (
+    id: string,
+    workOrder: WorkOrder,
+    requiresPlanConfirmation: boolean,
+    pendingReply?: string,
+  ) => {
+    if (!planGenerator) throw new Error("Codex 规划服务尚未配置");
+    const planningInput = pendingReply
+      ? {
+          ...workOrder,
+          conversation: [
+            ...workOrder.conversation,
+            {
+              id: 0,
+              role: "user" as const,
+              kind: "reply" as const,
+              content: pendingReply,
+              stageId: null,
+              decisionTarget:
+                workOrder.pendingClarification?.questions[0]?.target ?? "plan",
+              requiresPlanConfirmation,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        }
+      : workOrder;
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const generated = await Promise.race([
+      planGenerator.generate(planningInput, controller.signal),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new PlanGenerationTimeoutError());
+        }, planGenerationTimeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timeout));
+    if (
+      generated.outcome === "clarification" ||
+      (generated.questions?.length ?? 0) > 0
+    ) {
+      return {
+        outcome: "clarification" as const,
+        workOrder: store.saveClarification(
+          id,
+          generated.questions ?? [],
+          requiresPlanConfirmation,
+          pendingReply,
+        ),
+      };
+    }
+    const saved = store.applyGeneratedPlan(
+      id,
+      generated,
+      requiresPlanConfirmation,
+      pendingReply,
+    );
+    scheduleAutoRunCheck();
+    return { outcome: "plan" as const, workOrder: saved };
   };
   const finishReason = (id: string) => {
     const reason = stopReasons.get(id);
@@ -961,6 +1022,95 @@ export function createApp({
         }
       }
 
+      const conversationMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/conversation$/,
+      );
+      if (request.method === "POST" && conversationMatch) {
+        const id = decodeURIComponent(conversationMatch[1]);
+        const workOrder = store.get(id);
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        if (!planIsEditable(workOrder)) {
+          return Response.json(
+            { code: "WORK_ORDER_CONVERSATION_LOCKED", error: "当前状态不能更新委托对话" },
+            { status: 409 },
+          );
+        }
+        if (planningWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLANNING_IN_PROGRESS", error: "正在整理上一次更新，请稍候" },
+            { status: 409 },
+          );
+        }
+        planningWorkOrderIds.add(id);
+        let planningClaimed = true;
+        try {
+          const body = (await request.json()) as {
+            message?: string;
+            mode?: "reply" | "supplement" | "replan";
+            stageId?: string;
+          };
+          const mode = body.mode ?? (workOrder.pendingClarification ? "reply" : "supplement");
+          if (mode === "supplement") {
+            return Response.json({
+              outcome: "supplement",
+              workOrder: store.addStageSupplement(id, body.stageId ?? "", body.message ?? ""),
+            });
+          }
+          if (mode === "reply" && !workOrder.pendingClarification) {
+            throw new Error("当前没有等待回答的问题");
+          }
+          if (!planGenerator) {
+            return Response.json(
+              { code: "PLAN_GENERATOR_UNAVAILABLE", error: "Codex 规划服务尚未配置" },
+              { status: 503 },
+            );
+          }
+          const message = body.message?.trim() ?? "";
+          if (!message) throw new Error("请填写回复");
+          const requiresPlanConfirmation =
+            mode === "replan" || workOrder.pendingClarification?.requiresPlanConfirmation === true;
+          const result = await generateAndStorePlan(
+            id,
+            workOrder,
+            requiresPlanConfirmation,
+            message,
+          );
+          return Response.json(result);
+        } catch (error) {
+          if (error instanceof PlanGenerationTimeoutError) {
+            return Response.json(
+              { code: "PLAN_GENERATION_TIMEOUT", error: "整理决定超时，请重试" },
+              { status: 504 },
+            );
+          }
+          if (error instanceof PlanLockedError) {
+            return Response.json(
+              { code: "WORK_ORDER_CONVERSATION_LOCKED", error: error.message },
+              { status: 409 },
+            );
+          }
+          const message = error instanceof Error ? error.message : "无法更新委托对话";
+          const isInputError =
+            message.includes("请填写") ||
+            message.includes("找不到当前节点") ||
+            message.includes("没有等待回答");
+          return Response.json(
+            {
+              code: isInputError ? "INVALID_CONVERSATION_REPLY" : "PLAN_GENERATION_FAILED",
+              error: isInputError ? message : "Codex 无法整理这次更新，请稍后重试",
+            },
+            { status: isInputError ? 400 : 502 },
+          );
+        } finally {
+          if (planningClaimed) planningWorkOrderIds.delete(id);
+        }
+      }
+
       const generatePlanMatch = url.pathname.match(
         /^\/api\/work-orders\/([^/]+)\/plan\/generate$/,
       );
@@ -985,22 +1135,16 @@ export function createApp({
             { status: 503 },
           );
         }
+        if (planningWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLANNING_IN_PROGRESS", error: "正在整理计划，请稍候" },
+            { status: 409 },
+          );
+        }
 
+        planningWorkOrderIds.add(id);
         try {
-          const controller = new AbortController();
-          let timeout: ReturnType<typeof setTimeout> | undefined;
-          const generated = await Promise.race([
-            planGenerator.generate(workOrder, controller.signal),
-            new Promise<never>((_, reject) => {
-              timeout = setTimeout(() => {
-                controller.abort();
-                reject(new PlanGenerationTimeoutError());
-              }, planGenerationTimeoutMs);
-            }),
-          ]).finally(() => clearTimeout(timeout));
-          const savedWorkOrder = store.savePlan(id, generated.stages);
-          scheduleAutoRunCheck();
-          return Response.json({ workOrder: savedWorkOrder });
+          return Response.json(await generateAndStorePlan(id, workOrder, false));
         } catch (error) {
           if (error instanceof PlanGenerationTimeoutError) {
             return Response.json(
@@ -1021,6 +1165,8 @@ export function createApp({
             },
             { status: 502 },
           );
+        } finally {
+          planningWorkOrderIds.delete(id);
         }
       }
 
@@ -1037,6 +1183,12 @@ export function createApp({
         if (!planIsEditable(workOrder)) {
           return Response.json(
             { code: "WORK_ORDER_PLAN_LOCKED", error: "委托开始执行后不能直接修改计划" },
+            { status: 409 },
+          );
+        }
+        if (planningWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLANNING_IN_PROGRESS", error: "正在整理计划，请稍候" },
             { status: 409 },
           );
         }
@@ -1103,6 +1255,12 @@ export function createApp({
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
             { status: 404 },
+          );
+        }
+        if (planningWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLANNING_IN_PROGRESS", error: "正在整理计划，请稍候" },
+            { status: 409 },
           );
         }
         try {

@@ -29,6 +29,9 @@ function presentStatus(
   workOrder: WorkOrder,
   capacityReached: boolean,
 ): Pick<ConsoleWorkOrder, "userStatus" | "statusReason"> {
+  if (workOrder.pendingClarification) {
+    return { userStatus: "planning", statusReason: "待补充信息" };
+  }
   if (workOrder.status === "delivered") {
     return { userStatus: "completed", statusReason: "已确认交付" };
   }
@@ -52,6 +55,9 @@ function presentStatus(
     return { userStatus: "running", statusReason };
   }
   if (workOrder.status === "ready") {
+    if (workOrder.plan?.confirmationRequired) {
+      return { userStatus: "planning", statusReason: "待重新确认计划" };
+    }
     if (
       workOrder.resourcePlan.runWhenQuotaAvailable &&
       workOrder.resourcePlan.autoRunReason
