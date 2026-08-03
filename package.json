@@ -2,7 +2,11 @@
   "name": "teamline",
   "private": true,
   "type": "module",
+  "bin": {
+    "teamline": "./bin/teamline.ts"
+  },
   "scripts": {
+    "cli": "bun bin/teamline.ts",
     "dev": "bun --hot src/server.ts",
     "start": "bun src/server.ts",
     "test": "bun test"

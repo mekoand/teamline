@@ -16,6 +16,7 @@ import {
   type PlanStage,
   type WorkOrderMaterialKind,
   type WorkOrderCheckpoint,
+  type WorkOrderWorkspace,
   type WorkOrder,
 } from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
@@ -1620,11 +1621,19 @@ export function createApp({
         try {
           const body = (await request.json()) as {
             repositoryPath?: string;
+            workspacePath?: string;
             goal?: string;
             acceptance?: string;
             materials?: Array<{ kind?: string; value?: string }>;
           };
           const requestedRepositoryPath = body.repositoryPath?.trim() ?? "";
+          const requestedWorkspacePath = body.workspacePath?.trim() ?? "";
+          if (requestedRepositoryPath && requestedWorkspacePath) {
+            return Response.json(
+              { error: "请只提供一个工作空间路径" },
+              { status: 400 },
+            );
+          }
           if (requestedRepositoryPath && !isGitRepository(requestedRepositoryPath)) {
             return Response.json(
               { error: "请选择一个有效的本地 Git 仓库" },
@@ -1632,9 +1641,21 @@ export function createApp({
             );
           }
 
+          let workspace: WorkOrderWorkspace | null | undefined;
+          if (requestedWorkspacePath) {
+            const resolved = validateWorkspacePath(requestedWorkspacePath);
+            if ("error" in resolved) return workspaceErrorResponse(resolved.error);
+            const kind = isGitRepository(resolved.path) ? "git" : "directory";
+            if (kind === "directory" && directoryWorkspaceInUse(store, "", resolved.path)) {
+              return workspaceErrorResponse("in_use");
+            }
+            workspace = { kind, path: resolved.path };
+          }
+
           const materials = normalizeMaterials(body.materials);
           const workOrder = store.create({
             repositoryPath: requestedRepositoryPath,
+            workspace,
             goal: body.goal ?? "",
             acceptance: body.acceptance,
             materials,
