@@ -7,6 +7,10 @@ import type { WorkOrder } from "./work-order";
 const schemaPath = resolve(import.meta.dir, "plan-output-schema.json");
 
 export class CodexPlanGenerator implements PlanGenerator {
+  constructor(
+    private readonly codexPath = Bun.env.TEAMLINE_CODEX_PATH || "codex",
+  ) {}
+
   async generate(workOrder: WorkOrder, signal?: AbortSignal): Promise<GeneratedPlan> {
     const temporaryDirectory = mkdtempSync(join(tmpdir(), "teamline-plan-"));
     const outputPath = join(temporaryDirectory, "plan.json");
@@ -26,8 +30,9 @@ export class CodexPlanGenerator implements PlanGenerator {
 
       subprocess = Bun.spawn(
         [
-          Bun.env.TEAMLINE_CODEX_PATH || "codex",
+          this.codexPath,
           "exec",
+          "--skip-git-repo-check",
           "--sandbox",
           "read-only",
           "--cd",
@@ -49,7 +54,7 @@ export class CodexPlanGenerator implements PlanGenerator {
       );
       signal?.addEventListener("abort", stop, { once: true });
 
-      const [exitCode, , stderr] = await Promise.all([
+      const [exitCode, stdout, stderr] = await Promise.all([
         subprocess.exited,
         new Response(subprocess.stdout).text(),
         new Response(subprocess.stderr).text(),
@@ -60,7 +65,7 @@ export class CodexPlanGenerator implements PlanGenerator {
       }
 
       if (exitCode !== 0) {
-        const diagnostic = lastUsefulLine(stderr);
+        const diagnostic = lastCodexError(stdout) ?? lastUsefulLine(stderr);
         if (diagnostic) {
           console.error("Codex plan process failed", diagnostic);
         }
@@ -147,4 +152,23 @@ function lastUsefulLine(output: string): string {
     .map((line) => line.trim())
     .filter(Boolean)
     .at(-1) ?? "";
+}
+
+function lastCodexError(output: string): string | null {
+  for (const line of output.split(/\r?\n/).reverse()) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as {
+        type?: string;
+        message?: string;
+        error?: { message?: string };
+      };
+      if (event.type !== "error" && event.type !== "turn.failed") continue;
+      const message = event.error?.message ?? event.message;
+      if (message) return lastUsefulLine(message);
+    } catch {
+      // Ignore non-JSON diagnostic lines.
+    }
+  }
+  return null;
 }

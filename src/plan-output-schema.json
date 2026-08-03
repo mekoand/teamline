@@ -58,7 +58,6 @@
           "verificationCommand": { "type": ["string", "null"] },
           "dependsOn": {
             "type": "array",
-            "uniqueItems": true,
             "items": { "type": "string", "minLength": 1 }
           },
           "executionMethod": { "enum": ["codex", "external"] }
