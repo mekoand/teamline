@@ -41,6 +41,11 @@ type AppDependencies = {
   ) => () => void;
   resourceProvider?: ResourceProvider;
   checkpointManager?: CheckpointManager;
+  autoRunRetryScheduler?: (
+    callback: () => void,
+    delayMs: number,
+  ) => () => void;
+  autoRunRetryMs?: number;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -63,6 +68,8 @@ export function createApp({
   runTimeoutScheduler = scheduleTimeout,
   resourceProvider,
   checkpointManager,
+  autoRunRetryScheduler = scheduleTimeout,
+  autoRunRetryMs = 60_000,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
@@ -72,7 +79,9 @@ export function createApp({
   let autoRunCheckInFlight:
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
+  let cancelAutoRunTimer: (() => void) | null = null;
   let handleRequest!: (request: Request) => Promise<Response>;
+  let scheduleAutoRunCheck!: (delayMs?: number) => void;
 
   const clearRunTimeout = (id: string) => {
     runTimeouts.get(id)?.();
@@ -152,6 +161,8 @@ export function createApp({
   };
   const runAutoRunOnce = () => {
     if (autoRunCheckInFlight) return autoRunCheckInFlight;
+    cancelAutoRunTimer?.();
+    cancelAutoRunTimer = null;
     autoRunCheckInFlight = (async () => {
       const snapshot = await readResourceSnapshot();
       const decision = decideAutoRun(
@@ -163,6 +174,11 @@ export function createApp({
         store.saveAutoRunReason(id, reason);
       }
       if (!decision.candidateId) {
+        if (
+          [...decision.reasons.values()].some((reason) => reason?.startsWith("额度"))
+        ) {
+          scheduleAutoRunCheck(autoRunRetryMs);
+        }
         return { startedWorkOrderId: null, reason: null };
       }
 
@@ -185,15 +201,33 @@ export function createApp({
     });
     return autoRunCheckInFlight;
   };
-  const scheduleAutoRunCheck = () => {
+  scheduleAutoRunCheck = (delayMs = 0) => {
     if (
       !store
         .list()
         .some((workOrder) => workOrder.resourcePlan.runWhenQuotaAvailable)
     ) {
+      cancelAutoRunTimer?.();
+      cancelAutoRunTimer = null;
       return;
     }
-    setTimeout(() => void runAutoRunOnce(), 0);
+    if (cancelAutoRunTimer) {
+      if (delayMs > 0) return;
+      cancelAutoRunTimer();
+      cancelAutoRunTimer = null;
+    }
+    let active = true;
+    const cancel = autoRunRetryScheduler(() => {
+      if (!active) return;
+      active = false;
+      cancelAutoRunTimer = null;
+      void runAutoRunOnce();
+    }, delayMs);
+    cancelAutoRunTimer = () => {
+      if (!active) return;
+      active = false;
+      cancel();
+    };
   };
 
   handleRequest = async (request: Request): Promise<Response> => {
@@ -976,13 +1010,13 @@ export function createApp({
           ) {
             throw new Error("请完整填写委托资源安排");
           }
-          return Response.json({
-            workOrder: store.saveResourcePlan(id, {
-              priority: body.priority,
-              pace: body.pace,
-              runWhenQuotaAvailable: body.runWhenQuotaAvailable,
-            }),
+          const workOrder = store.saveResourcePlan(id, {
+            priority: body.priority,
+            pace: body.pace,
+            runWhenQuotaAvailable: body.runWhenQuotaAvailable,
           });
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
         } catch (error) {
           return Response.json(
             {
@@ -1098,6 +1132,7 @@ export function createApp({
 
       return new Response("Not found", { status: 404 });
   };
+  scheduleAutoRunCheck();
   return { fetch: handleRequest };
 }
 

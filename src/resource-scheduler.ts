@@ -1,3 +1,5 @@
+import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   RESOURCE_SIGNAL_STALE_AFTER_MS,
   type CodexResourceSignal,
@@ -86,12 +88,19 @@ function blockingReason(
       (candidate) =>
         candidate.id !== workOrder.id &&
         ["running", "stopping", "verifying"].includes(candidate.runStatus ?? "") &&
-        candidate.worktreePath === workOrder.workspace!.path,
+        candidate.worktreePath !== null &&
+        canonicalWorkspacePath(candidate.worktreePath) ===
+          canonicalWorkspacePath(workOrder.workspace!.path),
     )
   ) {
     return "工作空间正在使用";
   }
   return null;
+}
+
+function canonicalWorkspacePath(workspacePath: string): string {
+  const absolutePath = resolve(workspacePath);
+  return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
 }
 
 function hasRunnableStage(workOrder: WorkOrder): boolean {

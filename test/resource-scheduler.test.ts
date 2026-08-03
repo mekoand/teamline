@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createApp } from "../src/app";
 import type { CodexRunEvent, CodexRunner } from "../src/codex-runner";
 import type { CodexResourceSignal, ResourceProvider } from "../src/resource-provider";
@@ -46,6 +48,27 @@ function ready(store: WorkOrderStore, goal: string) {
   return store.savePlan(created.id, [
     { outcome: `完成${goal}`, scope: "src", verification: "运行测试" },
   ]);
+}
+
+function oneShotScheduler() {
+  const timers: Array<{ callback: () => void; delayMs: number; active: boolean }> = [];
+  return {
+    timers,
+    schedule(callback: () => void, delayMs: number) {
+      const timer = { callback, delayMs, active: true };
+      timers.push(timer);
+      return () => {
+        timer.active = false;
+      };
+    },
+    runNext() {
+      const timer = timers.find((candidate) => candidate.active);
+      if (!timer) throw new Error("no scheduled auto-run check");
+      timer.active = false;
+      timer.callback();
+      return timer;
+    },
+  };
 }
 
 describe("work-order resource scheduling", () => {
@@ -187,5 +210,140 @@ describe("work-order resource scheduling", () => {
     while (starts.length < 2 && Date.now() < deadline) await Bun.sleep(5);
     expect(starts).toEqual([high.id, background.id]);
     releases[1]!();
+  });
+
+  test("retries a quota-blocked authorization and starts without a browser", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = enable(store, ready(store, "等待额度恢复").id);
+    let codex = { ...availableQuota(), shortWindow: { ...availableQuota().shortWindow!, usedPercent: 90 } };
+    const scheduler = oneShotScheduler();
+    const starts: string[] = [];
+    const app = createApp({
+      store,
+      resourceProvider: {
+        async read() {
+          return {
+            observedAt: new Date().toISOString(),
+            codex,
+            openaiApi: {
+              status: "not_connected" as const,
+              source: null,
+              observedAt: new Date().toISOString(),
+              message: "未连接",
+              scope: null,
+              usage: null,
+            },
+            workOrderUsage: [],
+          };
+        },
+      },
+      codexRunner: {
+        async start({ workOrder: started }) {
+          starts.push(started.id);
+          return {
+            interrupt() {},
+            events: (async function* (): AsyncGenerator<CodexRunEvent> {
+              await new Promise(() => {});
+            })(),
+          };
+        },
+        async resume() {
+          throw new Error("not used");
+        },
+      },
+      worktreeManager: {
+        async prepare(started) {
+          return {
+            path: `/tmp/teamline-${started.id}`,
+            branch: `teamline/${started.id}`,
+            baseCommit: "0123456789abcdef",
+          };
+        },
+      },
+      autoRunRetryScheduler: scheduler.schedule,
+      autoRunRetryMs: 25,
+    });
+    void app;
+
+    expect(scheduler.runNext().delayMs).toBe(0);
+    await Bun.sleep(0);
+    expect(starts).toEqual([]);
+    expect(store.get(workOrder.id)?.resourcePlan.autoRunReason).toBe(
+      "额度不足，等待可用额度",
+    );
+    const retry = scheduler.timers.find((timer) => timer.active);
+    expect(retry?.delayMs).toBe(25);
+
+    codex = availableQuota();
+    scheduler.runNext();
+    await Bun.sleep(0);
+    expect(starts).toEqual([workOrder.id]);
+  });
+
+  test("service startup rechecks an enabled work order restored from SQLite", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-auto-run-restart-"));
+    const databasePath = join(directory, "teamline.db");
+    try {
+      let database = new Database(databasePath, { create: true });
+      let store = new WorkOrderStore(database);
+      const workOrder = enable(store, ready(store, "服务重启后继续判断").id);
+      database.close();
+
+      database = new Database(databasePath);
+      store = new WorkOrderStore(database);
+      const scheduler = oneShotScheduler();
+      const starts: string[] = [];
+      createApp({
+        store,
+        resourceProvider: {
+          async read() {
+            return {
+              observedAt: new Date().toISOString(),
+              codex: availableQuota(),
+              openaiApi: {
+                status: "not_connected" as const,
+                source: null,
+                observedAt: new Date().toISOString(),
+                message: "未连接",
+                scope: null,
+                usage: null,
+              },
+              workOrderUsage: [],
+            };
+          },
+        },
+        codexRunner: {
+          async start({ workOrder: started }) {
+            starts.push(started.id);
+            return {
+              interrupt() {},
+              events: (async function* (): AsyncGenerator<CodexRunEvent> {
+                await new Promise(() => {});
+              })(),
+            };
+          },
+          async resume() {
+            throw new Error("not used");
+          },
+        },
+        worktreeManager: {
+          async prepare(started) {
+            return {
+              path: `/tmp/teamline-${started.id}`,
+              branch: `teamline/${started.id}`,
+              baseCommit: "0123456789abcdef",
+            };
+          },
+        },
+        autoRunRetryScheduler: scheduler.schedule,
+      });
+
+      expect(scheduler.runNext().delayMs).toBe(0);
+      await Bun.sleep(0);
+      expect(starts).toEqual([workOrder.id]);
+      database.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

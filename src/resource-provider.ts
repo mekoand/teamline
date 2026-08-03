@@ -172,8 +172,19 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
     }
 
     try {
-      const bucket = await this.readCodexBucket();
+      const result = await this.readCodexBucket();
       const observedAt = this.now().toISOString();
+      if ("conflict" in result) {
+        return {
+          status: "conflict",
+          source: "codex-app-server",
+          observedAt,
+          message: "Codex 返回了不一致的额度窗口，等待重新读取",
+          shortWindow: null,
+          longWindow: null,
+        };
+      }
+      const bucket = result.bucket;
       const classified = classifyWindows(
         parseWindow(bucket.primary),
         parseWindow(bucket.secondary),
@@ -212,7 +223,9 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
     }
   }
 
-  private async readCodexBucket(): Promise<CodexRateLimitBucket> {
+  private async readCodexBucket(): Promise<
+    { bucket: CodexRateLimitBucket } | { conflict: true }
+  > {
     const subprocess = Bun.spawn([this.executable, "app-server"], {
       stdin: "pipe",
       stdout: "pipe",
@@ -247,17 +260,31 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
       if (response.error || !response.result) {
         throw new Error("Codex app-server did not return rate limits");
       }
-      const bucket =
-        response.result.rateLimitsByLimitId?.codex ?? response.result.rateLimits;
+      const aggregate = response.result.rateLimits;
+      const named = response.result.rateLimitsByLimitId?.codex;
+      if (aggregate && named && !rateLimitBucketsAgree(aggregate, named)) {
+        return { conflict: true };
+      }
+      const bucket = named ?? aggregate;
       if (!bucket) {
         throw new Error("Codex app-server returned no Codex quota bucket");
       }
-      return bucket;
+      return { bucket };
     } finally {
       writer.end();
       subprocess.kill();
     }
   }
+}
+
+function rateLimitBucketsAgree(
+  left: CodexRateLimitBucket,
+  right: CodexRateLimitBucket,
+): boolean {
+  return (
+    JSON.stringify(classifyWindows(parseWindow(left.primary), parseWindow(left.secondary))) ===
+    JSON.stringify(classifyWindows(parseWindow(right.primary), parseWindow(right.secondary)))
+  );
 }
 
 type OpenAICostsResponse = {

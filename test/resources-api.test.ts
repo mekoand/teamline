@@ -241,6 +241,42 @@ describe("resource API", () => {
     }
   });
 
+  test("reports conflicting aggregate and named Codex quota windows", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-resource-test-"));
+    const executable = join(directory, "fake-codex");
+    const resetAt = Math.floor(Date.now() / 1_000) + 60 * 60;
+    writeFileSync(
+      executable,
+      [
+        "#!/bin/sh",
+        "read initialize",
+        "read initialized",
+        "read rate_limits",
+        `printf '%s\\n' '{"id":6,"result":{"rateLimits":{"primary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":${resetAt}}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":45,"windowDurationMins":300,"resetsAt":${resetAt}}}}}}'`,
+      ].join("\n"),
+    );
+    chmodSync(executable, 0o755);
+
+    try {
+      const app = createApp({
+        store: new WorkOrderStore(new Database(":memory:")),
+        resourceProvider: new CodexAppServerResourceProvider(executable),
+      });
+      const result = await (
+        await app.fetch(new Request("http://teamline.local/api/resources"))
+      ).json();
+
+      expect(result.codex).toMatchObject({
+        status: "conflict",
+        message: "Codex 返回了不一致的额度窗口，等待重新读取",
+        shortWindow: null,
+        longWindow: null,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("reports read failures and missing attribution without inventing exact values", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     store.create({ repositoryPath: "/tmp/teamline", goal: "等待可靠用量" });
