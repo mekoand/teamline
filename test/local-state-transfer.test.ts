@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createApp } from "../src/app";
 import { WorkOrderStore } from "../src/work-order-store";
+import { resolve } from "node:path";
 
 async function* noEvents() {}
 
@@ -422,6 +423,49 @@ describe("local Teamline state transfer", () => {
     expect(unavailablePreview.workOrders[0].attention).toContainEqual(
       expect.objectContaining({ label: "检查点", status: "needs_attention" }),
     );
+
+    const validCheckpoint = structuredClone(exported);
+    const repositoryPath = resolve(import.meta.dir, "..");
+    const treeHash = Bun.spawnSync([
+      "git",
+      "-C",
+      repositoryPath,
+      "rev-parse",
+      "HEAD^{tree}",
+    ]).stdout.toString().trim();
+    validCheckpoint.workOrders[0].workspace = { kind: "git", path: repositoryPath };
+    validCheckpoint.workOrders[0].checkpoints = [
+      { ...validCheckpoint.workOrders[0].checkpoints[0], treeHash },
+      {
+        ...validCheckpoint.workOrders[0].checkpoints[0],
+        id: "duplicate-checkpoint-reference",
+        sequence: 2,
+        treeHash,
+      },
+    ];
+    const validResponse = await target.fetch(
+      request("/api/local-state/restore/preview", { bundle: validCheckpoint }),
+    );
+    const validPreview = await validResponse.json();
+    expect(validResponse.status).toBe(200);
+    expect(
+      validPreview.workOrders[0].attention.some((item) => item.label === "检查点"),
+    ).toBe(false);
+
+    const tooManyCheckpoints = structuredClone(exported);
+    tooManyCheckpoints.workOrders[0].checkpoints = Array.from(
+      { length: 1_001 },
+      (_, index) => ({
+        ...tooManyCheckpoints.workOrders[0].checkpoints[0],
+        id: `checkpoint-${index}`,
+        sequence: index + 1,
+      }),
+    );
+    const tooManyResponse = await target.fetch(
+      request("/api/local-state/restore/preview", { bundle: tooManyCheckpoints }),
+    );
+    expect(tooManyResponse.status).toBe(400);
+    expect((await tooManyResponse.json()).code).toBe("INVALID_STATE_BUNDLE");
   });
 
   test("rejects unknown fields and embedded credential properties before preview", async () => {

@@ -22,6 +22,9 @@ import type { WorkOrderStore } from "./work-order-store";
 const bundleFormat = "teamline-local-state" as const;
 const bundleVersion = 1 as const;
 const maxBundleBytes = 5 * 1024 * 1024;
+const maxWorkOrders = 1_000;
+const maxCheckpointsPerWorkOrder = 1_000;
+const maxGitWorkspacesToInspect = 50;
 
 export type LocalStateBundle = {
   format: typeof bundleFormat;
@@ -144,11 +147,12 @@ export class LocalStateTransfer {
       this.store.list().length > 0 &&
       (currentSettings.maxConcurrency !== bundle.settings.maxConcurrency ||
         currentSettings.executionMapView !== bundle.settings.executionMapView);
+    const checkpointAvailability = inspectCheckpointAvailability(bundle.workOrders);
     const workOrders = bundle.workOrders.map((workOrder) => ({
       sourceId: workOrder.id,
       title: workOrder.title,
       conflict: conflictIds.has(workOrder.id),
-      attention: inspectReferences(workOrder),
+      attention: inspectReferences(workOrder, checkpointAvailability),
     }));
     const previewId = crypto.randomUUID();
     this.previews.set(previewId, {
@@ -317,7 +321,10 @@ function sanitizeUrl(value: string): string {
   }
 }
 
-function inspectReferences(workOrder: ExportedWorkOrder): RestoreAttention[] {
+function inspectReferences(
+  workOrder: ExportedWorkOrder,
+  checkpointAvailability: ReadonlyMap<string, boolean>,
+): RestoreAttention[] {
   const attention: RestoreAttention[] = [];
   if (workOrder.workspace && !isReadableLocalPath(workOrder.workspace.path)) {
     attention.push({
@@ -364,7 +371,7 @@ function inspectReferences(workOrder: ExportedWorkOrder): RestoreAttention[] {
     }
   }
   for (const checkpoint of workOrder.checkpoints) {
-    if (!checkpointIsAvailable(workOrder.workspace, checkpoint.treeHash)) {
+    if (!checkpointAvailability.get(checkpointKey(workOrder.workspace, checkpoint.treeHash))) {
       attention.push({
         kind: "reference",
         label: "检查点",
@@ -444,20 +451,52 @@ function isWebUrl(value: string): boolean {
   }
 }
 
-function checkpointIsAvailable(
+function inspectCheckpointAvailability(
+  workOrders: ExportedWorkOrder[],
+): Map<string, boolean> {
+  const result = new Map<string, boolean>();
+  const hashesByWorkspace = new Map<string, Set<string>>();
+  for (const workOrder of workOrders) {
+    const workspace = workOrder.workspace;
+    for (const checkpoint of workOrder.checkpoints) {
+      result.set(checkpointKey(workspace, checkpoint.treeHash), false);
+      if (workspace?.kind !== "git" || !isReadableLocalPath(workspace.path)) continue;
+      let hashes = hashesByWorkspace.get(workspace.path);
+      if (!hashes) {
+        if (hashesByWorkspace.size >= maxGitWorkspacesToInspect) continue;
+        hashes = new Set();
+        hashesByWorkspace.set(workspace.path, hashes);
+      }
+      hashes.add(checkpoint.treeHash);
+    }
+  }
+  for (const [workspacePath, hashes] of hashesByWorkspace) {
+    const ordered = [...hashes];
+    const checked = Bun.spawnSync(
+      ["git", "-C", workspacePath, "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+      {
+        stdin: Buffer.from(`${ordered.map((hash) => `${hash}^{tree}`).join("\n")}\n`),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    if (checked.exitCode !== 0) continue;
+    const lines = checked.stdout.toString().trimEnd().split("\n");
+    ordered.forEach((hash, index) => {
+      result.set(
+        checkpointKey({ kind: "git", path: workspacePath }, hash),
+        lines[index]?.endsWith(" tree") === true,
+      );
+    });
+  }
+  return result;
+}
+
+function checkpointKey(
   workspace: WorkOrderWorkspace | null,
   treeHash: string,
-): boolean {
-  if (workspace?.kind !== "git" || !isReadableLocalPath(workspace.path)) return false;
-  const result = Bun.spawnSync([
-    "git",
-    "-C",
-    workspace.path,
-    "cat-file",
-    "-e",
-    `${treeHash}^{tree}`,
-  ]);
-  return result.exitCode === 0;
+): string {
+  return `${workspace?.kind ?? "none"}\0${workspace?.path ?? ""}\0${treeHash}`;
 }
 
 function deduplicateAttention(items: RestoreAttention[]): RestoreAttention[] {
@@ -630,7 +669,7 @@ function parseBundle(value: unknown): LocalStateBundle {
   exactKeys(settingsObject, ["maxConcurrency", "executionMapView"]);
   const maxConcurrency = integer(settingsObject.maxConcurrency, 1, 32);
   const executionMapView = oneOf(settingsObject.executionMapView, ["map", "list"] as const);
-  if (!Array.isArray(bundle.workOrders) || bundle.workOrders.length > 10_000) {
+  if (!Array.isArray(bundle.workOrders) || bundle.workOrders.length > maxWorkOrders) {
     throw new InvalidStateBundleError("委托列表格式无法识别");
   }
   return {
@@ -664,7 +703,11 @@ function parseWorkOrder(value: unknown): ExportedWorkOrder {
   const sessionReferences = parseSessionReferences(item.sessionReferences);
   const executionMap = item.executionMap === null ? null : parsePlan(item.executionMap);
   const pendingClarification = parseClarification(item.pendingClarification);
-  const checkpoints = array(item.checkpoints, parseCheckpoint, 100_000);
+  const checkpoints = array(
+    item.checkpoints,
+    parseCheckpoint,
+    maxCheckpointsPerWorkOrder,
+  );
   const conversationDecisions = array(item.conversationDecisions, parseDecision, 100_000);
   return {
     id,
