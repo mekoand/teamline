@@ -12,11 +12,12 @@ const RESOURCE_SIGNAL_FUTURE_TOLERANCE_MS = 60_000;
 export function presentResources(
   snapshot: ResourceProviderSnapshot,
   workOrders: WorkOrder[],
+  maxConcurrency = 2,
 ) {
   const usageByWorkOrder = new Map(
     snapshot.workOrderUsage.map((usage) => [usage.workOrderId, usage]),
   );
-  const presented = presentConsoleWorkOrders(workOrders);
+  const presented = presentConsoleWorkOrders(workOrders, maxConcurrency);
 
   return {
     observedAt: snapshot.observedAt,

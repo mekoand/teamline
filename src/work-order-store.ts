@@ -9,6 +9,7 @@ import {
   type WorkOrderPlan,
   type WorkOrderRunEvent,
   type WorkOrderResult,
+  type WorkOrderWorkspace,
 } from "./work-order";
 
 type WorkOrderRow = {
@@ -230,10 +231,11 @@ export class WorkOrderStore {
       throw new Error("计划节点标识不能重复");
     }
     const validStageIds = new Set(stageIds);
+    const expectedWorkspace = planWorkspaceFor(workOrder.workspace);
     const normalizedStages = stages.map((stage, index) => {
       const dependsOn = normalizeDependencies(stage.dependsOn);
       const executionMethod = normalizeExecutionMethod(stage.executionMethod);
-      const workspace = normalizeWorkspace(stage.workspace, workOrder.repositoryPath);
+      const workspace = normalizeWorkspace(stage.workspace, expectedWorkspace);
       if (
         dependsOn.includes(stageIds[index]!) ||
         dependsOn.some((dependencyId) => !validStageIds.has(dependencyId))
@@ -242,10 +244,10 @@ export class WorkOrderStore {
       }
       if (
         executionMethod !== "codex" ||
-        workspace.kind !== "git" ||
-        workspace.path !== workOrder.repositoryPath
+        workspace.kind !== expectedWorkspace.kind ||
+        workspace.path !== expectedWorkspace.path
       ) {
-        throw new Error("当前版本只支持 Codex 在 Git 委托工作区执行");
+        throw new Error("计划节点必须使用当前委托选择的执行工作空间");
       }
       return {
         id: stageIds[index]!,
@@ -329,14 +331,17 @@ export class WorkOrderStore {
       throw new PlanLockedError("委托开始执行后不能更换工作空间");
     }
     const now = new Date().toISOString();
+    const plan = workOrder.plan
+      ? syncPlanWorkspace(workOrder.plan, workspace, now)
+      : null;
     this.database
       .query(`
         UPDATE work_orders
         SET repository_path = ?, workspace_kind = ?, worktree_path = NULL,
-            execution_branch = NULL, base_commit = NULL, updated_at = ?
+            execution_branch = NULL, base_commit = NULL, plan_json = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(workspace.path, workspace.kind, now, id);
+      .run(workspace.path, workspace.kind, plan ? JSON.stringify(plan) : null, now, id);
     return this.get(id)!;
   }
 
@@ -848,7 +853,12 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     status: row.status === "completed" ? "delivered" : row.status,
     currentSummary: row.current_summary,
     plan: row.plan_json
-      ? normalizeStoredPlan(JSON.parse(row.plan_json), row.repository_path)
+      ? normalizeStoredPlan(
+          JSON.parse(row.plan_json),
+          row.workspace_kind
+            ? { kind: row.workspace_kind, path: row.repository_path }
+            : null,
+        )
       : null,
     result: row.result_json ? (JSON.parse(row.result_json) as WorkOrderResult) : null,
     revisionNote: row.revision_note,
@@ -871,15 +881,19 @@ function mapRow(row: WorkOrderRow): WorkOrder {
 
 function normalizeStoredPlan(
   plan: WorkOrderPlan,
-  repositoryPath: string,
+  workspace: WorkOrderWorkspace | null,
 ): WorkOrderPlan {
+  const expectedWorkspace = planWorkspaceFor(workspace);
   return {
     ...plan,
     stages: plan.stages.map((stage) => ({
       ...stage,
       dependsOn: normalizeDependencies(stage.dependsOn),
       executionMethod: normalizeExecutionMethod(stage.executionMethod),
-      workspace: normalizeWorkspace(stage.workspace, repositoryPath),
+      workspace:
+        normalizeExecutionMethod(stage.executionMethod) === "codex"
+          ? expectedWorkspace
+          : normalizeWorkspace(stage.workspace, expectedWorkspace),
       materials: normalizeReferences(stage.materials),
       artifacts: normalizeReferences(stage.artifacts),
       status: stage.status ?? "planning",
@@ -954,9 +968,35 @@ function normalizeExecutionMethod(value: unknown): "codex" | "external" {
   return value;
 }
 
-function normalizeWorkspace(value: unknown, repositoryPath: string): PlanWorkspace {
+function planWorkspaceFor(workspace: WorkOrderWorkspace | null): PlanWorkspace {
+  return workspace
+    ? { kind: workspace.kind, path: workspace.path }
+    : { kind: "git", path: null };
+}
+
+function syncPlanWorkspace(
+  plan: WorkOrderPlan,
+  workspace: WorkOrderWorkspace,
+  updatedAt: string,
+): WorkOrderPlan {
+  const selectedWorkspace = planWorkspaceFor(workspace);
+  return {
+    ...plan,
+    updatedAt,
+    stages: plan.stages.map((stage) =>
+      stage.executionMethod === "codex"
+        ? { ...stage, workspace: selectedWorkspace }
+        : stage,
+    ),
+  };
+}
+
+function normalizeWorkspace(
+  value: unknown,
+  fallback: PlanWorkspace,
+): PlanWorkspace {
   if (value === undefined) {
-    return { kind: "git", path: repositoryPath };
+    return fallback;
   }
   if (!value || typeof value !== "object") {
     throw new Error("计划节点工作空间无效");

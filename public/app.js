@@ -1201,6 +1201,7 @@ function executionMethodLabel(method) {
 }
 
 function workspaceLabel(workspace) {
+  if (!workspace?.path) return "启动前选择";
   return {
     git: "Git 委托工作区",
     directory: "本地文件夹",
@@ -1210,7 +1211,12 @@ function workspaceLabel(workspace) {
 
 function resolvedWorkspacePath(workOrder, stage) {
   if (stage.workspace?.kind === "git") {
-    return workOrder.worktreePath || stage.workspace.path || workOrder.repositoryPath;
+    return (
+      workOrder.worktreePath ||
+      stage.workspace.path ||
+      workOrder.repositoryPath ||
+      "启动前选择"
+    );
   }
   return stage.workspace?.path || "未配置路径";
 }

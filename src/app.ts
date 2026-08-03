@@ -203,7 +203,13 @@ export function createApp({
             "error",
           );
         }
-        return Response.json(presentResources(snapshot, store.list()));
+        return Response.json(
+          presentResources(
+            snapshot,
+            store.list(),
+            store.getExecutionSettings().maxConcurrency,
+          ),
+        );
       }
 
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
@@ -1034,14 +1040,6 @@ function resolveExecutionWorkspace(
     return { error: "in_use" };
   }
   return resolved;
-}
-
-function canonicalWorkspacePath(path: string): string | null {
-  try {
-    return realpathSync(path);
-  } catch {
-    return null;
-  }
 }
 
 function normalizeMaterials(

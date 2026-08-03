@@ -125,6 +125,66 @@ describe("resource API", () => {
     });
   });
 
+  test("uses the saved concurrency limit when presenting resource-page status", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    store.saveMaxConcurrency(1);
+    const running = store.create({
+      repositoryPath: "/tmp/teamline-running",
+      goal: "正在运行的委托",
+    });
+    store.savePlan(running.id, [
+      { outcome: "完成运行", scope: "src", verification: "人工检查" },
+    ]);
+    store.markStarted(running.id);
+    const ready = store.create({
+      repositoryPath: "/tmp/teamline-ready",
+      goal: "等待运行的委托",
+    });
+    store.savePlan(ready.id, [
+      { outcome: "完成等待项", scope: "src", verification: "人工检查" },
+    ]);
+    const observedAt = "2026-08-03T04:00:00.000Z";
+    const app = createApp({
+      store,
+      resourceProvider: {
+        async read() {
+          return {
+            observedAt,
+            codex: {
+              status: "available" as const,
+              source: "codex-app-server" as const,
+              observedAt,
+              message: null,
+              shortWindow: null,
+              longWindow: null,
+            },
+            openaiApi: {
+              status: "not_connected" as const,
+              source: "openai-usage-api" as const,
+              observedAt,
+              message: "未连接",
+              scope: null,
+              usage: null,
+            },
+            workOrderUsage: [],
+          };
+        },
+      },
+    });
+
+    const result = await (
+      await app.fetch(new Request("http://teamline.local/api/resources"))
+    ).json();
+    const presentedReady = result.workOrders.find(
+      (workOrder: { id: string }) => workOrder.id === ready.id,
+    );
+
+    expect(presentedReady).toMatchObject({
+      status: "queued",
+      recommendation: "等待当前运行结束",
+    });
+  });
+
   test("reads Codex subscription windows through the local app-server protocol", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-resource-test-"));
     const executable = join(directory, "fake-codex");

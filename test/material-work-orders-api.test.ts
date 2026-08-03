@@ -118,7 +118,15 @@ describe("material work orders API", () => {
     expect(workOrder).toMatchObject({
       status: "ready",
       workspace: null,
-      plan: { version: 1, stages: [{ outcome: "形成竞品摘要" }] },
+      plan: {
+        version: 1,
+        stages: [
+          {
+            outcome: "形成竞品摘要",
+            workspace: { kind: "git", path: null },
+          },
+        ],
+      },
     });
     expect(plannedMaterials).toEqual([
       [{ id: expect.any(String), kind: "link", value: "https://example.test/reference" }],
@@ -224,6 +232,55 @@ describe("material work orders API", () => {
         path: "/tmp/legacy-repository",
       });
       secondReopen.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("synchronizes a delayed directory choice into plan nodes and SQLite", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-plan-workspace-sync-"));
+    const databasePath = join(directory, "teamline.db");
+    const workspacePath = join(directory, "workspace");
+    mkdirSync(workspacePath);
+    try {
+      const firstDatabase = new Database(databasePath, { create: true });
+      const firstStore = new WorkOrderStore(firstDatabase);
+      const app = createApp({ store: firstStore });
+      const created = firstStore.create({ goal: "整理本地材料" });
+      firstStore.savePlan(created.id, [
+        {
+          outcome: "材料已经整理",
+          scope: "本地文件夹",
+          verification: "人工检查目录",
+        },
+      ]);
+      expect(firstStore.get(created.id)?.plan?.stages[0]?.workspace).toEqual({
+        kind: "git",
+        path: null,
+      });
+
+      const response = await app.fetch(
+        new Request(`http://teamline.local/api/work-orders/${created.id}/workspace`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: workspacePath }),
+        }),
+      );
+      const selected = (await response.json()).workOrder;
+      const canonicalPath = realpathSync(workspacePath);
+      expect(response.status).toBe(200);
+      expect(selected.plan.stages[0].workspace).toEqual({
+        kind: "directory",
+        path: canonicalPath,
+      });
+      firstDatabase.close();
+
+      const reopenedDatabase = new Database(databasePath);
+      expect(
+        new WorkOrderStore(reopenedDatabase).get(created.id)?.plan?.stages[0]
+          ?.workspace,
+      ).toEqual({ kind: "directory", path: canonicalPath });
+      reopenedDatabase.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
