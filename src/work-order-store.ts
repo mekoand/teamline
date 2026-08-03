@@ -87,6 +87,43 @@ type ConversationRow = {
   created_at: string;
 };
 
+export type LocalNotificationKind =
+  | "response"
+  | "completed"
+  | "auto_run_started"
+  | "auto_run_stopped";
+
+export type LocalNotification = {
+  id: number;
+  kind: LocalNotificationKind;
+  workOrderId: string;
+  stageId: string | null;
+  title: string;
+  body: string;
+  targetUrl: string;
+  readAt: string | null;
+  claimedAt: string | null;
+  createdAt: string;
+};
+
+export type NotificationSettings = {
+  autoRunStarted: boolean;
+  autoRunStopped: boolean;
+};
+
+type LocalNotificationRow = {
+  id: number;
+  notification_kind: LocalNotificationKind;
+  work_order_id: string;
+  stage_id: string | null;
+  title: string;
+  body: string;
+  target_url: string;
+  read_at: string | null;
+  claimed_at: string | null;
+  created_at: string;
+};
+
 export class PlanLockedError extends Error {}
 
 export class WorkOrderStore {
@@ -176,6 +213,24 @@ export class WorkOrderStore {
       );
       INSERT OR IGNORE INTO execution_settings (singleton, max_concurrency)
       VALUES (1, 2);
+    `);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS local_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        notification_kind TEXT NOT NULL,
+        work_order_id TEXT NOT NULL,
+        stage_id TEXT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        target_url TEXT NOT NULL,
+        read_at TEXT,
+        claimed_at TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
+      );
+      CREATE INDEX IF NOT EXISTS local_notifications_recent
+      ON local_notifications(created_at DESC, id DESC);
     `);
   }
 
@@ -302,6 +357,180 @@ export class WorkOrderStore {
       `)
       .run(view, new Date().toISOString());
     return view;
+  }
+
+  getNotificationSettings(): NotificationSettings {
+    const rows = this.database
+      .query<{ key: string; value: string }, []>(`
+        SELECT key, value FROM local_preferences
+        WHERE key IN ('notification-auto-run-started', 'notification-auto-run-stopped')
+      `)
+      .all();
+    const values = new Map(rows.map((row) => [row.key, row.value]));
+    return {
+      autoRunStarted: values.get("notification-auto-run-started") !== "false",
+      autoRunStopped: values.get("notification-auto-run-stopped") !== "false",
+    };
+  }
+
+  saveNotificationSettings(settings: NotificationSettings): NotificationSettings {
+    if (
+      typeof settings.autoRunStarted !== "boolean" ||
+      typeof settings.autoRunStopped !== "boolean"
+    ) {
+      throw new Error("通知设置无效");
+    }
+    const now = new Date().toISOString();
+    const save = this.database.query(`
+      INSERT INTO local_preferences (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `);
+    const transaction = this.database.transaction(() => {
+      save.run("notification-auto-run-started", String(settings.autoRunStarted), now);
+      save.run("notification-auto-run-stopped", String(settings.autoRunStopped), now);
+    });
+    transaction();
+    return this.getNotificationSettings();
+  }
+
+  syncWorkOrderNotifications(): void {
+    for (const workOrder of this.list()) {
+      const notification = stateNotification(workOrder);
+      if (notification) this.insertNotification(notification);
+    }
+  }
+
+  listNotifications(limit = 50): LocalNotification[] {
+    return this.database
+      .query<LocalNotificationRow, [number]>(`
+        SELECT id, notification_kind, work_order_id, stage_id, title, body,
+               target_url, read_at, claimed_at, created_at
+        FROM local_notifications
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      `)
+      .all(limit)
+      .map(mapLocalNotificationRow);
+  }
+
+  countUnreadNotifications(): number {
+    return (
+      this.database
+        .query<{ count: number }, []>(`
+          SELECT COUNT(*) AS count FROM local_notifications WHERE read_at IS NULL
+        `)
+        .get()?.count ?? 0
+    );
+  }
+
+  claimPendingNotifications(limit = 10): LocalNotification[] {
+    const transaction = this.database.transaction(() => {
+      const pending = this.database
+        .query<LocalNotificationRow, [number]>(`
+          SELECT id, notification_kind, work_order_id, stage_id, title, body,
+                 target_url, read_at, claimed_at, created_at
+          FROM local_notifications
+          WHERE claimed_at IS NULL AND read_at IS NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+        `)
+        .all(limit);
+      if (pending.length === 0) return [];
+      const claimedAt = new Date().toISOString();
+      const claim = this.database.query(`
+        UPDATE local_notifications
+        SET claimed_at = ?
+        WHERE id = ? AND claimed_at IS NULL
+      `);
+      for (const row of pending) claim.run(claimedAt, row.id);
+      return pending.map((row) =>
+        mapLocalNotificationRow({ ...row, claimed_at: claimedAt }),
+      );
+    });
+    return transaction();
+  }
+
+  markNotificationRead(id: number): void {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error("通知编号无效");
+    this.database
+      .query(`
+        UPDATE local_notifications
+        SET read_at = COALESCE(read_at, ?)
+        WHERE id = ?
+      `)
+      .run(new Date().toISOString(), id);
+  }
+
+  markWorkOrderNotificationsRead(workOrderId: string): void {
+    this.database
+      .query(`
+        UPDATE local_notifications
+        SET read_at = COALESCE(read_at, ?)
+        WHERE work_order_id = ?
+      `)
+      .run(new Date().toISOString(), workOrderId);
+  }
+
+  recordAutoRunStarted(workOrderId: string, runNumber: number): void {
+    if (!this.getNotificationSettings().autoRunStarted) return;
+    const workOrder = this.get(workOrderId);
+    if (!workOrder) return;
+    const stage = notificationStage(workOrder, "started");
+    this.insertNotification({
+      dedupeKey: `auto-run-started:${workOrderId}:${runNumber}`,
+      kind: "auto_run_started",
+      workOrderId,
+      stageId: stage?.id ?? null,
+      title: "自动运行已开始",
+      body: stage ? `${workOrder.title} · ${stage.outcome}` : workOrder.title,
+    });
+  }
+
+  recordAutoRunStopped(workOrderId: string, runNumber: number): void {
+    if (!this.getNotificationSettings().autoRunStopped) return;
+    const workOrder = this.get(workOrderId);
+    if (!workOrder) return;
+    const stage = notificationStage(workOrder, "stopped");
+    this.insertNotification({
+      dedupeKey: `auto-run-stopped:${workOrderId}:${runNumber}`,
+      kind: "auto_run_stopped",
+      workOrderId,
+      stageId: stage?.id ?? null,
+      title: "自动运行已停止",
+      body: `${workOrder.title} · ${workOrder.currentSummary}`,
+    });
+  }
+
+  private insertNotification(notification: {
+    dedupeKey: string;
+    kind: LocalNotificationKind;
+    workOrderId: string;
+    stageId: string | null;
+    title: string;
+    body: string;
+  }): void {
+    const targetUrl = notificationTargetUrl(
+      notification.workOrderId,
+      notification.stageId,
+    );
+    this.database
+      .query(`
+        INSERT OR IGNORE INTO local_notifications (
+          dedupe_key, notification_kind, work_order_id, stage_id,
+          title, body, target_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        notification.dedupeKey,
+        notification.kind,
+        notification.workOrderId,
+        notification.stageId,
+        notification.title,
+        notification.body,
+        targetUrl,
+        new Date().toISOString(),
+      );
   }
 
   getExecutionSettings(): { maxConcurrency: number } {
@@ -1581,6 +1810,115 @@ export class WorkOrderStore {
       WHERE run_number = 0
     `);
   }
+}
+
+function stateNotification(workOrder: WorkOrder): {
+  dedupeKey: string;
+  kind: LocalNotificationKind;
+  workOrderId: string;
+  stageId: string | null;
+  title: string;
+  body: string;
+} | null {
+  if (workOrder.status === "delivered") {
+    const stage = workOrder.plan?.stages.at(-1) ?? null;
+    return {
+      dedupeKey: `completed:${workOrder.id}:delivered`,
+      kind: "completed",
+      workOrderId: workOrder.id,
+      stageId: stage?.id ?? null,
+      title: "委托已完成",
+      body: workOrder.title,
+    };
+  }
+
+  const externalStage = workOrder.plan?.stages.find(
+    (stage) => stage.executionMethod === "external" && stage.status === "response",
+  );
+  if (workOrder.status === "ready" && externalStage) {
+    return {
+      dedupeKey: `response:${workOrder.id}:external:${externalStage.id}`,
+      kind: "response",
+      workOrderId: workOrder.id,
+      stageId: externalStage.id,
+      title: "委托需要处理",
+      body: `${workOrder.title} · ${externalStage.outcome}`,
+    };
+  }
+
+  if (workOrder.status === "review") {
+    const stage =
+      workOrder.plan?.stages.find((candidate) => candidate.status === "response") ??
+      workOrder.plan?.stages.at(-1) ??
+      null;
+    const resultKey = workOrder.result?.completedAt ?? workOrder.plan?.version ?? 0;
+    return {
+      dedupeKey: `response:${workOrder.id}:review:${resultKey}`,
+      kind: "response",
+      workOrderId: workOrder.id,
+      stageId: stage?.id ?? null,
+      title: "委托等待验收",
+      body: workOrder.title,
+    };
+  }
+
+  if (workOrder.status === "interrupted") {
+    const stage = notificationStage(workOrder, "stopped");
+    return {
+      dedupeKey: `response:${workOrder.id}:interrupted:${workOrder.runNumber}`,
+      kind: "response",
+      workOrderId: workOrder.id,
+      stageId: stage?.id ?? null,
+      title: "委托需要处理",
+      body: `${workOrder.title} · ${workOrder.currentSummary}`,
+    };
+  }
+  return null;
+}
+
+function notificationStage(
+  workOrder: WorkOrder,
+  event: "started" | "stopped",
+): PlanStage | null {
+  const stages = workOrder.plan?.stages ?? [];
+  if (event === "started") {
+    return (
+      stages.find((stage) => stage.status === "running") ??
+      stages.find(
+        (stage) =>
+          stage.executionMethod === "codex" &&
+          (stage.status === "planning" || stage.status === "response"),
+      ) ??
+      null
+    );
+  }
+  return (
+    stages.find((stage) => stage.status === "response") ??
+    stages.find((stage) => stage.status === "running") ??
+    stages.find((stage) => stage.status === "planning") ??
+    stages.at(-1) ??
+    null
+  );
+}
+
+function notificationTargetUrl(workOrderId: string, stageId: string | null): string {
+  const path = `/work-orders/${encodeURIComponent(workOrderId)}`;
+  return stageId ? `${path}?stage=${encodeURIComponent(stageId)}` : path;
+}
+
+function mapLocalNotificationRow(row: LocalNotificationRow): LocalNotification {
+  return {
+    id: row.id,
+    kind: row.notification_kind,
+    workOrderId: row.work_order_id,
+    stageId: row.stage_id,
+    title: row.title,
+    body: row.body,
+    targetUrl: row.target_url,
+    readAt: row.read_at,
+    claimedAt: row.claimed_at,
+    createdAt: row.created_at,
+  };
 }
 
 function mapRow(

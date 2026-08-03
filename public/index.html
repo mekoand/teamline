@@ -31,6 +31,10 @@
             <span>最大并发</span>
             <input id="max-concurrency" type="number" min="1" step="1" value="2" inputmode="numeric" aria-label="本机最大并发数" />
           </label>
+          <button class="notification-button" id="open-notifications" type="button" aria-label="打开通知">
+            <span>通知</span>
+            <strong id="notification-count" hidden>0</strong>
+          </button>
           <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅色主题">
             <span aria-hidden="true">◐</span>
           </button>
@@ -99,6 +103,37 @@
           <button type="submit" class="primary-button" id="submit-create">创建委托</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="notification-dialog" class="notification-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="overline">本机状态</p>
+          <h2>通知</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-notifications" aria-label="关闭">×</button>
+      </div>
+      <section class="notification-settings" aria-label="通知设置">
+        <div class="notification-permission">
+          <div>
+            <strong>本机通知</strong>
+            <small id="notification-permission-state">正在读取权限…</small>
+          </div>
+          <button class="secondary-button" id="enable-notifications" type="button">开启</button>
+        </div>
+        <label>
+          <input id="auto-run-started-notifications" type="checkbox" checked />
+          <span>自动开始</span>
+        </label>
+        <label>
+          <input id="auto-run-stopped-notifications" type="checkbox" checked />
+          <span>自动停止</span>
+        </label>
+      </section>
+      <div id="notification-list" class="notification-list" aria-live="polite">
+        <p class="muted">还没有通知。</p>
+      </div>
+      <p id="notification-feedback" class="inline-feedback" role="status"></p>
     </dialog>
 
     <dialog id="session-import-dialog" class="session-import-dialog">

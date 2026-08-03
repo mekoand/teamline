@@ -253,7 +253,10 @@ export function createApp({
       const response = await handleRequest(
         new Request(
           `http://teamline.local/api/work-orders/${encodeURIComponent(decision.candidateId)}/start`,
-          { method: "POST" },
+          {
+            method: "POST",
+            headers: { "x-teamline-auto-run": "1" },
+          },
         ),
       );
       if (!response.ok) {
@@ -302,6 +305,85 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/health") {
         return Response.json({ ok: true });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/notifications") {
+        store.syncWorkOrderNotifications();
+        const notifications = store.listNotifications();
+        return Response.json({
+          notifications,
+          unreadCount: store.countUnreadNotifications(),
+          settings: store.getNotificationSettings(),
+        });
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/notifications/claim"
+      ) {
+        store.syncWorkOrderNotifications();
+        return Response.json({ notifications: store.claimPendingNotifications() });
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/notifications/read"
+      ) {
+        try {
+          const body = (await request.json()) as {
+            id?: number;
+            workOrderId?: string;
+          };
+          if (body.id !== undefined) {
+            store.markNotificationRead(body.id);
+          } else if (body.workOrderId?.trim()) {
+            store.markWorkOrderNotificationsRead(body.workOrderId.trim());
+          } else {
+            throw new Error("请选择要标记的通知");
+          }
+          return Response.json({ ok: true });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_NOTIFICATION_READ",
+              error: error instanceof Error ? error.message : "无法标记通知",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/notification-settings"
+      ) {
+        return Response.json({ settings: store.getNotificationSettings() });
+      }
+
+      if (
+        request.method === "PUT" &&
+        url.pathname === "/api/notification-settings"
+      ) {
+        try {
+          const body = (await request.json()) as {
+            autoRunStarted?: boolean;
+            autoRunStopped?: boolean;
+          };
+          return Response.json({
+            settings: store.saveNotificationSettings({
+              autoRunStarted: body.autoRunStarted as boolean,
+              autoRunStopped: body.autoRunStopped as boolean,
+            }),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_NOTIFICATION_SETTINGS",
+              error: error instanceof Error ? error.message : "无法保存通知设置",
+            },
+            { status: 400 },
+          );
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/api/work-orders") {
@@ -474,6 +556,7 @@ export function createApp({
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
       if (request.method === "POST" && startMatch) {
         const id = decodeURIComponent(startMatch[1]);
+        const autoRunRequested = request.headers.get("x-teamline-auto-run") === "1";
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
@@ -636,6 +719,9 @@ export function createApp({
           }
 
           store.recordRunPid(id, run.pid ?? null);
+          if (autoRunRequested) {
+            store.recordAutoRunStarted(id, startedWorkOrder.runNumber);
+          }
           activeRuns.set(id, run);
           startRunTimeout(id);
           void consumeRunEvents(store, id, run, activeRuns, {
@@ -643,7 +729,12 @@ export function createApp({
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             checkpointManager,
-            afterRunSettled: scheduleAutoRunCheck,
+            afterRunSettled: () => {
+              if (autoRunRequested) {
+                store.recordAutoRunStopped(id, startedWorkOrder.runNumber);
+              }
+              scheduleAutoRunCheck();
+            },
           });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {

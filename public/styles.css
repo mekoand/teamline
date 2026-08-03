@@ -202,6 +202,39 @@ pre {
   background: var(--panel-soft);
 }
 
+.notification-button {
+  position: relative;
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-size: 12px;
+}
+
+.notification-button.has-unread {
+  color: var(--text);
+}
+
+.notification-button strong {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  padding-inline: 4px;
+  border-radius: 999px;
+  color: white;
+  background: var(--attention);
+  font-size: 9px;
+}
+
+.notification-button strong[hidden] {
+  display: none;
+}
+
 .resource-summary {
   min-width: 0;
   margin-left: auto;
@@ -396,7 +429,7 @@ pre {
 .order-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   padding: 11px 9px;
@@ -404,6 +437,13 @@ pre {
   color: var(--text);
   background: transparent;
   text-align: left;
+}
+
+.unread-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--attention);
 }
 
 .order-row:hover {
@@ -1488,6 +1528,100 @@ dialog::backdrop {
   overflow: hidden;
 }
 
+.notification-dialog {
+  width: min(520px, calc(100% - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  padding: 26px;
+  overflow: auto;
+}
+
+.notification-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 20px 0;
+}
+
+.notification-settings > label,
+.notification-permission {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.notification-settings input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.notification-settings > label > span {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.notification-permission {
+  grid-column: 1 / -1;
+  justify-content: space-between;
+}
+
+.notification-permission > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.notification-permission small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.notification-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.notification-item {
+  display: grid;
+  gap: 6px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  color: var(--text-soft);
+  background: var(--panel);
+  text-align: left;
+}
+
+.notification-item.unread {
+  border-color: color-mix(in srgb, var(--attention) 45%, var(--line));
+  background: var(--attention-soft);
+}
+
+.notification-item-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notification-item-heading strong {
+  color: var(--text);
+}
+
+.notification-item-heading time,
+.notification-item > span:last-child {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .dialog-description {
   margin: -10px 0 20px;
   color: var(--text-soft);
@@ -1818,6 +1952,11 @@ dialog::backdrop {
     gap: 6px;
   }
 
+  .notification-button {
+    justify-content: center;
+    padding-inline: 6px;
+  }
+
   .local-status {
     display: none;
   }
@@ -1923,6 +2062,20 @@ dialog::backdrop {
 
   .session-import-dialog .dialog-actions {
     flex-wrap: wrap;
+  }
+
+  .notification-dialog {
+    width: calc(100% - 20px);
+    max-height: calc(100vh - 20px);
+    padding: 22px 18px;
+  }
+
+  .notification-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-permission {
+    grid-column: auto;
   }
 }
 

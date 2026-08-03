@@ -22,6 +22,10 @@ const state = {
   resourceProgressTimer: null,
   sessionDiscovery: null,
   sessionSearch: "",
+  notifications: [],
+  unreadNotificationCount: 0,
+  notificationSettings: { autoRunStarted: true, autoRunStopped: true },
+  nativeNotificationCheckInFlight: false,
   refreshTimer: null,
   theme: readTheme(),
 };
@@ -38,6 +42,7 @@ const resourceSummaryElement = document.querySelector("#resource-summary");
 const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
 const sessionImportError = document.querySelector("#session-import-error");
+const notificationDialog = document.querySelector("#notification-dialog");
 
 applyTheme(state.theme);
 bindShellEvents();
@@ -51,6 +56,21 @@ function bindShellEvents() {
   });
 
   document.querySelector("#max-concurrency").addEventListener("change", saveMaxConcurrency);
+
+  document.querySelector("#open-notifications").addEventListener("click", () => {
+    renderNotificationShell();
+    notificationDialog.showModal();
+  });
+  document.querySelector("#close-notifications").addEventListener("click", () => {
+    notificationDialog.close();
+  });
+  document.querySelector("#enable-notifications").addEventListener("click", enableNativeNotifications);
+  document
+    .querySelector("#auto-run-started-notifications")
+    .addEventListener("change", saveNotificationSettings);
+  document
+    .querySelector("#auto-run-stopped-notifications")
+    .addEventListener("change", saveNotificationSettings);
 
   document.querySelector("#open-create").addEventListener("click", () => {
     createDialog.showModal();
@@ -97,9 +117,18 @@ async function refreshConsole({
       const preference = await requestJson("/api/preferences/execution-map-view");
       state.mapView = preference.view;
     }
-    const { workOrders, executionSettings } = await requestJson("/api/console");
+    const [consoleState, notificationState] = await Promise.all([
+      requestJson("/api/console"),
+      requestJson("/api/notifications"),
+    ]);
+    const { workOrders, executionSettings } = consoleState;
     state.workOrders = workOrders;
     state.executionSettings = executionSettings;
+    state.notifications = notificationState.notifications;
+    state.unreadNotificationCount = notificationState.unreadCount;
+    state.notificationSettings = notificationState.settings;
+    renderNotificationShell();
+    void showPendingNativeNotifications();
     document.querySelector("#max-concurrency").value = String(
       executionSettings.maxConcurrency,
     );
@@ -120,6 +149,13 @@ async function refreshConsole({
         `/api/work-orders/${encodeURIComponent(selectedId)}`,
       );
       state.selected = workOrder;
+      const requestedStageId = selectedStageFromPath();
+      if (requestedStageId) {
+        const requestedStageIndex = workOrder.plan?.stages.findIndex(
+          (stage) => stage.id === requestedStageId,
+        );
+        if (requestedStageIndex >= 0) state.selectedStageIndex = requestedStageIndex;
+      }
       state.events = workOrder.runStatus
         ? (await requestJson(`/api/work-orders/${encodeURIComponent(selectedId)}/events`)).events
         : [];
@@ -144,6 +180,140 @@ async function refreshConsole({
       </section>`;
     contextElement.innerHTML = '<div class="loading-state">本地状态暂时不可用</div>';
     document.querySelector("#retry-load")?.addEventListener("click", () => refreshConsole());
+  }
+}
+
+function renderNotificationShell() {
+  const count = document.querySelector("#notification-count");
+  count.textContent = String(state.unreadNotificationCount);
+  count.hidden = state.unreadNotificationCount === 0;
+  document
+    .querySelector("#open-notifications")
+    .classList.toggle("has-unread", state.unreadNotificationCount > 0);
+
+  document.querySelector("#auto-run-started-notifications").checked =
+    state.notificationSettings.autoRunStarted;
+  document.querySelector("#auto-run-stopped-notifications").checked =
+    state.notificationSettings.autoRunStopped;
+  renderNotificationPermission();
+
+  const list = document.querySelector("#notification-list");
+  list.innerHTML = state.notifications.length
+    ? state.notifications
+        .map(
+          (notification) => `
+            <button class="notification-item ${notification.readAt ? "" : "unread"}" data-notification-id="${notification.id}" type="button">
+              <span class="notification-item-heading">
+                <strong>${escapeHtml(notification.title)}</strong>
+                <time>${formatDate(notification.createdAt)}</time>
+              </span>
+              <span>${escapeHtml(notification.body)}</span>
+            </button>`,
+        )
+        .join("")
+    : '<p class="muted">还没有通知。</p>';
+  list.querySelectorAll("[data-notification-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const notification = state.notifications.find(
+        (candidate) => candidate.id === Number(button.dataset.notificationId),
+      );
+      if (notification) void openLocalNotification(notification);
+    });
+  });
+}
+
+function renderNotificationPermission() {
+  const stateElement = document.querySelector("#notification-permission-state");
+  const button = document.querySelector("#enable-notifications");
+  if (!("Notification" in window)) {
+    stateElement.textContent = "当前浏览器不支持";
+    button.hidden = true;
+    return;
+  }
+  const labels = {
+    granted: "已开启",
+    denied: "已被浏览器关闭",
+    default: "开启后显示在系统通知中心",
+  };
+  stateElement.textContent = labels[Notification.permission];
+  button.hidden = Notification.permission === "granted";
+  button.textContent = Notification.permission === "denied" ? "查看浏览器设置" : "开启";
+  button.disabled = Notification.permission === "denied";
+}
+
+async function enableNativeNotifications() {
+  if (!("Notification" in window)) return;
+  try {
+    await Notification.requestPermission();
+    renderNotificationPermission();
+    await showPendingNativeNotifications();
+  } catch {
+    setFeedback("notification-feedback", "无法开启本机通知，请检查浏览器设置。", true);
+  }
+}
+
+async function saveNotificationSettings() {
+  const settings = {
+    autoRunStarted: document.querySelector("#auto-run-started-notifications").checked,
+    autoRunStopped: document.querySelector("#auto-run-stopped-notifications").checked,
+  };
+  try {
+    const result = await requestJson("/api/notification-settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    state.notificationSettings = result.settings;
+    setFeedback("notification-feedback", "通知设置已保存。", false);
+  } catch (error) {
+    renderNotificationShell();
+    setFeedback("notification-feedback", messageFrom(error, "无法保存通知设置。"), true);
+  }
+}
+
+async function showPendingNativeNotifications() {
+  if (
+    !("Notification" in window) ||
+    Notification.permission !== "granted" ||
+    state.nativeNotificationCheckInFlight
+  ) {
+    return;
+  }
+  state.nativeNotificationCheckInFlight = true;
+  try {
+    const { notifications } = await requestJson("/api/notifications/claim", {
+      method: "POST",
+    });
+    for (const localNotification of notifications) {
+      const systemNotification = new Notification(localNotification.title, {
+        body: localNotification.body,
+        tag: `teamline-${localNotification.id}`,
+      });
+      systemNotification.addEventListener("click", () => {
+        window.focus();
+        void openLocalNotification(localNotification);
+        systemNotification.close();
+      });
+    }
+  } catch {
+    // 网页内未读通知仍会保留，下一次轮询再尝试系统通知。
+  } finally {
+    state.nativeNotificationCheckInFlight = false;
+  }
+}
+
+async function openLocalNotification(notification) {
+  try {
+    await requestJson("/api/notifications/read", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: notification.id }),
+    });
+  } finally {
+    notificationDialog.close();
+    state.selectedStageIndex = 0;
+    history.pushState({}, "", notification.targetUrl);
+    await refreshConsole();
   }
 }
 
@@ -454,6 +624,9 @@ function renderResourceContext() {
 function renderOrderRow(workOrder) {
   const presentation = visibleStatus(workOrder, state.workOrders);
   const selected = state.selected?.id === workOrder.id;
+  const unread = state.notifications.some(
+    (notification) => notification.workOrderId === workOrder.id && !notification.readAt,
+  );
   return `
     <button class="order-row ${selected ? "selected" : ""}" data-work-order-id="${escapeHtml(workOrder.id)}" type="button">
       <span class="status-dot ${presentation.status}"></span>
@@ -461,6 +634,7 @@ function renderOrderRow(workOrder) {
         <strong>${escapeHtml(workOrder.title)}</strong>
         <small>${visibleStatusLabels[presentation.status]} · ${escapeHtml(presentation.reason)}</small>
       </span>
+      ${unread ? '<span class="unread-indicator" aria-label="有未读通知"></span>' : ""}
       <time>${formatDate(workOrder.updatedAt)}</time>
     </button>`;
 }
@@ -1393,13 +1567,23 @@ async function importSelectedSessions(event) {
   }
 }
 
-function selectWorkOrder(id) {
-  if (!id || id === state.selected?.id) return;
+async function selectWorkOrder(id) {
+  if (!id) return;
   state.draftStages = null;
-  state.selectedStageIndex = 0;
-  state.contextTab = "details";
-  history.pushState({}, "", `/work-orders/${encodeURIComponent(id)}`);
-  refreshConsole();
+  if (id !== state.selected?.id) {
+    state.selectedStageIndex = 0;
+    state.contextTab = "details";
+    history.pushState({}, "", `/work-orders/${encodeURIComponent(id)}`);
+  }
+  try {
+    await requestJson("/api/notifications/read", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workOrderId: id }),
+    });
+  } finally {
+    await refreshConsole();
+  }
 }
 
 function isResourceView() {
@@ -1516,6 +1700,10 @@ function readPlanStages() {
 function selectedIdFromPath() {
   const match = window.location.pathname.match(/^\/work-orders\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function selectedStageFromPath() {
+  return new URL(window.location.href).searchParams.get("stage");
 }
 
 function encodedSelectedId() {
