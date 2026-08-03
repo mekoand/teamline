@@ -39,17 +39,11 @@
 
       <aside class="order-sidebar" aria-label="委托列表">
         <div class="sidebar-heading">
-          <div>
-            <p class="overline">工作委托</p>
-            <h1>当前工作</h1>
-          </div>
+          <h1>委托</h1>
           <span id="work-order-count" class="count">0</span>
         </div>
         <button class="sidebar-nav" id="open-resources" type="button">
-          <span>资源</span><small>额度与用量</small>
-        </button>
-        <button class="sidebar-nav" id="open-session-import" type="button">
-          <span>导入 Codex 会话</span><small>从本机继续整理</small>
+          <span>资源</span><small>额度与安排</small>
         </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ 新建委托</button>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
@@ -59,8 +53,8 @@
         <div class="loading-state">正在读取本地委托…</div>
       </main>
 
-      <aside id="context-panel" class="context-panel" aria-label="委托上下文">
-        <div class="loading-state">正在准备上下文…</div>
+      <aside id="context-panel" class="context-panel" aria-label="详情">
+        <div class="loading-state">正在准备详情…</div>
       </aside>
     </div>
 
@@ -68,8 +62,8 @@
       <form id="create-form">
         <div class="dialog-heading">
           <div>
-            <p class="overline">新的工作</p>
-            <h2>创建委托</h2>
+            <p class="overline">委托</p>
+            <h2>新建委托</h2>
           </div>
           <button type="button" class="icon-button" id="close-create" aria-label="关闭">×</button>
         </div>
@@ -94,6 +88,11 @@
           <div id="material-list" class="material-list"></div>
         </section>
 
+        <div class="dialog-secondary-entry">
+          <span>已有 Codex 会话？</span>
+          <button type="button" class="text-button" id="open-session-import">导入会话</button>
+        </div>
+
         <p class="form-error" id="form-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" class="secondary-button" id="cancel-create">取消</button>
@@ -106,12 +105,12 @@
       <form id="session-import-form">
         <div class="dialog-heading">
           <div>
-            <p class="overline">本机 Codex</p>
-            <h2>选择要继续管理的会话</h2>
+            <p class="overline">导入会话</p>
+            <h2>选择 Codex 会话</h2>
           </div>
           <button type="button" class="icon-button" id="close-session-import" aria-label="关闭">×</button>
         </div>
-        <p class="dialog-description">Teamline 只读取本机会话的标题、文件夹和活动时间。导入后先生成待确认的委托与执行地图，不会启动或接管原会话。</p>
+        <p class="dialog-description">只读取标题、文件夹和活动时间。导入后创建待确认的委托，不会启动原会话。</p>
         <label class="session-search">
           <span>搜索会话</span>
           <input id="session-search" type="search" placeholder="标题或文件夹" autocomplete="off" />

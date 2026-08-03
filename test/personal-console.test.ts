@@ -31,7 +31,7 @@ describe("personal console", () => {
     expect(script).toContain("state.workOrders.some((workOrder)");
     expect(script).toContain("最近完成节点");
     expect(script).toContain("继续当前现场");
-    expect(script).toContain("从最近阶段重新执行");
+    expect(script).toContain("从最近节点重新执行");
   });
 
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {
@@ -85,10 +85,26 @@ describe("personal console", () => {
 
     expect(page).toContain('id="open-session-import"');
     expect(page).toContain('id="session-import-dialog"');
-    expect(page).toContain("不会启动或接管原会话");
+    const sidebar = page.match(/<aside class="order-sidebar"[\s\S]*?<\/aside>/)?.[0] ?? "";
+    const createDialog = page.match(/<dialog id="create-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? "";
+    expect(sidebar).not.toContain('id="open-session-import"');
+    expect(createDialog).toContain('id="open-session-import"');
+    expect(page).toContain("不会启动原会话");
     expect(script).toContain('requestJson("/api/codex-sessions")');
     expect(script).toContain('requestJson("/api/codex-sessions/import"');
     expect(script).toContain("data-session-goal");
+  });
+
+  test("keeps resource provenance secondary to quota and work-order allocation", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain("额度状态");
+    expect(script).toContain("委托资源");
+    expect(script).toContain('<details class="resource-details">');
+    expect(script).toContain("数据来源与口径");
+    expect(script).not.toContain("可靠性优先");
+    expect(script).not.toContain("不推测某个节点正在运行");
   });
 
   test("restores persisted work and exposes the five user-facing states", async () => {

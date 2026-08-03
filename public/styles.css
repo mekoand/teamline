@@ -79,6 +79,15 @@ label > span {
   text-wrap: balance;
 }
 
+p,
+dd,
+li,
+small {
+  line-break: strict;
+  text-wrap: pretty;
+  word-break: normal;
+}
+
 button,
 input,
 select,
@@ -707,8 +716,42 @@ pre {
   line-height: 1.55;
 }
 
-.resource-source {
-  margin-top: 16px;
+.resource-summary-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.resource-summary-list > div {
+  min-width: 0;
+  padding: 12px;
+  background: var(--panel-soft);
+}
+
+.resource-next-step {
+  margin-top: 18px;
+}
+
+.resource-details {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.resource-details summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.resource-details p {
+  margin-top: 10px;
 }
 
 .account-usage {
@@ -1603,6 +1646,25 @@ dialog::backdrop {
   gap: 9px;
 }
 
+.dialog-secondary-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.text-button {
+  padding: 4px 0;
+  color: var(--accent);
+  background: transparent;
+  font-weight: 650;
+}
+
 .material-editor {
   margin: 20px 0 8px;
   padding: 16px;
@@ -1752,8 +1814,17 @@ dialog::backdrop {
     display: none;
   }
 
+  .topbar-status {
+    gap: 6px;
+  }
+
+  .local-status {
+    display: none;
+  }
+
   .resource-overview,
-  .resource-order-row dl {
+  .resource-order-row dl,
+  .resource-summary-list {
     grid-template-columns: 1fr;
   }
 
@@ -1852,5 +1923,21 @@ dialog::backdrop {
 
   .session-import-dialog .dialog-actions {
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 360px) {
+  .console-topbar {
+    padding-inline: 12px;
+  }
+
+  .concurrency-control input {
+    width: 54px;
+  }
+
+  .dialog-secondary-entry {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 }

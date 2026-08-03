@@ -61,7 +61,10 @@ function bindShellEvents() {
     state.draftStages = null;
     refreshConsole();
   });
-  document.querySelector("#open-session-import").addEventListener("click", openSessionImport);
+  document.querySelector("#open-session-import").addEventListener("click", () => {
+    closeCreateDialog();
+    openSessionImport();
+  });
   document.querySelector("#close-session-import").addEventListener("click", closeSessionImport);
   document.querySelector("#cancel-session-import").addEventListener("click", closeSessionImport);
   document.querySelector("#session-search").addEventListener("input", (event) => {
@@ -86,7 +89,7 @@ async function refreshConsole({
   clearTimeout(state.refreshTimer);
   if (!polling && state.workOrders.length === 0) {
     workspaceElement.innerHTML = '<div class="loading-state">正在读取本地委托…</div>';
-    contextElement.innerHTML = '<div class="loading-state">正在准备上下文…</div>';
+    contextElement.innerHTML = '<div class="loading-state">正在准备详情…</div>';
   }
 
   try {
@@ -208,15 +211,15 @@ function renderConsole(feedback = "") {
     workspaceElement.innerHTML = `
       <section class="empty-console">
         <span class="empty-symbol">↗</span>
-        <h2>从一项真实工作开始</h2>
-        <p>创建委托后，计划、运行进展和验收结果会留在这个本地工作台。</p>
-        <button class="primary-button" id="empty-create" type="button">创建第一个委托</button>
+        <h2>新建第一项委托</h2>
+        <p>写下目标，生成计划，再确认并开始。</p>
+        <button class="primary-button" id="empty-create" type="button">新建委托</button>
       </section>`;
     contextElement.innerHTML = `
       <section class="context-empty">
-        <p class="overline">上下文</p>
-        <h2>尚未选择委托</h2>
-        <p>这里会显示当前阶段的范围、验证方式和执行操作。</p>
+        <p class="overline">详情</p>
+        <h2>等待选择</h2>
+        <p>新建委托后，这里显示当前节点和下一步操作。</p>
       </section>`;
     document.querySelector("#empty-create")?.addEventListener("click", () => createDialog.showModal());
     return;
@@ -230,7 +233,7 @@ function renderConsole(feedback = "") {
 function renderWorkOrderList() {
   countElement.textContent = String(state.workOrders.length);
   if (state.workOrders.length === 0) {
-    listElement.innerHTML = '<p class="sidebar-empty">还没有委托</p>';
+    listElement.innerHTML = '<p class="sidebar-empty">暂无委托</p>';
     return;
   }
 
@@ -307,7 +310,7 @@ function renderResourceWorkspace() {
   return `
     <section class="workspace-content resource-workspace">
       <header class="workspace-heading">
-        <div><p class="overline">资源</p><h1>额度与当前安排</h1><p>只展示来源明确的资源信号；不可用、过期或无法归因的数据不会被当作精确值。</p></div>
+        <div><p class="overline">资源</p><h1>额度状态</h1></div>
         <span class="saved-state">更新于 ${formatDate(resources.observedAt)}</span>
       </header>
       <section class="resource-overview">
@@ -316,12 +319,12 @@ function renderResourceWorkspace() {
       </section>
       <section class="resource-orders-panel">
         <div class="section-heading compact">
-          <div><p class="overline">按委托</p><h2>本期安排与用量</h2></div>
+          <div><p class="overline">安排</p><h2>委托资源</h2></div>
           <span class="subtle-label">${resources.workOrders.length} 项委托</span>
         </div>
         ${resources.workOrders.length
           ? `<div class="resource-order-list">${resources.workOrders.map(renderResourceOrder).join("")}</div>`
-          : '<p class="muted">还没有委托。创建委托后会在这里显示资源安排。</p>'}
+          : '<p class="muted">新建委托后，可在这里安排优先级、执行节奏和自动运行。</p>'}
       </section>
     </section>`;
 }
@@ -334,13 +337,12 @@ function renderCodexResourceCard(codex, runningCount) {
       ${available
         ? `<div class="quota-windows">${renderQuotaWindow("短周期", codex.shortWindow)}${renderQuotaWindow("长期", codex.longWindow)}</div>`
         : `<p class="resource-message">${escapeHtml(codex.message || "暂时没有可用额度数据")}</p>`}
-      <p class="resource-source">来源：Codex 本地 app-server · 采集于 ${formatDate(codex.observedAt)}</p>
     </article>`;
 }
 
 function renderQuotaWindow(label, window) {
   if (!window) {
-    return `<div><span>${label}</span><strong>不可用</strong><small>没有返回可靠窗口</small></div>`;
+    return `<div><span>${label}</span><strong>不可用</strong><small>暂无数据</small></div>`;
   }
   return `<div><span>${label}</span><strong>${formatRemaining(window)}</strong><small>${formatReset(window.resetsAt)}</small></div>`;
 }
@@ -351,9 +353,8 @@ function renderApiResourceCard(api) {
     <article class="resource-card ${available ? "available" : "unavailable"}">
       <div class="resource-card-heading"><div><p class="overline">OpenAI API</p><h2>${available ? "账户用量" : resourceStatusLabel(api.status)}</h2></div><span class="subtle-label">可选连接</span></div>
       ${available
-        ? `<strong class="account-usage">${formatUsage(api.usage)}</strong><p class="resource-message">${scopeLabel(api.scope)}聚合，未自动归入委托</p>`
-        : `<p class="resource-message">${escapeHtml(api.message || "需要连接后才能读取 API 用量和费用")}</p>`}
-      <p class="resource-source">采集于 ${formatDate(api.observedAt)} · 不会阻塞 Codex 订阅额度和首次使用</p>
+        ? `<strong class="account-usage">${formatUsage(api.usage)}</strong><p class="resource-message">${scopeLabel(api.scope)}账户用量</p>`
+        : `<p class="resource-message">${escapeHtml(api.message || "连接后可查看 API 用量和费用")}</p>`}
     </article>`;
 }
 
@@ -424,15 +425,29 @@ async function saveResourcePlan(id) {
 
 function renderResourceContext() {
   if (state.resourceError) {
-    return `<section class="context-empty"><p class="overline">资源</p><h2>工作台仍可使用</h2><p>资源读取与委托读取相互独立。你可以继续查看和处理委托，稍后再重试资源。</p></section>`;
+    return `<section class="context-empty"><p class="overline">资源详情</p><h2>稍后重试</h2><p>委托不受影响，可以继续处理。</p></section>`;
   }
-  const api = state.resources?.openaiApi;
+  const resources = state.resources;
+  if (!resources) return '<div class="loading-state">正在准备资源详情…</div>';
+  const api = resources.openaiApi;
+  const workOrders = resources?.workOrders ?? [];
+  const autoRunCount = workOrders.filter((workOrder) => workOrder.runWhenQuotaAvailable).length;
+  const highPriorityCount = workOrders.filter((workOrder) => workOrder.priority === "high").length;
   return `
     <section class="context-content">
-      <div class="context-heading"><div><p class="overline">数据说明</p><h2>可靠性优先</h2></div></div>
-      <p class="context-summary">额度数据来自当前登录的 Codex 本地接口。读取失败时显示不可用，不会把未知值当作 0。</p>
-      <div class="context-section"><p class="overline">OpenAI API</p><p class="context-summary">${escapeHtml(api?.message || "API 用量是可选连接，未连接时保持为空。")}</p></div>
-      <div class="context-section"><p class="overline">委托归属</p><p class="context-summary">只有能明确归因到委托的数据才进入委托用量；组织、项目或 API Key 聚合保留为账户用量。</p></div>
+      <div class="context-heading"><div><p class="overline">资源详情</p><h2>当前安排</h2></div></div>
+      <dl class="context-list resource-summary-list">
+        <div><dt>运行中</dt><dd>${resources?.runningCount ?? 0} 项</dd></div>
+        <div><dt>优先推进</dt><dd>${highPriorityCount} 项</dd></div>
+        <div><dt>自动运行</dt><dd>${autoRunCount} 项</dd></div>
+      </dl>
+      <p class="context-summary resource-next-step">在“委托资源”中调整优先级、执行节奏和自动运行。</p>
+      <details class="resource-details">
+        <summary>数据来源与口径</summary>
+        <p>Codex 额度来自本地接口，采集于 ${formatDate(resources.codex.observedAt)}；读取失败时显示“不可用”。</p>
+        <p>${escapeHtml(api?.message || "OpenAI API 用量为可选连接。")}</p>
+        <p>账户聚合用量不会自动归入具体委托。</p>
+      </details>
     </section>`;
 }
 
@@ -465,7 +480,7 @@ function renderWorkspace(workOrder, feedback) {
           <h1>${escapeHtml(workOrder.title)}</h1>
           <p>${escapeHtml(workOrder.currentSummary)}</p>
         </div>
-        <span class="saved-state">已保存于本机</span>
+        <span class="saved-state">本机已保存</span>
       </header>
 
       ${workOrder.pendingClarification ? renderConversationPanel(workOrder) : ""}
@@ -474,7 +489,7 @@ function renderWorkspace(workOrder, feedback) {
         <div class="section-heading">
           <div>
             <p class="overline">执行地图</p>
-            <h2>${stages ? (canEditPlan ? "检查并编辑计划" : "当前计划") : "先把工作想清楚"}</h2>
+            <h2>${stages ? (canEditPlan ? "检查并编辑计划" : "当前计划") : "准备执行计划"}</h2>
           </div>
           <div class="map-heading-actions">
             ${workOrder.plan && !canEditPlan ? renderMapViewControls(workOrder) : ""}
@@ -511,7 +526,7 @@ function renderRecoveryPanel(workOrder) {
   return `
     <section class="recovery-panel">
       <div class="section-heading compact">
-        <div><p class="overline">执行中断</p><h2>现场仍保留在工作空间</h2></div>
+        <div><p class="overline">执行中断</p><h2>现场已保留</h2></div>
         <span class="status-pill response">需响应</span>
       </div>
       <dl class="recovery-facts">
@@ -537,14 +552,14 @@ function currentPlanCheckpoints(workOrder) {
 
 function renderPlanArea(workOrder, stages, canEditPlan) {
   if (workOrder.pendingClarification && !stages) {
-    return '<div class="plan-empty"><p>回答上方的关键问题后，Teamline 会继续整理计划。</p></div>';
+    return '<div class="plan-empty"><p>回答关键问题后继续生成计划。</p></div>';
   }
   if (!stages) {
     return `
       <div class="plan-empty">
         <p>${workOrder.workspace
-          ? "Codex 会以只读方式查看所选工作空间和素材，并把生成计划所需的上下文发送给当前配置的模型服务。规划不会修改文件。"
-          : "Codex 会先根据目标和素材整理计划；现在不需要选择执行文件夹，规划不会修改本地文件。"}</p>
+          ? "所选工作空间和素材会发送给当前模型服务；生成计划不会修改文件。"
+          : "所选素材会发送给当前模型服务；执行文件夹可在启动前选择。"}</p>
         <div class="button-row">
           <button class="primary-button" id="generate-plan" type="button">生成计划</button>
           <button class="secondary-button" id="manual-plan" type="button">手动填写</button>
@@ -567,8 +582,8 @@ function renderConversationPanel(workOrder) {
   return `
     <section class="conversation-panel" aria-labelledby="conversation-heading">
       <div class="section-heading compact conversation-heading">
-        <div><p class="overline">委托对话</p><h2 id="conversation-heading">${pending ? "确认关键信息" : "补充当前工作"}</h2></div>
-        <span class="subtle-label">${pending ? "等待回复" : "一项委托一条对话"}</span>
+        <div><p class="overline">对话</p><h2 id="conversation-heading">${pending ? "确认关键信息" : "补充委托"}</h2></div>
+        <span class="subtle-label">${pending ? "待回答" : stage ? "当前节点" : "委托"}</span>
       </div>
       <div class="conversation-thread" aria-live="polite">
         ${messages.length
@@ -576,9 +591,9 @@ function renderConversationPanel(workOrder) {
               <article class="conversation-message ${message.role}">
                 <span>${message.role === "user" ? "你" : "Teamline"}${message.stageId ? ` · ${escapeHtml(stageLabel(workOrder, message.stageId))}` : ""}</span>
                 <p>${escapeHtml(message.content)}</p>
-                ${message.kind === "decision" ? `<small>${message.requiresPlanConfirmation ? "计划已更新，需重新确认" : "已写入节点上下文"}</small>` : ""}
+                ${message.kind === "decision" ? `<small>${message.requiresPlanConfirmation ? "计划已更新，需重新确认" : "已添加到节点"}</small>` : ""}
               </article>`).join("")
-          : '<p class="conversation-empty">补充细节会归入当前节点；调整目标、节点关系或资源安排时更新计划。</p>'}
+          : '<p class="conversation-empty">还没有补充内容。</p>'}
       </div>
       ${editable ? `
         <form id="conversation-form" class="conversation-form">
@@ -621,7 +636,7 @@ function renderExecutionMap(workOrder, stages) {
       ${stages.map((stage, index) => renderMapNode(stage, index, stageById, singleStage)).join("")}
     </div>
     ${workOrder.runStatus && stages.every((stage) => stage.status === "planning")
-      ? '<p class="map-evidence-note">Codex 尚未提供可归因到节点的进展；这里保留已知的计划状态，不推测某个节点正在运行。</p>'
+      ? '<p class="map-evidence-note">暂未收到节点进展，计划状态保持不变。</p>'
       : ""}`;
 }
 
@@ -650,7 +665,7 @@ function renderPlanForm(stages) {
           (stage, index) => `
             <article class="plan-stage" data-plan-stage>
               <div class="plan-stage-heading">
-                <strong>阶段 ${index + 1}</strong>
+                <strong>节点 ${index + 1}</strong>
                 ${stages.length > 1 ? `<button type="button" data-remove-stage="${index}">移除</button>` : ""}
               </div>
               <input type="hidden" name="id" value="${escapeHtml(stage.id ?? "")}" />
@@ -677,7 +692,7 @@ function renderPlanForm(stages) {
         )
         .join("")}
       <div class="plan-form-actions">
-        <button class="secondary-button" id="add-stage" type="button">增加阶段</button>
+        <button class="secondary-button" id="add-stage" type="button">增加节点</button>
         <button class="primary-button" id="save-plan" type="submit">保存计划</button>
       </div>
     </form>`;
@@ -717,7 +732,7 @@ function renderResultPanel(workOrder) {
   return `
     <section class="result-panel">
       <div class="section-heading compact">
-        <div><p class="overline">成果与验收</p><h2>工作空间变化与检查结果</h2></div>
+        <div><p class="overline">验收</p><h2>成果与检查</h2></div>
         <span class="subtle-label">计划版本 ${workOrder.result.planVersion}</span>
       </div>
       ${historical ? `<p class="notice">这是上一版计划的历史结果。</p>` : ""}
@@ -750,7 +765,7 @@ function renderContext(workOrder) {
   return `
     <section class="context-content">
       <div class="context-heading">
-        <div><p class="overline">上下文</p><h2>${stage ? `阶段 ${selectedIndex + 1}` : "委托详情"}</h2></div>
+        <div><p class="overline">${stage ? "当前节点" : "详情"}</p><h2>${stage ? `节点 ${selectedIndex + 1}` : "委托信息"}</h2></div>
         <span class="status-dot ${stage?.status ?? presentation.status}" title="${escapeHtml(stage?.statusReason ?? presentation.reason)}"></span>
       </div>
 
@@ -772,7 +787,7 @@ function renderContextTabs() {
     ["artifacts", "成果"],
   ];
   return `
-    <div class="context-tabs" role="tablist" aria-label="节点上下文">
+    <div class="context-tabs" role="tablist" aria-label="节点详情">
       ${tabs
         .map(
           ([id, label]) => `<button type="button" role="tab" data-context-tab="${id}" aria-selected="${state.contextTab === id}" class="${state.contextTab === id ? "active" : ""}">${label}</button>`,
@@ -853,7 +868,7 @@ function renderContextAction(workOrder) {
     )?.value ?? "";
     return `
       <section class="context-action">
-        <p class="overline">执行确认</p>
+        <p class="overline">下一步</p>
         <label><span>本轮最长运行时间</span>
           <select id="max-run-minutes">
             ${[30, 60, 120, 240]
@@ -885,7 +900,7 @@ function renderContextAction(workOrder) {
         <p>选择如何处理当前中断。</p>
         <button class="primary-button full-button" id="continue-work-order" type="button">继续当前现场</button>
         ${canReexecute
-          ? `<button class="secondary-button full-button" id="reexecute-work-order" type="button">${latestCheckpoint.kind === "stage" ? "从最近阶段重新执行" : "从起始位置重新执行"}</button>`
+          ? `<button class="secondary-button full-button" id="reexecute-work-order" type="button">${latestCheckpoint.kind === "stage" ? "从最近节点重新执行" : "从起始位置重新执行"}</button>`
           : '<p class="muted">普通文件夹暂不提供检查点回退。</p>'}
       </section>`;
   }
@@ -1057,7 +1072,7 @@ function bindRenderedEvents() {
   bindAction("#start-work-order", "正在准备…", "确认计划并启动", "start", "Teamline 正在创建委托工作区并启动 Codex。");
   bindAction("#interrupt-work-order", "正在停止…", "中断运行", "interrupt", "正在请求 Codex 停止。");
   bindAction("#continue-work-order", "正在继续…", "继续当前现场", "continue", "正在从现有进度继续委托。");
-  bindAction("#reexecute-work-order", "正在恢复…", "从最近阶段重新执行", "reexecute", "正在恢复最近完整位置并启动新的运行。");
+  bindAction("#reexecute-work-order", "正在恢复…", "从最近节点重新执行", "reexecute", "正在恢复最近完整位置并启动新的运行。");
   bindAction("#deliver-work-order", "正在确认…", "确认完成", "deliver", "");
 
   document.querySelector("#workspace-form")?.addEventListener("submit", async (event) => {
