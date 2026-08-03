@@ -131,27 +131,21 @@ pre {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 720;
+  width: 116px;
+  overflow: hidden;
   text-decoration: none;
 }
 
-.brand-mark {
-  display: inline-grid;
-  width: 27px;
-  height: 27px;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--panel);
-  background: var(--text);
-  font-size: 12px;
+.brand-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+  mix-blend-mode: multiply;
 }
 
-:root[data-theme="dark"] .brand-mark {
-  color: #171816;
-  background: #eff0ec;
+:root[data-theme="dark"] .brand-logo {
+  filter: grayscale(1) invert(1);
+  mix-blend-mode: screen;
 }
 
 .topbar-status,

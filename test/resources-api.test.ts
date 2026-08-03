@@ -321,6 +321,10 @@ describe("resource API", () => {
           executable,
           5_000,
           apiUsage,
+          60_000,
+          5 * 60_000,
+          3_000,
+          () => new Date(apiNow),
         ),
       });
 
