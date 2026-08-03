@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
@@ -106,7 +106,31 @@ describe("Teamline CLI", () => {
     expect(cli.stderr).toEqual([]);
   });
 
-  test("pauses and continues a work order through the local service", async () => {
+  test("creates from a real Git subdirectory and binds the repository root", async () => {
+    const repositoryPath = temporaryDirectory("teamline-cli-git-");
+    const subdirectory = join(repositoryPath, "packages", "app");
+    mkdirSync(subdirectory, { recursive: true });
+    const initialized = Bun.spawnSync(["git", "init", "-b", "main", repositoryPath]);
+    expect(initialized.exitCode).toBe(0);
+
+    const database = new Database(":memory:");
+    cleanup.push(() => database.close());
+    const store = new WorkOrderStore(database);
+    const app = createApp({ store });
+    const cli = cliCapture(
+      "http://127.0.0.1:4310/",
+      subdirectory,
+      serviceFetch(app),
+    );
+
+    expect(await runCli(["create", "处理子目录工作"], cli.dependencies)).toBe(0);
+    expect(store.list()[0].workspace).toEqual({
+      kind: "git",
+      path: realpathSync(repositoryPath),
+    });
+  });
+
+  test("interrupts and continues a work order through the local service", async () => {
     const workspacePath = temporaryDirectory("teamline-cli-running-");
     const database = new Database(":memory:");
     cleanup.push(() => database.close());
@@ -153,20 +177,73 @@ describe("Teamline CLI", () => {
       { outcome: "完成任务", scope: "测试", verification: "检查结果" },
     ]);
 
+    expect(await runCli(["interrupt", created.id.slice(0, 8)], cli.dependencies)).toBe(1);
+    expect(cli.stderr.at(-1)).toContain("当前没有可中断的运行");
+    cli.stderr.length = 0;
+    cli.stdout.length = 0;
+
     const start = await app.fetch(
       new Request(`${baseUrl}api/work-orders/${created.id}/start`, { method: "POST" }),
     );
     expect(start.status).toBe(200);
     await waitFor(() => store.get(created.id)?.runStatus === "running");
 
-    expect(await runCli(["pause", created.id.slice(0, 8)], cli.dependencies)).toBe(0);
-    expect(cli.stdout.at(-1)).toBe("正在暂停：处理可暂停任务");
+    expect(await runCli(["interrupt", created.id.slice(0, 8)], cli.dependencies)).toBe(0);
+    expect(cli.stdout.at(-1)).toBe("正在中断：处理可暂停任务");
     await waitFor(() => store.get(created.id)?.runStatus === "interrupted");
 
     expect(await runCli(["continue", created.id.slice(0, 8)], cli.dependencies)).toBe(0);
     expect(cli.stdout.at(-1)).toBe("已继续：处理可暂停任务");
     expect(startCount).toBe(2);
     expect(cli.stderr).toEqual([]);
+  });
+
+  test("rejects the misleading pause command and ambiguous ID prefixes", async () => {
+    let fetchCount = 0;
+    const fetch = (async () => {
+      fetchCount += 1;
+      return Response.json({
+        workOrders: [
+          { id: "abcd1111-first" },
+          { id: "abcd2222-second" },
+        ],
+      });
+    }) as typeof globalThis.fetch;
+    const cli = cliCapture("http://127.0.0.1:4310/", process.cwd(), fetch);
+
+    expect(await runCli(["pause", "abcd"], cli.dependencies)).toBe(2);
+    expect(cli.stderr.at(-1)).toContain("未知命令：pause");
+    expect(fetchCount).toBe(0);
+
+    expect(await runCli(["show", "abcd"], cli.dependencies)).toBe(2);
+    expect(cli.stderr.at(-1)).toContain("不唯一");
+    expect(fetchCount).toBe(1);
+  });
+
+  test("does not follow redirects away from the local service", async () => {
+    const requests: Array<{ url: string; redirect: RequestRedirect | undefined }> = [];
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), redirect: init?.redirect });
+      return new Response(null, {
+        status: 307,
+        headers: { location: "https://example.com/collect" },
+      });
+    }) as typeof globalThis.fetch;
+    const cli = cliCapture("http://127.0.0.1:4310/", process.cwd(), fetch);
+
+    expect(
+      await runCli(["create", "不能被重定向"], {
+        ...cli.dependencies,
+        resolveWorkspace: async (cwd) => cwd,
+      }),
+    ).toBe(1);
+    expect(requests).toEqual([
+      {
+        url: "http://127.0.0.1:4310/api/work-orders",
+        redirect: "manual",
+      },
+    ]);
+    expect(cli.stderr.at(-1)).toContain("307");
   });
 
   test("uses the macOS open command without a shell", () => {

@@ -6,6 +6,7 @@ type CliDependencies = {
   env: Record<string, string | undefined>;
   fetch: typeof globalThis.fetch;
   openUrl: (url: string) => void | Promise<void>;
+  resolveWorkspace: (cwd: string) => Promise<string>;
   stdout: (message: string) => void;
   stderr: (message: string) => void;
 };
@@ -22,7 +23,7 @@ const help = `Teamline CLI
   teamline create <目标> [--acceptance <验收标准>]
   teamline list
   teamline show <委托 ID 或唯一前缀>
-  teamline pause <委托 ID 或唯一前缀>
+  teamline interrupt <委托 ID 或唯一前缀>
   teamline continue <委托 ID 或唯一前缀>
   teamline open <委托 ID 或唯一前缀>
 
@@ -45,6 +46,7 @@ export async function runCli(
     env: process.env,
     fetch: globalThis.fetch,
     openUrl: openInBrowser,
+    resolveWorkspace: resolveWorkspacePath,
     stdout: console.log,
     stderr: console.error,
     ...overrides,
@@ -67,7 +69,7 @@ export async function runCli(
       await listCommand(baseUrl, dependencies);
       return 0;
     }
-    if (["show", "pause", "continue", "open"].includes(command)) {
+    if (["show", "interrupt", "continue", "open"].includes(command)) {
       const reference = requireReference(commandArgs, command);
       await workOrderCommand(command, reference, baseUrl, dependencies);
       return 0;
@@ -98,7 +100,7 @@ async function createCommand(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        workspacePath: dependencies.cwd(),
+        workspacePath: await dependencies.resolveWorkspace(dependencies.cwd()),
         goal,
         ...(acceptance ? { acceptance } : {}),
       }),
@@ -148,7 +150,7 @@ async function workOrderCommand(
     return;
   }
 
-  const action = command === "pause" ? "interrupt" : "continue";
+  const action = command;
   const response = await requestJson(
     baseUrl,
     `/api/work-orders/${encodeURIComponent(workOrder.id)}/${action}`,
@@ -158,8 +160,8 @@ async function workOrderCommand(
   const updated = response.workOrder as WorkOrder | undefined;
   if (!updated?.id) throw new CliRequestError("本地服务返回了无法识别的委托状态");
   dependencies.stdout(
-    command === "pause"
-      ? `正在暂停：${updated.title}`
+    command === "interrupt"
+      ? `正在中断：${updated.title}`
       : `已继续：${updated.title}`,
   );
 }
@@ -200,7 +202,10 @@ async function requestJson(
 ): Promise<JsonObject> {
   let response: Response;
   try {
-    response = await dependencies.fetch(new URL(path, baseUrl), init);
+    response = await dependencies.fetch(new URL(path, baseUrl), {
+      ...init,
+      redirect: "manual",
+    });
   } catch {
     throw new CliRequestError(
       `无法连接 Teamline 本地服务（${baseUrl.origin}）。请先运行 bun run dev。`,
@@ -331,5 +336,39 @@ export function openInBrowser(
   if (result.exitCode !== 0) {
     const detail = result.stderr.toString().trim();
     throw new CliRequestError(detail || "无法打开 Teamline 网页");
+  }
+}
+
+export async function resolveWorkspacePath(cwd: string): Promise<string> {
+  let subprocess: ReturnType<typeof Bun.spawn>;
+  try {
+    subprocess = Bun.spawn(["git", "-C", cwd, "rev-parse", "--show-toplevel"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+  } catch {
+    return cwd;
+  }
+
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    try {
+      subprocess.kill(9);
+    } catch {
+      // The Git probe may have exited between scheduling and firing the timeout.
+    }
+  }, 1_500);
+  try {
+    const [exitCode, stdout] = await Promise.all([
+      subprocess.exited,
+      new Response(subprocess.stdout).text(),
+    ]);
+    const repositoryRoot = stdout.trim();
+    return !timedOut && exitCode === 0 && repositoryRoot ? repositoryRoot : cwd;
+  } catch {
+    return cwd;
+  } finally {
+    clearTimeout(timeout);
   }
 }

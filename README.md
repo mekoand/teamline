@@ -20,11 +20,11 @@ bun run dev
 bun run cli -- create "修复登录页偶发的空白" --acceptance "相关测试通过"
 bun run cli -- list
 bun run cli -- show <委托 ID 或唯一前缀>
-bun run cli -- pause <委托 ID 或唯一前缀>
+bun run cli -- interrupt <委托 ID 或唯一前缀>
 bun run cli -- continue <委托 ID 或唯一前缀>
 bun run cli -- open <委托 ID 或唯一前缀>
 ```
 
-安装或链接这个包后，也可以直接使用 `teamline` 命令。CLI 与网页连接同一个本地服务和 SQLite 数据；它只承担创建、查询、暂停、继续和打开网页这些日常入口。计划编辑、执行地图和资源安排仍在网页中完成。
+安装或链接这个包后，也可以直接使用 `teamline` 命令。CLI 与网页连接同一个本地服务和 SQLite 数据；它只承担创建、查询、中断、继续和打开网页这些日常入口。计划编辑、执行地图和资源安排仍在网页中完成。
 
 个人版 v0 的完整范围与实现顺序见 [`docs/specs/personal-v0.md`](docs/specs/personal-v0.md)。
