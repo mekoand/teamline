@@ -363,6 +363,17 @@ function inspectReferences(workOrder: ExportedWorkOrder): RestoreAttention[] {
       inspectLocation(attention, "reference", reference.label, reference.location, reference.type);
     }
   }
+  for (const checkpoint of workOrder.checkpoints) {
+    if (!checkpointIsAvailable(workOrder.workspace, checkpoint.treeHash)) {
+      attention.push({
+        kind: "reference",
+        label: "检查点",
+        location: checkpoint.treeHash,
+        status: "needs_attention",
+        reason: "本机工作空间中找不到这个 Git 检查点引用",
+      });
+    }
+  }
   if (workOrder.sessionReferences.active || workOrder.sessionReferences.imported) {
     attention.push({
       kind: "session",
@@ -433,6 +444,22 @@ function isWebUrl(value: string): boolean {
   }
 }
 
+function checkpointIsAvailable(
+  workspace: WorkOrderWorkspace | null,
+  treeHash: string,
+): boolean {
+  if (workspace?.kind !== "git" || !isReadableLocalPath(workspace.path)) return false;
+  const result = Bun.spawnSync([
+    "git",
+    "-C",
+    workspace.path,
+    "cat-file",
+    "-e",
+    `${treeHash}^{tree}`,
+  ]);
+  return result.exitCode === 0;
+}
+
 function deduplicateAttention(items: RestoreAttention[]): RestoreAttention[] {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -474,7 +501,11 @@ function insertWorkOrder(
   copy: boolean,
 ): void {
   const needsReconfirmation = ["ready", "running", "interrupted"].includes(source.status);
-  const status = needsReconfirmation ? "draft" : source.status;
+  const status = needsReconfirmation
+    ? source.executionMap
+      ? "ready"
+      : "draft"
+    : source.status;
   const summary = needsReconfirmation
     ? "已恢复委托状态；请确认计划、工作空间和资源后再运行"
     : source.currentSummary;

@@ -1199,6 +1199,13 @@ function renderContextAction(workOrder) {
   if (state.draftStages !== null) {
     return '<section class="context-action"><p class="overline">正在编辑计划</p><strong>先保存计划再继续</strong><p>执行和成果登记会使用保存后的节点。</p></section>';
   }
+  if (
+    workOrder.status === "ready" &&
+    !workOrder.runStatus &&
+    workOrder.plan?.confirmationRequired
+  ) {
+    return '<section class="context-action"><p class="overline">下一步</p><strong>检查恢复的计划</strong><p>请在执行地图中选择“编辑计划”，确认节点、工作空间和资源后保存。恢复不会直接沿用原来的执行授权。</p></section>';
+  }
   const stage = workOrder.plan?.stages?.[state.selectedStageIndex];
   const needsStageConfirmation = workOrder.plan?.stages?.some(
     (candidate) =>

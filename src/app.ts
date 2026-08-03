@@ -654,6 +654,15 @@ export function createApp({
             { status: 409 },
           );
         }
+        if (workOrder.plan.confirmationRequired) {
+          return Response.json(
+            {
+              code: "PLAN_CONFIRMATION_REQUIRED",
+              error: "请先检查并保存恢复的委托计划",
+            },
+            { status: 409 },
+          );
+        }
         const runnableStages = nextRunnableStages(workOrder);
         const externalStage = runnableStages.find(
           (stage) => stage.executionMethod === "external",

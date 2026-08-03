@@ -3,6 +3,8 @@ import { Database } from "bun:sqlite";
 import { createApp } from "../src/app";
 import { WorkOrderStore } from "../src/work-order-store";
 
+async function* noEvents() {}
+
 function request(path: string, body?: unknown) {
   return new Request(`http://teamline.local${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -150,6 +152,7 @@ describe("local Teamline state transfer", () => {
           attention: expect.arrayContaining([
             expect.objectContaining({ kind: "workspace", status: "needs_attention" }),
             expect.objectContaining({ kind: "reference", status: "needs_attention" }),
+            expect.objectContaining({ label: "检查点", status: "needs_attention" }),
           ]),
         },
       ],
@@ -177,7 +180,7 @@ describe("local Teamline state transfer", () => {
     expect(restored).toMatchObject({
       id: source.id,
       workspace: { kind: "directory", path: "/missing/teamline-workspace" },
-      status: "draft",
+      status: "ready",
       resourcePlan: { priority: "high", pace: "saving", runWhenQuotaAvailable: false },
       maxRunMinutes: 120,
       sessionId: "session-runtime-reference",
@@ -298,12 +301,30 @@ describe("local Teamline state transfer", () => {
       await createApp({ store: source.store }).fetch(request("/api/local-state/export"))
     ).json();
     bundle.workOrders[0].status = "running";
+    bundle.workOrders[0].workspace = { kind: "directory", path: "/tmp" };
     bundle.workOrders[0].resourcePlan.runWhenQuotaAvailable = true;
+    bundle.workOrders[0].executionMap.stages[0].executionMethod = "codex";
+    bundle.workOrders[0].executionMap.stages[0].workspace = {
+      kind: "directory",
+      path: "/tmp",
+    };
     bundle.workOrders[0].executionMap.stages[0].verificationCommand =
       "touch /tmp/teamline-restore-must-not-run";
     bundle.workOrders[0].executionMap.stages[0].status = "running";
     const targetStore = new WorkOrderStore(new Database(":memory:"));
-    const target = createApp({ store: targetStore });
+    let starts = 0;
+    const target = createApp({
+      store: targetStore,
+      codexRunner: {
+        async start() {
+          starts += 1;
+          return { pid: null, events: noEvents(), interrupt() {} };
+        },
+        async resume() {
+          throw new Error("not used");
+        },
+      },
+    });
 
     const previewResponse = await target.fetch(
       request("/api/local-state/restore/preview", { bundle }),
@@ -323,7 +344,7 @@ describe("local Teamline state transfer", () => {
     expect(confirmed.status).toBe(201);
     const restored = targetStore.get(source.id)!;
     expect(restored).toMatchObject({
-      status: "draft",
+      status: "ready",
       runStatus: null,
       worktreePath: null,
       resourcePlan: { runWhenQuotaAvailable: false, autoRunReason: null },
@@ -336,6 +357,35 @@ describe("local Teamline state transfer", () => {
     expect(() =>
       targetStore.saveWorkspace(source.id, { kind: "directory", path: "/tmp" }),
     ).not.toThrow();
+
+    const blockedStart = await target.fetch(
+      request(`/api/work-orders/${source.id}/start`, {}),
+    );
+    expect(blockedStart.status).toBe(409);
+    expect((await blockedStart.json()).code).toBe("PLAN_CONFIRMATION_REQUIRED");
+    expect(starts).toBe(0);
+
+    const appSource = await (
+      await target.fetch(new Request("http://teamline.local/app.js"))
+    ).text();
+    expect(appSource).toContain("检查恢复的计划");
+    expect(appSource).toContain('id="edit-plan"');
+
+    const confirmedPlan = await target.fetch(
+      new Request(`http://teamline.local/api/work-orders/${source.id}/plan`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ stages: restored.plan!.stages }),
+      }),
+    );
+    expect(confirmedPlan.status).toBe(200);
+    expect((await confirmedPlan.json()).workOrder.plan.confirmationRequired).toBeUndefined();
+
+    const started = await target.fetch(
+      request(`/api/work-orders/${source.id}/start`, {}),
+    );
+    expect(started.status).toBe(200);
+    expect(starts).toBe(1);
   });
 
   test("rejects invalid checkpoint references and cyclic execution maps", async () => {
@@ -361,6 +411,17 @@ describe("local Teamline state transfer", () => {
     );
     expect(cycleResponse.status).toBe(400);
     expect((await cycleResponse.json()).code).toBe("INVALID_STATE_BUNDLE");
+
+    const unavailableCheckpoint = structuredClone(exported);
+    unavailableCheckpoint.workOrders[0].workspace = { kind: "git", path: "/private/tmp" };
+    const unavailableResponse = await target.fetch(
+      request("/api/local-state/restore/preview", { bundle: unavailableCheckpoint }),
+    );
+    const unavailablePreview = await unavailableResponse.json();
+    expect(unavailableResponse.status).toBe(200);
+    expect(unavailablePreview.workOrders[0].attention).toContainEqual(
+      expect.objectContaining({ label: "检查点", status: "needs_attention" }),
+    );
   });
 
   test("rejects unknown fields and embedded credential properties before preview", async () => {
