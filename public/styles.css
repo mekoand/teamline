@@ -185,17 +185,23 @@ pre {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  margin-bottom: 0;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1;
 }
 
-.concurrency-control span {
+.concurrency-control > span {
+  display: inline;
+  margin-bottom: 0;
   white-space: nowrap;
 }
 
 .concurrency-control input {
+  display: block;
   width: 64px;
   height: 30px;
+  margin: 0;
   padding: 0 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -554,6 +560,7 @@ pre {
   font-size: clamp(25px, 3vw, 36px);
   line-height: 1.12;
   letter-spacing: -0.045em;
+  word-break: auto-phrase;
 }
 
 .workspace-heading p {
@@ -1024,6 +1031,7 @@ pre {
 .map-node strong {
   font-size: 13px;
   line-height: 1.45;
+  word-break: auto-phrase;
 }
 
 .map-node small,
@@ -1338,6 +1346,7 @@ textarea {
   margin-bottom: 16px;
   font-size: 16px;
   line-height: 1.4;
+  word-break: auto-phrase;
 }
 
 .context-tabs {
@@ -1404,6 +1413,13 @@ textarea {
   overflow-wrap: anywhere;
   color: var(--text-soft);
   font-size: 10px;
+}
+
+.completion-reference p {
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .context-section,

@@ -50,6 +50,24 @@ describe("personal console", () => {
     expect(script).toContain('/workspace`');
   });
 
+  test("keeps completed output and slow planning guidance visible", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain("Codex 完成摘要");
+    expect(script).toContain("completionSummaryForStage");
+    expect(script).toContain("localArtifactReferences");
+    expect(script).toContain("生成计划通常需要 30–90 秒");
+  });
+
+  test("keeps the topbar controls aligned and Chinese headings phrase-aware", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const styles = await (await app.fetch(new Request("http://teamline.local/styles.css"))).text();
+
+    expect(styles).toContain(".concurrency-control > span");
+    expect(styles).toContain("word-break: auto-phrase");
+  });
+
   test("offers external work selection and a result-reference next step", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();

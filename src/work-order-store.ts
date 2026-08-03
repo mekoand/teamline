@@ -1500,14 +1500,21 @@ export class WorkOrderStore {
     if (!workOrder || workOrder.status !== "review") {
       throw new Error("只有待验收的委托可以确认交付");
     }
+    const plan = workOrder.plan
+      ? advancePlanWithCompletedStages(
+          workOrder.plan,
+          new Set(workOrder.plan.stages.map((stage) => stage.id)),
+          "已由你确认完成",
+        )
+      : null;
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'delivered', current_summary = '已由用户确认交付', updated_at = ?
+        SET status = 'delivered', plan_json = ?, current_summary = '已由用户确认交付', updated_at = ?
         WHERE id = ? AND status = 'review'
       `)
-      .run(now, id);
+      .run(plan ? JSON.stringify(plan) : null, now, id);
     return this.get(id)!;
   }
 
@@ -1937,6 +1944,22 @@ function mapRow(
   checkpoints: WorkOrderCheckpoint[] = [],
   conversation: WorkOrderConversationMessage[] = [],
 ): WorkOrder {
+  const status = row.status === "completed" ? "delivered" : row.status;
+  const storedPlan = row.plan_json
+    ? normalizeStoredPlan(
+        JSON.parse(row.plan_json),
+        row.workspace_kind
+          ? { kind: row.workspace_kind, path: row.repository_path }
+          : null,
+      )
+    : null;
+  const plan = status === "delivered" && storedPlan
+    ? advancePlanWithCompletedStages(
+        storedPlan,
+        new Set(storedPlan.stages.map((stage) => stage.id)),
+        "已由你确认完成",
+      )
+    : storedPlan;
   return {
     id: row.id,
     title: row.title,
@@ -1949,16 +1972,9 @@ function mapRow(
     resourcePlan: normalizeResourcePlan(row.resource_plan_json),
     goal: row.goal,
     acceptance: row.acceptance,
-    status: row.status === "completed" ? "delivered" : row.status,
+    status,
     currentSummary: row.current_summary,
-    plan: row.plan_json
-      ? normalizeStoredPlan(
-          JSON.parse(row.plan_json),
-          row.workspace_kind
-            ? { kind: row.workspace_kind, path: row.repository_path }
-            : null,
-        )
-      : null,
+    plan,
     pendingClarification: normalizeClarification(row.clarification_json),
     conversation,
     result: row.result_json ? (JSON.parse(row.result_json) as WorkOrderResult) : null,

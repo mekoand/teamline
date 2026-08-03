@@ -1152,10 +1152,20 @@ function renderContextTabContent(workOrder, stage) {
     const verification = workOrder.result?.verifications?.find(
       (candidate) => candidate.stageId === stage.id,
     );
+    const completionSummary = completionSummaryForStage(workOrder, stage);
+    const localArtifacts = localArtifactReferences(completionSummary);
     return `
       <div class="context-stage context-tab-panel" role="tabpanel">
         <h3>节点成果</h3>
         <div class="reference-list">
+          ${completionSummary
+            ? `<article class="reference-card completion-reference"><span>Codex 完成摘要</span><p>${escapeHtml(cleanCompletionSummary(completionSummary))}</p></article>`
+            : ""}
+          ${localArtifacts
+            .map(
+              (reference) => `<article class="reference-card"><span>本地成果</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code></article>`,
+            )
+            .join("")}
           ${stage.externalResult?.conclusion
             ? `<article class="reference-card"><span>完成结论</span><strong>${escapeHtml(stage.externalResult.conclusion)}</strong><code>${formatDate(stage.externalResult.completedAt)}</code></article>`
             : ""}
@@ -1189,6 +1199,40 @@ function renderContextTabContent(workOrder, stage) {
         </dl>
       </div>
     </div>`;
+}
+
+function completionSummaryForStage(workOrder, stage) {
+  if (stage.executionMethod !== "codex" || !workOrder.result) return null;
+  const currentRunEvents = state.events.filter(
+    (event) => event.type === "progress" && event.runNumber === workOrder.runNumber,
+  );
+  return currentRunEvents
+    .slice()
+    .reverse()
+    .map((event) => event.message.trim())
+    .find(
+      (message) =>
+        message &&
+        !message.startsWith("Codex 进展：") &&
+        message !== "Codex 已完成本轮处理" &&
+        /(已完成|完成并验证|新增|创建|修改|结果)/.test(message),
+    ) ?? null;
+}
+
+function localArtifactReferences(summary) {
+  if (!summary) return [];
+  const references = [];
+  const pattern = /\[([^\]\n]+)\]\((\/[^)\n]+)\)/g;
+  for (const match of summary.matchAll(pattern)) {
+    if (references.some((reference) => reference.location === match[2])) continue;
+    references.push({ label: match[1], location: match[2] });
+    if (references.length === 5) break;
+  }
+  return references;
+}
+
+function cleanCompletionSummary(summary) {
+  return summary.replace(/\[([^\]\n]+)\]\((\/[^)\n]+)\)/g, "$1").trim();
 }
 
 function renderReference(reference) {
@@ -1374,7 +1418,7 @@ function bindRenderedEvents() {
   document.querySelector("#generate-plan")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     setBusy(button, "正在生成…");
-    setFeedback("plan-feedback", "Codex 正在根据工作空间和素材整理计划。", false);
+    setFeedback("plan-feedback", "生成计划通常需要 30–90 秒，Codex 正在整理目标和素材。", false);
     try {
       const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/plan/generate`, {
         method: "POST",

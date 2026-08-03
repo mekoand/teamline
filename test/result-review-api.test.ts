@@ -117,7 +117,10 @@ describe("result review persistence", () => {
 
     database.query("UPDATE work_orders SET status = 'completed' WHERE id = ?").run(created.id);
     const reopened = new WorkOrderStore(database);
-    expect(reopened.get(created.id)?.status).toBe("delivered");
+    expect(reopened.get(created.id)).toMatchObject({
+      status: "delivered",
+      plan: { stages: [{ status: "completed", statusReason: "已由你确认完成" }] },
+    });
   });
 
   test("collects tracked and untracked changes and runs configured commands in stage order", async () => {
@@ -330,6 +333,14 @@ describe("result review persistence", () => {
       status: "delivered",
       runStatus: "completed",
       currentSummary: "已由用户确认交付",
+      plan: {
+        stages: [
+          {
+            status: "completed",
+            statusReason: "已由你确认完成",
+          },
+        ],
+      },
     });
 
     const duplicate = await app.fetch(
