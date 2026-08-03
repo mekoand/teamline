@@ -258,16 +258,25 @@ function buildExecutionPrompt(
   const revision = workOrder.revisionNote
     ? `\n补充要求：\n${workOrder.revisionNote}`
     : "";
+  const materials = workOrder.materials.length
+    ? `\n参考素材：\n${workOrder.materials
+        .map((material) => `- ${material.kind}: ${material.value}`)
+        .join("\n")}`
+    : "";
 
   const currentContext = continuation
     ? `\n\n这是从已中断现场启动的新执行。\n最近进展：\n${
         continuation.recentProgress.length
           ? continuation.recentProgress.map((message) => `- ${message}`).join("\n")
           : "暂无已保存进展"
-      }\n\n当前 Git 状态：\n${continuation.gitStatus || "工作区干净"}`
+      }\n\n当前工作空间状态：\n${continuation.gitStatus || "工作区干净"}`
     : "";
 
-  return `请在当前独立 Git worktree 中完成以下已确认的工作委托。不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}\n\n已确认计划：\n${stages ?? "未提供"}${currentContext}`;
+  const workspaceRule =
+    workOrder.workspace?.kind === "directory"
+      ? "请在用户明确选择的当前本地文件夹中完成以下已确认的工作委托。"
+      : "请在当前独立 Git worktree 中完成以下已确认的工作委托。";
+  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n已确认计划：\n${stages ?? "未提供"}${currentContext}`;
 }
 
 function buildResumePrompt(workOrder: WorkOrder): string {

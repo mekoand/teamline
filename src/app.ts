@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
 import { presentConsoleWorkOrders } from "./console-presentation";
@@ -9,7 +9,11 @@ import type {
   CodexRunner,
   StartedCodexRun,
 } from "./codex-runner";
-import type { PlanStageInput } from "./work-order";
+import {
+  workOrderMaterialKinds,
+  type PlanStageInput,
+  type WorkOrderMaterialKind,
+} from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
 import type { WorktreeManager } from "./worktree-manager";
 
@@ -141,11 +145,31 @@ export function createApp({
             { status: 409 },
           );
         }
-        if (!codexRunner || !worktreeManager) {
+        if (!workOrder.workspace) {
+          return Response.json(
+            {
+              code: "WORKSPACE_REQUIRED",
+              error: "请选择一个本地文件夹作为执行工作空间",
+            },
+            { status: 409 },
+          );
+        }
+        if (!codexRunner || (workOrder.workspace.kind === "git" && !worktreeManager)) {
           return Response.json(
             { code: "EXECUTION_UNAVAILABLE", error: "Codex 执行服务尚未配置" },
             { status: 503 },
           );
+        }
+        let workspacePath: string | null = null;
+        if (workOrder.workspace.kind === "directory") {
+          const resolved = resolveExecutionWorkspace(
+            store,
+            id,
+            workOrder.workspace.kind,
+            workOrder.workspace.path,
+          );
+          if ("error" in resolved) return workspaceErrorResponse(resolved.error);
+          workspacePath = resolved.path;
         }
         if (store.hasActiveRun() || startingWorkOrderId) {
           return Response.json(
@@ -159,19 +183,22 @@ export function createApp({
 
         startingWorkOrderId = id;
         try {
-          let delegatedWorktree;
-          try {
-            delegatedWorktree = await worktreeManager.prepare(workOrder);
-          } catch (error) {
-            const message = "无法准备独立 Git worktree，请确认仓库和分支状态后重试";
-            store.recordStartFailure(id, message, "委托工作区准备失败，请处理后重试");
-            return Response.json(
-              { code: "WORKTREE_PREPARATION_FAILED", error: message },
-              { status: 500 },
-            );
+          if (workOrder.workspace.kind === "git") {
+            try {
+              const delegatedWorktree = await worktreeManager!.prepare(workOrder);
+              store.saveWorktree(id, delegatedWorktree);
+              workspacePath = delegatedWorktree.path;
+            } catch (error) {
+              const message = "无法准备独立 Git worktree，请确认仓库和分支状态后重试";
+              store.recordStartFailure(id, message, "委托工作区准备失败，请处理后重试");
+              return Response.json(
+                { code: "WORKTREE_PREPARATION_FAILED", error: message },
+                { status: 500 },
+              );
+            }
+          } else {
+            store.saveDirectWorkspace(id, workspacePath!);
           }
-
-          store.saveWorktree(id, delegatedWorktree);
           let startedWorkOrder;
           try {
             startedWorkOrder = store.markStarted(id);
@@ -188,7 +215,7 @@ export function createApp({
           try {
             run = await codexRunner.start({
               workOrder: startedWorkOrder,
-              workspacePath: delegatedWorktree.path,
+              workspacePath: workspacePath!,
             });
           } catch (error) {
             const message = safeCodexStartError(error);
@@ -275,7 +302,16 @@ export function createApp({
             { status: 503 },
           );
         }
-        if (!workOrder.worktreePath || !existsSync(workOrder.worktreePath)) {
+        if (!workOrder.workspace) {
+          return Response.json(
+            {
+              code: "WORKSPACE_REQUIRED",
+              error: "请选择一个本地文件夹作为执行工作空间",
+            },
+            { status: 409 },
+          );
+        }
+        if (!workOrder.worktreePath) {
           return Response.json(
             {
               code: "WORKTREE_MISSING",
@@ -284,6 +320,28 @@ export function createApp({
             { status: 409 },
           );
         }
+        const resolvedWorkspace = resolveExecutionWorkspace(
+          store,
+          id,
+          workOrder.workspace.kind,
+          workOrder.worktreePath,
+        );
+        if ("error" in resolvedWorkspace) {
+          if (workOrder.workspace.kind === "git" && resolvedWorkspace.error === "missing") {
+            return Response.json(
+              {
+                code: "WORKTREE_MISSING",
+                error: "委托工作区不存在，无法继续；Teamline 不会自动重建或覆盖现场",
+              },
+              { status: 409 },
+            );
+          }
+          return workspaceErrorResponse(resolvedWorkspace.error);
+        }
+        const workspacePath =
+          workOrder.workspace.kind === "directory"
+            ? resolvedWorkspace.path
+            : workOrder.worktreePath;
         if (store.hasActiveRun() || startingWorkOrderId) {
           return Response.json(
             {
@@ -301,16 +359,16 @@ export function createApp({
             run = workOrder.sessionId
               ? await codexRunner.resume({
                   workOrder: continued,
-                  workspacePath: workOrder.worktreePath,
+                  workspacePath,
                   sessionId: workOrder.sessionId,
                 })
               : await codexRunner.start({
                   workOrder: continued,
-                  workspacePath: workOrder.worktreePath,
+                  workspacePath,
                   continuation: await continuationContext(
                     store,
                     id,
-                    workOrder.worktreePath,
+                    workspacePath,
                   ),
                 });
           } catch (error) {
@@ -334,7 +392,7 @@ export function createApp({
                     const context = await continuationContext(
                       store,
                       id,
-                      workOrder.worktreePath!,
+                      workspacePath,
                     );
                     if (store.get(id)?.runStatus === "stopping") {
                       return null;
@@ -345,7 +403,7 @@ export function createApp({
                     );
                     return codexRunner.start({
                       workOrder: store.get(id)!,
-                      workspacePath: workOrder.worktreePath!,
+                      workspacePath,
                       continuation: context,
                     });
                   }
@@ -541,6 +599,48 @@ export function createApp({
         }
       }
 
+      const workspaceMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/workspace$/,
+      );
+      if (request.method === "PUT" && workspaceMatch) {
+        const id = decodeURIComponent(workspaceMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as { path?: string };
+          const path = body.path?.trim() ?? "";
+          const resolved = validateWorkspacePath(path);
+          if ("error" in resolved) return workspaceErrorResponse(resolved.error);
+          const canonicalPath = resolved.path;
+          const kind = isGitRepository(canonicalPath) ? "git" : "directory";
+          if (kind === "directory" && directoryWorkspaceInUse(store, id, canonicalPath)) {
+            return workspaceErrorResponse("in_use");
+          }
+          return Response.json({
+            workOrder: store.saveWorkspace(id, {
+              kind,
+              path: canonicalPath,
+            }),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "无法保存工作空间";
+          return Response.json(
+            {
+              code:
+                error instanceof PlanLockedError
+                  ? "WORKSPACE_LOCKED"
+                  : "INVALID_WORKSPACE",
+              error: message,
+            },
+            { status: error instanceof PlanLockedError ? 409 : 400 },
+          );
+        }
+      }
+
       const workOrderMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)$/);
       if (request.method === "GET" && workOrderMatch) {
         const workOrder = store.get(decodeURIComponent(workOrderMatch[1]));
@@ -559,20 +659,22 @@ export function createApp({
             repositoryPath?: string;
             goal?: string;
             acceptance?: string;
+            materials?: Array<{ kind?: string; value?: string }>;
           };
-          const repositoryPath = body.repositoryPath?.trim() ?? "";
-
-          if (!isGitRepository(repositoryPath)) {
+          const requestedRepositoryPath = body.repositoryPath?.trim() ?? "";
+          if (requestedRepositoryPath && !isGitRepository(requestedRepositoryPath)) {
             return Response.json(
               { error: "请选择一个有效的本地 Git 仓库" },
               { status: 400 },
             );
           }
 
+          const materials = normalizeMaterials(body.materials);
           const workOrder = store.create({
-            repositoryPath,
+            repositoryPath: requestedRepositoryPath,
             goal: body.goal ?? "",
             acceptance: body.acceptance,
+            materials,
           });
           return Response.json({ workOrder }, { status: 201 });
         } catch (error) {
@@ -712,6 +814,12 @@ async function continuationContext(
     .filter((event) => event.type === "progress")
     .slice(-5)
     .map((event) => event.message);
+  if (store.get(workOrderId)?.workspace?.kind === "directory") {
+    return {
+      recentProgress,
+      gitStatus: "普通文件夹现场保留在当前执行目录",
+    };
+  }
   const subprocess = Bun.spawn(["git", "-C", workspacePath, "status", "--short"], {
     stdout: "pipe",
     stderr: "pipe",
@@ -732,6 +840,107 @@ function isGitRepository(repositoryPath: string): boolean {
   }
 
   return existsSync(join(repositoryPath, ".git"));
+}
+
+type WorkspaceValidationError =
+  | "missing"
+  | "not_directory"
+  | "permission_denied"
+  | "in_use";
+
+type WorkspaceValidation =
+  | { path: string }
+  | { error: WorkspaceValidationError };
+
+function validateWorkspacePath(path: string): WorkspaceValidation {
+  if (!path) return { error: "missing" };
+  try {
+    if (!statSync(path).isDirectory()) return { error: "not_directory" };
+    accessSync(path, constants.R_OK | constants.W_OK | constants.X_OK);
+    return { path: realpathSync(path) };
+  } catch (error) {
+    if (error instanceof Error && "code" in error) {
+      if (error.code === "ENOENT") return { error: "missing" };
+      if (error.code === "EACCES" || error.code === "EPERM") {
+        return { error: "permission_denied" };
+      }
+      if (error.code === "ENOTDIR") return { error: "not_directory" };
+    }
+    return { error: "not_directory" };
+  }
+}
+
+function workspaceErrorResponse(error: WorkspaceValidationError): Response {
+  const details = {
+    missing: {
+      code: "WORKSPACE_NOT_FOUND",
+      error: "这个文件夹不存在，请重新选择一个本地文件夹",
+    },
+    not_directory: {
+      code: "WORKSPACE_NOT_DIRECTORY",
+      error: "所选路径不是文件夹，请重新选择",
+    },
+    permission_denied: {
+      code: "WORKSPACE_PERMISSION_DENIED",
+      error: "Teamline 无法读写或进入这个文件夹，请调整权限或选择其他文件夹",
+    },
+    in_use: {
+      code: "WORKSPACE_IN_USE",
+      error: "这个文件夹正在被另一项委托使用，请等待其结束或选择其他文件夹",
+    },
+  }[error];
+  return Response.json(details, { status: error === "in_use" ? 409 : 400 });
+}
+
+function directoryWorkspaceInUse(
+  store: WorkOrderStore,
+  workOrderId: string,
+  path: string,
+): boolean {
+  return store.list().some(
+    (workOrder) =>
+      workOrder.id !== workOrderId &&
+      workOrder.workspace?.kind === "directory" &&
+      canonicalWorkspacePath(workOrder.worktreePath ?? workOrder.workspace.path) === path &&
+      ["running", "stopping", "verifying"].includes(workOrder.runStatus ?? ""),
+  );
+}
+
+function resolveExecutionWorkspace(
+  store: WorkOrderStore,
+  workOrderId: string,
+  kind: "git" | "directory",
+  path: string,
+): WorkspaceValidation {
+  const resolved = validateWorkspacePath(path);
+  if ("error" in resolved) return resolved;
+  if (kind === "directory" && directoryWorkspaceInUse(store, workOrderId, resolved.path)) {
+    return { error: "in_use" };
+  }
+  return resolved;
+}
+
+function canonicalWorkspacePath(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMaterials(
+  materials: Array<{ kind?: string; value?: string }> | undefined,
+): Array<{ kind: WorkOrderMaterialKind; value: string }> {
+  if (!materials) return [];
+  if (!Array.isArray(materials)) throw new Error("素材格式无法识别");
+  return materials.map((material) => {
+    const kind = material?.kind;
+    const value = material?.value?.trim() ?? "";
+    if (!workOrderMaterialKinds.includes(kind as WorkOrderMaterialKind) || !value) {
+      throw new Error("请检查添加的素材");
+    }
+    return { kind: kind as WorkOrderMaterialKind, value };
+  });
 }
 
 function planIsEditable(workOrder: { status: string; runStatus: string | null }): boolean {

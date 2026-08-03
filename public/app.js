@@ -40,11 +40,12 @@ function bindShellEvents() {
 
   document.querySelector("#open-create").addEventListener("click", () => {
     createDialog.showModal();
-    createDialog.querySelector('[name="repositoryPath"]').focus();
+    createDialog.querySelector('[name="goal"]').focus();
   });
   document.querySelector("#close-create").addEventListener("click", closeCreateDialog);
   document.querySelector("#cancel-create").addEventListener("click", closeCreateDialog);
   createForm.addEventListener("submit", createWorkOrder);
+  document.querySelector("#add-material").addEventListener("click", () => addMaterialRow());
   window.addEventListener("popstate", () => {
     state.draftStages = null;
     refreshConsole();
@@ -218,7 +219,9 @@ function renderPlanArea(workOrder, stages, canEditPlan) {
   if (!stages) {
     return `
       <div class="plan-empty">
-        <p>Codex 会以只读方式查看仓库，并把生成计划所需的代码上下文发送给当前配置的模型服务。规划不会修改代码。</p>
+        <p>${workOrder.workspace
+          ? "Codex 会以只读方式查看所选工作空间和素材，并把生成计划所需的上下文发送给当前配置的模型服务。规划不会修改文件。"
+          : "Codex 会先根据目标和素材整理计划；现在不需要选择执行文件夹，规划不会修改本地文件。"}</p>
         <div class="button-row">
           <button class="primary-button" id="generate-plan" type="button">生成计划</button>
           <button class="secondary-button" id="manual-plan" type="button">手动填写</button>
@@ -324,7 +327,7 @@ function renderRunPanel(workOrder) {
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
         <div><dt>本轮上限</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>
         <div><dt>会话</dt><dd>${escapeHtml(workOrder.sessionId ?? "等待 Codex 返回")}</dd></div>
-        <div><dt>分支</dt><dd>${escapeHtml(workOrder.executionBranch ?? "正在准备")}</dd></div>
+        <div><dt>${workOrder.workspace?.kind === "directory" ? "工作区类型" : "分支"}</dt><dd>${escapeHtml(workOrder.workspace?.kind === "directory" ? "普通文件夹" : workOrder.executionBranch ?? "正在准备")}</dd></div>
       </dl>
       <div class="event-list">
         ${state.events.length
@@ -346,12 +349,13 @@ function renderResultPanel(workOrder) {
   return `
     <section class="result-panel">
       <div class="section-heading compact">
-        <div><p class="overline">成果与验收</p><h2>代码变化与检查结果</h2></div>
+        <div><p class="overline">成果与验收</p><h2>工作空间变化与检查结果</h2></div>
         <span class="subtle-label">计划版本 ${workOrder.result.planVersion}</span>
       </div>
       ${historical ? `<p class="notice">这是上一版计划的历史结果。</p>` : ""}
       <article class="result-card">
-        <h3>Git 变化摘要</h3>
+        <h3>${workOrder.workspace?.kind === "directory" ? "普通文件夹结果" : "Git 变化摘要"}</h3>
+        ${workOrder.workspace?.kind === "directory" ? "<p>普通文件夹不提供 Git 隔离、版本记录或回滚；请自行确认和保存目录内容。</p>" : ""}
         <pre>${escapeHtml(workOrder.result.git.diffStat || "没有已记录的差异统计")}</pre>
         <pre>${escapeHtml(workOrder.result.git.statusShort || "工作区没有未提交变化")}</pre>
       </article>
@@ -384,6 +388,8 @@ function renderContext(workOrder) {
 
       ${stage ? renderContextTabs() : ""}
       ${stage ? renderContextTabContent(workOrder, stage) : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
+
+      ${renderMaterials(workOrder.materials)}
 
       ${renderContextAction(workOrder)}
       <p class="inline-feedback" id="execution-feedback" role="status"></p>
@@ -468,6 +474,13 @@ function renderContextTabContent(workOrder, stage) {
         <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
+      <div class="context-section">
+        <p class="overline">委托信息</p>
+        <dl class="context-list">
+          <div><dt>目标</dt><dd>${escapeHtml(workOrder.goal)}</dd></div>
+          <div><dt>完成要求</dt><dd>${escapeHtml(workOrder.acceptance || "未单独填写")}</dd></div>
+        </dl>
+      </div>
     </div>`;
 }
 
@@ -478,6 +491,9 @@ function renderReference(reference) {
 function renderContextAction(workOrder) {
   if (workOrder.status === "ready" && !workOrder.runStatus) {
     const queued = visibleStatus(workOrder, state.workOrders).status === "queued";
+    const suggestedPath = workOrder.materials?.find(
+      (material) => material.kind === "folder" || material.kind === "repository",
+    )?.value ?? "";
     return `
       <section class="context-action">
         <p class="overline">执行确认</p>
@@ -488,9 +504,14 @@ function renderContextAction(workOrder) {
               .join("")}
           </select>
         </label>
-        <button class="primary-button full-button" id="start-work-order" type="button" ${queued ? "disabled" : ""}>
-          ${queued ? "等待当前委托结束" : "确认计划并启动"}
-        </button>
+        ${workOrder.workspace
+          ? `<p class="workspace-choice"><strong>${workOrder.workspace.kind === "git" ? "Git 仓库" : "普通文件夹"}</strong><code>${escapeHtml(shortPath(workOrder.workspace.path))}</code></p>
+             <button class="primary-button full-button" id="start-work-order" type="button" ${queued ? "disabled" : ""}>${queued ? "等待当前委托结束" : "确认计划并启动"}</button>`
+          : `<form id="workspace-form">
+               <label><span>执行前选择本地文件夹</span><input name="workspacePath" value="${escapeHtml(suggestedPath)}" placeholder="/Users/you/Projects/workspace" autocomplete="off" required /></label>
+               <p>Git 仓库会使用独立委托工作区；普通文件夹会直接使用，不提供 Git 隔离、版本记录或回滚。</p>
+               <button class="primary-button full-button" id="select-workspace-and-start" type="submit" ${queued ? "disabled" : ""}>${queued ? "等待当前委托结束" : "选择文件夹并启动"}</button>
+             </form>`}
       </section>`;
   }
   if (workOrder.runStatus === "running") {
@@ -565,7 +586,7 @@ function bindRenderedEvents() {
   document.querySelector("#generate-plan")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     setBusy(button, "正在生成…");
-    setFeedback("plan-feedback", "Codex 正在只读查看仓库并整理计划。", false);
+    setFeedback("plan-feedback", "Codex 正在根据工作空间和素材整理计划。", false);
     try {
       const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/plan/generate`, {
         method: "POST",
@@ -636,6 +657,29 @@ function bindRenderedEvents() {
   bindAction("#continue-work-order", "正在继续…", "继续委托", "continue", "正在从现有进度继续委托。");
   bindAction("#deliver-work-order", "正在确认…", "确认完成", "deliver", "");
 
+  document.querySelector("#workspace-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = document.querySelector("#select-workspace-and-start");
+    const workspacePath = new FormData(event.currentTarget).get("workspacePath");
+    setBusy(button, "正在检查文件夹…");
+    setFeedback("execution-feedback", "正在确认本地文件夹。", false);
+    try {
+      await requestJson(`/api/work-orders/${encodedSelectedId()}/workspace`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: workspacePath }),
+      });
+      setBusy(button, "正在启动…");
+      const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/start`, {
+        method: "POST",
+      });
+      await acceptWorkOrderResult(result.workOrder);
+    } catch (error) {
+      resetBusy(button, "选择文件夹并启动");
+      setFeedback("execution-feedback", messageFrom(error, "无法使用这个文件夹，请重新选择。"), true);
+    }
+  });
+
   document.querySelector("#revision-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = document.querySelector("#revise-work-order");
@@ -688,9 +732,9 @@ async function createWorkOrder(event) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        repositoryPath: data.get("repositoryPath"),
         goal: data.get("goal"),
         acceptance: data.get("acceptance"),
+        materials: readMaterials(),
       }),
     });
     closeCreateDialog();
@@ -716,8 +760,57 @@ function selectWorkOrder(id) {
 function closeCreateDialog() {
   createDialog.close();
   createForm.reset();
+  document.querySelector("#material-list").innerHTML = "";
   formError.textContent = "";
   resetBusy(createButton, "创建委托");
+}
+
+function addMaterialRow(kind = "file", value = "") {
+  const row = document.createElement("div");
+  row.className = "material-row";
+  row.innerHTML = `
+    <select aria-label="素材类型">
+      ${[
+        ["repository", "Git 仓库"],
+        ["folder", "文件夹"],
+        ["file", "文件"],
+        ["image", "图片"],
+        ["link", "链接"],
+      ].map(([optionValue, label]) => `<option value="${optionValue}" ${kind === optionValue ? "selected" : ""}>${label}</option>`).join("")}
+    </select>
+    <input value="${escapeHtml(value)}" aria-label="素材路径或链接" placeholder="本地路径或 https:// 链接" autocomplete="off" required />
+    <button type="button" class="icon-button" aria-label="移除素材">×</button>`;
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  document.querySelector("#material-list").append(row);
+  row.querySelector("input").focus();
+}
+
+function readMaterials() {
+  return [...document.querySelectorAll(".material-row")].map((row) => ({
+    kind: row.querySelector("select").value,
+    value: row.querySelector("input").value,
+  }));
+}
+
+function renderMaterials(materials = []) {
+  if (!materials.length) return "";
+  return `
+    <div class="context-section">
+      <p class="overline">参考素材</p>
+      <ul class="material-summary">
+        ${materials.map((material) => `<li><span>${materialKindLabel(material.kind)}</span><code>${escapeHtml(shortPath(material.value))}</code></li>`).join("")}
+      </ul>
+    </div>`;
+}
+
+function materialKindLabel(kind) {
+  return {
+    repository: "仓库",
+    folder: "文件夹",
+    file: "文件",
+    image: "图片",
+    link: "链接",
+  }[kind] ?? "素材";
 }
 
 function visibleStatus(workOrder, allWorkOrders) {

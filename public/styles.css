@@ -1095,6 +1095,100 @@ dialog::backdrop {
   gap: 9px;
 }
 
+.material-editor {
+  margin: 20px 0 8px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.material-editor-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.material-editor-heading strong {
+  font-size: 12px;
+}
+
+.material-editor-heading em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 450;
+}
+
+.material-editor-heading p,
+.workspace-choice,
+#workspace-form > p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.material-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.material-list:empty {
+  display: none;
+}
+
+.material-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 34px;
+  gap: 7px;
+  align-items: center;
+}
+
+.material-row input,
+.material-row select {
+  min-height: 38px;
+}
+
+.material-summary {
+  display: grid;
+  gap: 9px;
+  margin: 13px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.material-summary li,
+.workspace-choice {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.material-summary span,
+.workspace-choice strong {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.material-summary code,
+.workspace-choice code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+#workspace-form {
+  margin-top: 0;
+}
+
+#workspace-form > p {
+  margin: -6px 0 14px;
+}
+
 @media (max-width: 1120px) {
   .console-shell {
     grid-template-columns: 260px minmax(430px, 1fr) 290px;
@@ -1182,5 +1276,14 @@ dialog::backdrop {
 
   .fact-grid {
     grid-template-columns: 1fr;
+  }
+
+  .material-editor-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .material-row {
+    grid-template-columns: 96px minmax(0, 1fr) 34px;
   }
 }

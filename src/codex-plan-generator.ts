@@ -31,7 +31,7 @@ export class CodexPlanGenerator implements PlanGenerator {
           "--sandbox",
           "read-only",
           "--cd",
-          workOrder.repositoryPath,
+          workOrder.workspace?.path ?? temporaryDirectory,
           "--output-schema",
           schemaPath,
           "--output-last-message",
@@ -89,11 +89,16 @@ function buildPrompt(workOrder: WorkOrder): string {
   const acceptance = workOrder.acceptance
     ? `\n完成要求：\n${workOrder.acceptance}`
     : "";
+  const materials = workOrder.materials.length
+    ? `\n参考素材：\n${workOrder.materials
+        .map((material) => `- ${material.kind}: ${material.value}`)
+        .join("\n")}`
+    : "";
 
-  return `你正在为一项编码工作生成简短的委托计划。只读取仓库，不要修改文件或运行会产生写入的命令。
+  return `你正在为一项工作生成简短的委托计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
 
 工作目标：
-${workOrder.goal}${acceptance}
+${workOrder.goal}${acceptance}${materials}
 
 请把工作拆成少量能够独立检查的阶段。每个阶段填写：
 - id：在本计划内唯一、简短稳定的英文标识

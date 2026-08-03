@@ -63,17 +63,24 @@
         </div>
 
         <label>
-          <span>本地 Git 仓库</span>
-          <input name="repositoryPath" placeholder="/Users/you/Projects/my-app" autocomplete="off" required />
-        </label>
-        <label>
           <span>想完成什么</span>
-          <textarea name="goal" rows="5" placeholder="例如：为设置页面增加深色模式" required></textarea>
+          <textarea name="goal" rows="5" placeholder="例如：整理竞品结论，或为设置页面增加深色模式" required></textarea>
         </label>
         <label>
           <span>完成要求 <em>可选</em></span>
           <textarea name="acceptance" rows="3" placeholder="例如：保留现有布局，并通过相关测试"></textarea>
         </label>
+
+        <section class="material-editor">
+          <div class="material-editor-heading">
+            <div>
+              <strong>参考素材 <em>可选</em></strong>
+              <p>可以添加仓库、文件夹、文件、图片或链接；执行文件夹可稍后再选。</p>
+            </div>
+            <button type="button" class="secondary-button" id="add-material">＋ 添加素材</button>
+          </div>
+          <div id="material-list" class="material-list"></div>
+        </section>
 
         <p class="form-error" id="form-error" role="alert"></p>
         <div class="dialog-actions">

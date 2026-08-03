@@ -27,6 +27,22 @@ describe("personal console", () => {
     expect(script).toContain('localStorage.setItem("teamline-theme"');
   });
 
+  test("keeps creation goal-first and defers the local workspace choice until start", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [pageResponse, scriptResponse] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")),
+      app.fetch(new Request("http://teamline.local/app.js")),
+    ]);
+    const page = await pageResponse.text();
+    const script = await scriptResponse.text();
+
+    expect(page.indexOf('name="goal"')).toBeLessThan(page.indexOf('id="material-list"'));
+    expect(page).not.toContain('name="repositoryPath"');
+    expect(page).toContain('id="add-material"');
+    expect(script).toContain('id="workspace-form"');
+    expect(script).toContain('/workspace`');
+  });
+
   test("restores persisted work and exposes the five user-facing states", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-console-"));
     const databasePath = join(directory, "teamline.db");

@@ -12,8 +12,11 @@ export interface WorkOrderResultProcessor {
 
 export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
   async process(workOrder: WorkOrder): Promise<WorkOrderResult> {
-    if (!workOrder.worktreePath || !workOrder.baseCommit || !workOrder.plan) {
-      throw new Error("缺少委托工作区、起始提交或已确认计划");
+    if (!workOrder.worktreePath || !workOrder.plan) {
+      throw new Error("缺少委托工作区或已确认计划");
+    }
+    if (workOrder.workspace?.kind === "git" && !workOrder.baseCommit) {
+      throw new Error("Git 委托缺少起始提交");
     }
 
     const verifications: VerificationResult[] = [];
@@ -51,21 +54,35 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
       });
     }
 
-    const [diffStat, statusShort] = await Promise.all([
-      runGit(workOrder.worktreePath, "diff", "--stat", workOrder.baseCommit, "--"),
-      runGit(workOrder.worktreePath, "status", "--short"),
-    ]);
+    const git =
+      workOrder.workspace?.kind === "directory"
+        ? {
+            diffStat: "普通文件夹不提供 Git 变化统计",
+            statusShort: "结果保留在所选本地文件夹中",
+          }
+        : await gitSummary(workOrder.worktreePath, workOrder.baseCommit!);
 
     return {
       planVersion: workOrder.plan.version,
-      git: {
-        diffStat: diffStat || "无已跟踪文件变化",
-        statusShort: statusShort || "工作区无变化",
-      },
+      git,
       verifications,
       completedAt: new Date().toISOString(),
     };
   }
+}
+
+async function gitSummary(
+  repositoryPath: string,
+  baseCommit: string,
+): Promise<WorkOrderResult["git"]> {
+  const [diffStat, statusShort] = await Promise.all([
+    runGit(repositoryPath, "diff", "--stat", baseCommit, "--"),
+    runGit(repositoryPath, "status", "--short"),
+  ]);
+  return {
+    diffStat: diffStat || "无已跟踪文件变化",
+    statusShort: statusShort || "工作区无变化",
+  };
 }
 
 async function runGit(repositoryPath: string, ...args: string[]): Promise<string> {

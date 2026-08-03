@@ -59,6 +59,27 @@ export type PlanStage = {
   statusReason: string;
 };
 
+export const workOrderMaterialKinds = [
+  "repository",
+  "folder",
+  "file",
+  "image",
+  "link",
+] as const;
+
+export type WorkOrderMaterialKind = (typeof workOrderMaterialKinds)[number];
+
+export type WorkOrderMaterial = {
+  id: string;
+  kind: WorkOrderMaterialKind;
+  value: string;
+};
+
+export type WorkOrderWorkspace = {
+  kind: "git" | "directory";
+  path: string;
+};
+
 export type GitChangeSummary = {
   diffStat: string;
   statusShort: string;
@@ -113,7 +134,10 @@ export type PlanStageInput = Omit<
 export type WorkOrder = {
   id: string;
   title: string;
+  /** Legacy SQLite storage alias for workspace.path. Never derive it from materials. */
   repositoryPath: string;
+  workspace: WorkOrderWorkspace | null;
+  materials: WorkOrderMaterial[];
   goal: string;
   acceptance: string | null;
   status: WorkOrderStatus;
@@ -138,19 +162,23 @@ export type WorkOrder = {
 };
 
 export type CreateWorkOrderInput = {
-  repositoryPath: string;
+  repositoryPath?: string;
+  workspace?: WorkOrderWorkspace | null;
+  materials?: Array<{ kind: WorkOrderMaterialKind; value: string }>;
   goal: string;
   acceptance?: string;
 };
 
 export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
-  const repositoryPath = input.repositoryPath.trim();
+  const legacyRepositoryPath = input.repositoryPath?.trim() ?? "";
+  const workspace = input.workspace
+    ? { kind: input.workspace.kind, path: input.workspace.path.trim() }
+    : legacyRepositoryPath
+      ? { kind: "git" as const, path: legacyRepositoryPath }
+      : null;
+  const repositoryPath = workspace?.path ?? "";
   const goal = input.goal.trim();
   const acceptance = input.acceptance?.trim() || null;
-
-  if (!repositoryPath) {
-    throw new Error("请选择本地仓库");
-  }
 
   if (!goal) {
     throw new Error("请描述想完成的工作");
@@ -164,6 +192,12 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     id: crypto.randomUUID(),
     title,
     repositoryPath,
+    workspace,
+    materials: (input.materials ?? []).map((material) => ({
+      id: crypto.randomUUID(),
+      kind: material.kind,
+      value: material.value.trim(),
+    })),
     goal,
     acceptance,
     status: "draft",

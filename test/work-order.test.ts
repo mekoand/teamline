@@ -17,12 +17,10 @@ describe("work orders", () => {
     expect(store.list()).toEqual([created]);
   });
 
-  test("requires a repository and goal", () => {
+  test("requires a goal but allows the workspace to be selected later", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
 
-    expect(() => store.create({ repositoryPath: "", goal: "实现功能" })).toThrow(
-      "请选择本地仓库",
-    );
+    expect(store.create({ goal: "实现功能" }).workspace).toBeNull();
     expect(() => store.create({ repositoryPath: "/tmp/repo", goal: "" })).toThrow(
       "请描述想完成的工作",
     );

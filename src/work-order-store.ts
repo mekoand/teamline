@@ -15,6 +15,8 @@ type WorkOrderRow = {
   id: string;
   title: string;
   repository_path: string;
+  workspace_kind: "git" | "directory" | null;
+  materials_json: string | null;
   goal: string;
   acceptance: string | null;
   status: WorkOrder["status"] | "completed";
@@ -71,6 +73,7 @@ export class WorkOrderStore {
     this.addPlanColumnToExistingDatabase();
     this.addExecutionColumnsToExistingDatabase();
     this.addResultColumnsToExistingDatabase();
+    this.addMaterialColumnsToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
@@ -135,14 +138,16 @@ export class WorkOrderStore {
     this.database
       .query(`
         INSERT INTO work_orders (
-          id, title, repository_path, goal, acceptance, status,
-          current_summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, title, repository_path, workspace_kind, materials_json,
+          goal, acceptance, status, current_summary, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
         workOrder.title,
         workOrder.repositoryPath,
+        workOrder.workspace?.kind ?? null,
+        JSON.stringify(workOrder.materials),
         workOrder.goal,
         workOrder.acceptance,
         workOrder.status,
@@ -276,6 +281,27 @@ export class WorkOrderStore {
     return this.get(id)!;
   }
 
+  saveWorkspace(
+    id: string,
+    workspace: { kind: "git" | "directory"; path: string },
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这项委托");
+    if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
+      throw new PlanLockedError("委托开始执行后不能更换工作空间");
+    }
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET repository_path = ?, workspace_kind = ?, worktree_path = NULL,
+            execution_branch = NULL, base_commit = NULL, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(workspace.path, workspace.kind, now, id);
+    return this.get(id)!;
+  }
+
   saveWorktree(
     id: string,
     worktree: { path: string; branch: string; baseCommit: string },
@@ -288,6 +314,18 @@ export class WorkOrderStore {
         WHERE id = ?
       `)
       .run(worktree.path, worktree.branch, worktree.baseCommit, now, id);
+    return this.get(id)!;
+  }
+
+  saveDirectWorkspace(id: string, path: string): WorkOrder {
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET worktree_path = ?, execution_branch = NULL, base_commit = NULL, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(path, now, id);
     return this.get(id)!;
   }
 
@@ -722,6 +760,26 @@ export class WorkOrderStore {
     }
   }
 
+  private addMaterialColumnsToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("workspace_kind")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN workspace_kind TEXT");
+    }
+    this.database.exec(`
+      UPDATE work_orders
+      SET workspace_kind = 'git'
+      WHERE workspace_kind IS NULL AND repository_path <> ''
+    `);
+    if (!columns.has("materials_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN materials_json TEXT");
+    }
+  }
+
   private migrateDeliveredStatus(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -749,6 +807,10 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     id: row.id,
     title: row.title,
     repositoryPath: row.repository_path,
+    workspace: row.workspace_kind
+      ? { kind: row.workspace_kind, path: row.repository_path }
+      : null,
+    materials: row.materials_json ? JSON.parse(row.materials_json) : [],
     goal: row.goal,
     acceptance: row.acceptance,
     status: row.status === "completed" ? "delivered" : row.status,
