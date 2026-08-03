@@ -10,7 +10,12 @@ import {
   type WorkOrderPlan,
   type WorkOrderRunEvent,
   type WorkOrderResult,
+  type WorkOrderPace,
+  type WorkOrderPriority,
+  type WorkOrderResourcePlan,
   type WorkOrderWorkspace,
+  workOrderPaces,
+  workOrderPriorities,
 } from "./work-order";
 
 type WorkOrderRow = {
@@ -19,6 +24,7 @@ type WorkOrderRow = {
   repository_path: string;
   workspace_kind: "git" | "directory" | null;
   materials_json: string | null;
+  resource_plan_json: string | null;
   goal: string;
   acceptance: string | null;
   status: WorkOrder["status"] | "completed";
@@ -88,6 +94,7 @@ export class WorkOrderStore {
     this.addExecutionColumnsToExistingDatabase();
     this.addResultColumnsToExistingDatabase();
     this.addMaterialColumnsToExistingDatabase();
+    this.addResourcePlanColumnToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
@@ -254,6 +261,59 @@ export class WorkOrderStore {
       )
       .run(maxConcurrency);
     return this.getExecutionSettings();
+  }
+
+  saveResourcePlan(
+    id: string,
+    input: {
+      priority: WorkOrderPriority;
+      pace: WorkOrderPace;
+      runWhenQuotaAvailable: boolean;
+    },
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这项委托");
+    if (!workOrderPriorities.includes(input.priority)) {
+      throw new Error("请选择有效的优先级");
+    }
+    if (!workOrderPaces.includes(input.pace)) {
+      throw new Error("请选择有效的执行节奏");
+    }
+    if (typeof input.runWhenQuotaAvailable !== "boolean") {
+      throw new Error("额度充足时运行设置无效");
+    }
+    const resourcePlan: WorkOrderResourcePlan = {
+      priority: input.priority,
+      pace: input.pace,
+      runWhenQuotaAvailable: input.runWhenQuotaAvailable,
+      autoRunReason: input.runWhenQuotaAvailable
+        ? workOrder.resourcePlan.autoRunReason
+        : null,
+    };
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET resource_plan_json = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(JSON.stringify(resourcePlan), now, id);
+    return this.get(id)!;
+  }
+
+  saveAutoRunReason(id: string, reason: string | null): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这项委托");
+    const resourcePlan = { ...workOrder.resourcePlan, autoRunReason: reason };
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET resource_plan_json = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(JSON.stringify(resourcePlan), now, id);
+    return this.get(id)!;
   }
 
   activeRunIds(): string[] {
@@ -934,6 +994,18 @@ export class WorkOrderStore {
     }
   }
 
+  private addResourcePlanColumnToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("resource_plan_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN resource_plan_json TEXT");
+    }
+  }
+
   private migrateDeliveredStatus(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -968,6 +1040,7 @@ function mapRow(
       ? { kind: row.workspace_kind, path: row.repository_path }
       : null,
     materials: row.materials_json ? JSON.parse(row.materials_json) : [],
+    resourcePlan: normalizeResourcePlan(row.resource_plan_json),
     goal: row.goal,
     acceptance: row.acceptance,
     status: row.status === "completed" ? "delivered" : row.status,
@@ -998,6 +1071,40 @@ function mapRow(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {
+  if (!value) {
+    return {
+      priority: "normal",
+      pace: "balanced",
+      runWhenQuotaAvailable: false,
+      autoRunReason: null,
+    };
+  }
+  try {
+    const stored = JSON.parse(value) as Partial<WorkOrderResourcePlan>;
+    return {
+      priority: workOrderPriorities.includes(stored.priority as WorkOrderPriority)
+        ? (stored.priority as WorkOrderPriority)
+        : "normal",
+      pace: workOrderPaces.includes(stored.pace as WorkOrderPace)
+        ? (stored.pace as WorkOrderPace)
+        : "balanced",
+      runWhenQuotaAvailable: stored.runWhenQuotaAvailable === true,
+      autoRunReason:
+        typeof stored.autoRunReason === "string" && stored.autoRunReason.trim()
+          ? stored.autoRunReason
+          : null,
+    };
+  } catch {
+    return {
+      priority: "normal",
+      pace: "balanced",
+      runWhenQuotaAvailable: false,
+      autoRunReason: null,
+    };
+  }
 }
 
 function mapCheckpointRow(row: CheckpointRow): WorkOrderCheckpoint {

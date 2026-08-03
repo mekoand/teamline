@@ -30,8 +30,10 @@ export function presentResources(
       id: workOrder.id,
       title: workOrder.title,
       status: workOrder.userStatus,
-      priority: null,
-      pace: null,
+      priority: workOrder.resourcePlan.priority,
+      pace: workOrder.resourcePlan.pace,
+      runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
+      autoRunReason: workOrder.resourcePlan.autoRunReason,
       usage: presentWorkOrderUsage(
         usageByWorkOrder.get(workOrder.id),
         snapshot.observedAt,
@@ -107,6 +109,11 @@ function recommendation(
     return "先处理这项委托需要的响应";
   }
   if (workOrder.status === "ready") {
+    if (workOrder.resourcePlan.runWhenQuotaAvailable) {
+      return workOrder.resourcePlan.autoRunReason
+        ? `排队中 · ${workOrder.resourcePlan.autoRunReason}`
+        : "额度满足时可自动启动一轮";
+    }
     if (codex.status !== "available") {
       return "额度信号不可用，无法判断是否适合运行";
     }

@@ -52,6 +52,15 @@ function presentStatus(
     return { userStatus: "running", statusReason };
   }
   if (workOrder.status === "ready") {
+    if (
+      workOrder.resourcePlan.runWhenQuotaAvailable &&
+      workOrder.resourcePlan.autoRunReason
+    ) {
+      return {
+        userStatus: "queued",
+        statusReason: workOrder.resourcePlan.autoRunReason,
+      };
+    }
     return capacityReached
       ? { userStatus: "queued", statusReason: "等待可用并发位置" }
       : { userStatus: "planning", statusReason: "待确认计划" };

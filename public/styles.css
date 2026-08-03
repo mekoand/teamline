@@ -701,6 +701,47 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.resource-order-row select {
+  width: auto;
+  max-width: 100%;
+  padding: 5px 24px 5px 7px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+
+.auto-run-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 14px 0 0;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.auto-run-toggle input {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.auto-run-toggle > span {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.auto-run-toggle strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.auto-run-toggle small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 450;
+}
+
 .section-heading {
   align-items: end;
   margin-bottom: 22px;

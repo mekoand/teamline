@@ -3,6 +3,7 @@ export type ResourceAvailability =
   | "loading"
   | "unavailable"
   | "stale"
+  | "conflict"
   | "error"
   | "not_connected";
 

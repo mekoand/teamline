@@ -92,6 +92,19 @@ export type WorkOrderWorkspace = {
   path: string;
 };
 
+export const workOrderPriorities = ["high", "normal", "background"] as const;
+export type WorkOrderPriority = (typeof workOrderPriorities)[number];
+
+export const workOrderPaces = ["fast", "balanced", "saving"] as const;
+export type WorkOrderPace = (typeof workOrderPaces)[number];
+
+export type WorkOrderResourcePlan = {
+  priority: WorkOrderPriority;
+  pace: WorkOrderPace;
+  runWhenQuotaAvailable: boolean;
+  autoRunReason: string | null;
+};
+
 export type GitChangeSummary = {
   diffStat: string;
   statusShort: string;
@@ -150,6 +163,7 @@ export type WorkOrder = {
   repositoryPath: string;
   workspace: WorkOrderWorkspace | null;
   materials: WorkOrderMaterial[];
+  resourcePlan: WorkOrderResourcePlan;
   goal: string;
   acceptance: string | null;
   status: WorkOrderStatus;
@@ -212,6 +226,12 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
       kind: material.kind,
       value: material.value.trim(),
     })),
+    resourcePlan: {
+      priority: "normal",
+      pace: "balanced",
+      runWhenQuotaAvailable: false,
+      autoRunReason: null,
+    },
     goal,
     acceptance,
     status: "draft",

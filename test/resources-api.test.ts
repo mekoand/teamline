@@ -110,8 +110,10 @@ describe("resource API", () => {
           id: workOrder.id,
           title: "整理资源页面",
           status: "planning",
-          priority: null,
-          pace: null,
+          priority: "normal",
+          pace: "balanced",
+          runWhenQuotaAvailable: false,
+          autoRunReason: null,
           usage: {
             status: "available",
             amount: 3.25,

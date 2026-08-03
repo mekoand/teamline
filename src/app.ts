@@ -25,6 +25,7 @@ import {
   type ResourceProvider,
 } from "./resource-provider";
 import { presentResources } from "./resource-presentation";
+import { decideAutoRun } from "./resource-scheduler";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -68,6 +69,10 @@ export function createApp({
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
   const stopReasons = new Map<string, string>();
+  let autoRunCheckInFlight:
+    | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
+    | null = null;
+  let handleRequest!: (request: Request) => Promise<Response>;
 
   const clearRunTimeout = (id: string) => {
     runTimeouts.get(id)?.();
@@ -132,8 +137,66 @@ export function createApp({
     return null;
   };
 
-  return {
-    async fetch(request: Request): Promise<Response> {
+  const readResourceSnapshot = async () => {
+    try {
+      return resourceProvider
+        ? await resourceProvider.read()
+        : unavailableResourceSnapshot();
+    } catch {
+      return unavailableResourceSnapshot(
+        "Codex 额度读取失败，请稍后重试",
+        new Date().toISOString(),
+        "error",
+      );
+    }
+  };
+  const runAutoRunOnce = () => {
+    if (autoRunCheckInFlight) return autoRunCheckInFlight;
+    autoRunCheckInFlight = (async () => {
+      const snapshot = await readResourceSnapshot();
+      const decision = decideAutoRun(
+        store.list(),
+        snapshot.codex,
+        store.getExecutionSettings().maxConcurrency,
+      );
+      for (const [id, reason] of decision.reasons) {
+        store.saveAutoRunReason(id, reason);
+      }
+      if (!decision.candidateId) {
+        return { startedWorkOrderId: null, reason: null };
+      }
+
+      store.saveAutoRunReason(decision.candidateId, null);
+      const response = await handleRequest(
+        new Request(
+          `http://teamline.local/api/work-orders/${encodeURIComponent(decision.candidateId)}/start`,
+          { method: "POST" },
+        ),
+      );
+      if (!response.ok) {
+        const result = (await response.json()) as { error?: string };
+        const reason = result.error || "自动启动失败，等待重试";
+        store.saveAutoRunReason(decision.candidateId, reason);
+        return { startedWorkOrderId: null, reason };
+      }
+      return { startedWorkOrderId: decision.candidateId, reason: null };
+    })().finally(() => {
+      autoRunCheckInFlight = null;
+    });
+    return autoRunCheckInFlight;
+  };
+  const scheduleAutoRunCheck = () => {
+    if (
+      !store
+        .list()
+        .some((workOrder) => workOrder.resourcePlan.runWhenQuotaAvailable)
+    ) {
+      return;
+    }
+    setTimeout(() => void runAutoRunOnce(), 0);
+  };
+
+  handleRequest = async (request: Request): Promise<Response> => {
       const url = new URL(request.url);
 
       if (request.method === "GET" && url.pathname === "/api/health") {
@@ -198,18 +261,7 @@ export function createApp({
       }
 
       if (request.method === "GET" && url.pathname === "/api/resources") {
-        let snapshot;
-        try {
-          snapshot = resourceProvider
-            ? await resourceProvider.read()
-            : unavailableResourceSnapshot();
-        } catch {
-          snapshot = unavailableResourceSnapshot(
-            "Codex 额度读取失败，请稍后重试",
-            new Date().toISOString(),
-            "error",
-          );
-        }
+        const snapshot = await readResourceSnapshot();
         return Response.json(
           presentResources(
             snapshot,
@@ -217,6 +269,10 @@ export function createApp({
             store.getExecutionSettings().maxConcurrency,
           ),
         );
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/resources/run-once") {
+        return Response.json(await runAutoRunOnce());
       }
 
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
@@ -372,6 +428,7 @@ export function createApp({
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             checkpointManager,
+            afterRunSettled: scheduleAutoRunCheck,
           });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {
@@ -539,6 +596,7 @@ export function createApp({
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             checkpointManager,
+            afterRunSettled: scheduleAutoRunCheck,
             fallback:
               workOrder.sessionId && codexRunner
                 ? async () => {
@@ -701,6 +759,7 @@ export function createApp({
             checkpointManager,
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
+            afterRunSettled: scheduleAutoRunCheck,
           });
           return Response.json({ workOrder: store.get(id)! });
         } finally {
@@ -893,6 +952,48 @@ export function createApp({
         }
       }
 
+      const resourcePlanMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/resource-plan$/,
+      );
+      if (request.method === "PUT" && resourcePlanMatch) {
+        const id = decodeURIComponent(resourcePlanMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as {
+            priority?: WorkOrder["resourcePlan"]["priority"];
+            pace?: WorkOrder["resourcePlan"]["pace"];
+            runWhenQuotaAvailable?: boolean;
+          };
+          if (
+            body.priority === undefined ||
+            body.pace === undefined ||
+            body.runWhenQuotaAvailable === undefined
+          ) {
+            throw new Error("请完整填写委托资源安排");
+          }
+          return Response.json({
+            workOrder: store.saveResourcePlan(id, {
+              priority: body.priority,
+              pace: body.pace,
+              runWhenQuotaAvailable: body.runWhenQuotaAvailable,
+            }),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_RESOURCE_PLAN",
+              error: error instanceof Error ? error.message : "无法保存资源安排",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
       const workspaceMatch = url.pathname.match(
         /^\/api\/work-orders\/([^/]+)\/workspace$/,
       );
@@ -996,8 +1097,8 @@ export function createApp({
       }
 
       return new Response("Not found", { status: 404 });
-    },
   };
+  return { fetch: handleRequest };
 }
 
 async function consumeRunEvents(
@@ -1011,8 +1112,10 @@ async function consumeRunEvents(
     clearRunTimeout?: () => void;
     finishReason?: () => string | undefined;
     checkpointManager?: CheckpointManager;
+    afterRunSettled?: () => void;
   } = {},
 ): Promise<void> {
+  let settled = false;
   try {
     for await (const event of run.events) {
       if (event.type === "session") {
@@ -1023,6 +1126,7 @@ async function consumeRunEvents(
         if (store.get(workOrderId)?.runStatus === "stopping") {
           options.clearRunTimeout?.();
           store.recordInterrupted(workOrderId, options.finishReason?.());
+          settled = true;
         } else if (event.resumeUnavailable && options.fallback) {
           let fallbackRun: StartedCodexRun | null;
           try {
@@ -1039,12 +1143,14 @@ async function consumeRunEvents(
                 "Codex 无法从当前现场启动，请检查本机 Codex 后重试",
               );
             }
+            settled = true;
             return;
           }
           if (!fallbackRun) {
             if (store.get(workOrderId)?.runStatus === "stopping") {
               options.clearRunTimeout?.();
               store.recordInterrupted(workOrderId, options.finishReason?.());
+              settled = true;
             }
             return;
           }
@@ -1062,6 +1168,7 @@ async function consumeRunEvents(
             checkpointManager: options.checkpointManager,
             clearRunTimeout: options.clearRunTimeout,
             finishReason: options.finishReason,
+            afterRunSettled: options.afterRunSettled,
           });
           return;
         } else if (event.exitCode === 0 && options.resultProcessor) {
@@ -1083,9 +1190,11 @@ async function consumeRunEvents(
           } catch {
             store.recordResultProcessingFailure(workOrderId);
           }
+          settled = true;
         } else {
           options.clearRunTimeout?.();
           store.recordExit(workOrderId, event.exitCode, event.message);
+          settled = true;
         }
       }
     }
@@ -1104,10 +1213,12 @@ async function consumeRunEvents(
         "Codex 运行异常结束，请检查本机 Codex 后重试",
       );
     }
+    settled = true;
   } finally {
     if (activeRuns.get(workOrderId) === run) {
       activeRuns.delete(workOrderId);
     }
+    if (settled) options.afterRunSettled?.();
   }
 }
 

@@ -18,6 +18,7 @@ const state = {
   resources: null,
   resourceError: "",
   resourceRefreshInFlight: false,
+  autoRunCheckRequested: true,
   resourceProgressTimer: null,
   refreshTimer: null,
   theme: readTheme(),
@@ -65,7 +66,10 @@ function bindShellEvents() {
   });
 }
 
-async function refreshConsole({ polling = false } = {}) {
+async function refreshConsole({
+  polling = false,
+  checkAutoRun = state.autoRunCheckRequested || isResourceView(),
+} = {}) {
   clearTimeout(state.refreshTimer);
   if (!polling && state.workOrders.length === 0) {
     workspaceElement.innerHTML = '<div class="loading-state">正在读取本地委托…</div>';
@@ -83,7 +87,8 @@ async function refreshConsole({ polling = false } = {}) {
     document.querySelector("#max-concurrency").value = String(
       executionSettings.maxConcurrency,
     );
-    void refreshResources();
+    void refreshResources({ checkAutoRun });
+    state.autoRunCheckRequested = false;
     if (isResourceView()) {
       state.selected = null;
       state.events = [];
@@ -146,13 +151,16 @@ async function saveMaxConcurrency(event) {
   }
 }
 
-async function refreshResources() {
+async function refreshResources({ checkAutoRun = false } = {}) {
   if (state.resourceRefreshInFlight) return;
   clearTimeout(state.resourceProgressTimer);
   state.resourceRefreshInFlight = true;
   try {
     state.resources = await requestJson("/api/resources");
     state.resourceError = "";
+    if (checkAutoRun) {
+      await requestJson("/api/resources/run-once", { method: "POST" });
+    }
   } catch (error) {
     state.resources = null;
     state.resourceError = messageFrom(error, "资源状态读取失败，请稍后重试。");
@@ -162,6 +170,8 @@ async function refreshResources() {
     if (isResourceView()) renderConsole();
     if (state.resources?.openaiApi.status === "loading") {
       state.resourceProgressTimer = setTimeout(() => void refreshResources(), 500);
+    } else if (checkAutoRun) {
+      void refreshConsole({ polling: true, checkAutoRun: false });
     }
   }
 }
@@ -178,6 +188,7 @@ function renderConsole(feedback = "") {
       renderConsole();
       void refreshResources();
     });
+    bindResourceEvents();
     return;
   }
   if (!state.selected) {
@@ -341,12 +352,61 @@ function renderResourceOrder(workOrder) {
     <article class="resource-order-row">
       <div class="resource-order-title"><span class="status-dot ${workOrder.status}"></span><div><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></div></div>
       <dl>
-        <div><dt>优先级</dt><dd>${workOrder.priority ? escapeHtml(workOrder.priority) : "未设置"}</dd></div>
-        <div><dt>执行节奏</dt><dd>${workOrder.pace ? escapeHtml(workOrder.pace) : "手动启动"}</dd></div>
+        <div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}">${resourceOptions([
+          ["high", "优先推进"],
+          ["normal", "正常推进"],
+          ["background", "后台推进"],
+        ], workOrder.priority)}</select></dd></div>
+        <div><dt>执行节奏</dt><dd><select data-resource-pace data-work-order-id="${escapeHtml(workOrder.id)}">${resourceOptions([
+          ["fast", "尽快完成"],
+          ["balanced", "均匀推进"],
+          ["saving", "节省额度"],
+        ], workOrder.pace)}</select></dd></div>
         <div><dt>当前用量</dt><dd>${usage}</dd></div>
         <div><dt>运行建议</dt><dd>${escapeHtml(workOrder.recommendation)}</dd></div>
       </dl>
+      <label class="auto-run-toggle">
+        <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} />
+        <span><strong>额度充足时运行</strong><small>${escapeHtml(workOrder.autoRunReason || "每次只开始一轮，并受本轮时长限制")}</small></span>
+      </label>
     </article>`;
+}
+
+function resourceOptions(options, selected) {
+  return options
+    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function bindResourceEvents() {
+  document.querySelectorAll("[data-resource-priority], [data-resource-pace], [data-resource-auto-run]")
+    .forEach((control) => control.addEventListener("change", () => saveResourcePlan(control.dataset.workOrderId)));
+}
+
+async function saveResourcePlan(id) {
+  const priority = document.querySelector(`[data-resource-priority][data-work-order-id="${CSS.escape(id)}"]`);
+  const pace = document.querySelector(`[data-resource-pace][data-work-order-id="${CSS.escape(id)}"]`);
+  const autoRun = document.querySelector(`[data-resource-auto-run][data-work-order-id="${CSS.escape(id)}"]`);
+  if (!priority || !pace || !autoRun) return;
+  for (const control of [priority, pace, autoRun]) control.disabled = true;
+  try {
+    await requestJson(`/api/work-orders/${encodeURIComponent(id)}/resource-plan`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        priority: priority.value,
+        pace: pace.value,
+        runWhenQuotaAvailable: autoRun.checked,
+      }),
+    });
+    if (autoRun.checked) {
+      await requestJson("/api/resources/run-once", { method: "POST" });
+    }
+    await refreshConsole({ polling: true });
+  } catch (error) {
+    state.resourceError = messageFrom(error, "无法保存资源安排");
+    await refreshConsole({ polling: true });
+  }
 }
 
 function renderResourceContext() {
@@ -1234,6 +1294,7 @@ function resourceStatusLabel(status) {
     loading: "正在读取",
     unavailable: "暂时不可用",
     stale: "数据已过期",
+    conflict: "数据有冲突",
     error: "读取失败",
     not_connected: "需要连接",
   }[status] || "不可用";
