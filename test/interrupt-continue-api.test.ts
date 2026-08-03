@@ -317,10 +317,10 @@ describe("interrupt and continue API", () => {
       [
         "#!/bin/sh",
         `printf '<%s>\\n' "$@" >> "${invocationLog}"`,
-        'if [ "$2" = "resume" ]; then',
+        'case " $* " in *" resume "*)',
         `  printf '%s\\n' '{"type":"error","error":{"message":"secret-token=must-not-persist; Session session-missing not found"}}'`,
         "  exit 1",
-        "fi",
+        "esac",
         `printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"降级执行已经启动"}}'`,
         "exit 0",
         "",
@@ -350,7 +350,7 @@ describe("interrupt and continue API", () => {
 
       const invocation = readFileSync(invocationLog, "utf8");
       expect(invocation).toContain(
-        "<exec>\n<resume>\n<session-missing>\n<请继续推进已确认的工作委托：为设置页面增加深色模式>\n<--json>",
+        "<exec>\n<--skip-git-repo-check>\n<resume>\n<session-missing>\n<请继续推进已确认的工作委托：为设置页面增加深色模式>\n<--json>",
       );
       expect(invocation.match(/<exec>/g)).toHaveLength(2);
       expect(invocation).toContain("工作目标：\n为设置页面增加深色模式");
@@ -401,10 +401,10 @@ describe("interrupt and continue API", () => {
         [
           "#!/bin/sh",
           `printf '<%s>\\n' "$@" >> "${invocationLog}"`,
-          'if [ "$2" = "resume" ]; then',
+          'case " $* " in *" resume "*)',
           `  printf '%s\\n' '${failure}' >&2`,
           "  exit 1",
-          "fi",
+          "esac",
           `printf '%s\\n' '{"type":"turn.completed"}'`,
           "exit 0",
           "",

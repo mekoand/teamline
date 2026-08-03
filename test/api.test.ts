@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -263,6 +264,7 @@ describe("work order API", () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-codex-runner-test-"));
     const workspacePath = join(directory, "workspace");
     const executablePath = join(directory, "fake-codex");
+    const invocationLog = join(directory, "invocations.log");
 
     try {
       mkdirSync(workspacePath);
@@ -270,6 +272,7 @@ describe("work order API", () => {
         executablePath,
         [
           "#!/bin/sh",
+          `printf '<%s>\\n' "$@" >> "${invocationLog}"`,
           `printf '%s\\n' '{"type":"thread.started","thread_id":"thread-local"}'`,
           `printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"正在修改文件"}}'`,
           "sleep 0.05",
@@ -318,6 +321,9 @@ describe("work order API", () => {
       ]);
       expect(JSON.stringify(store.listRunEvents(created.id))).not.toContain(
         "secret-token",
+      );
+      expect(readFileSync(invocationLog, "utf8")).toContain(
+        "<exec>\n<--skip-git-repo-check>\n<--cd>",
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });

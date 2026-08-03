@@ -49,6 +49,7 @@ export class CodexExecutionRunner implements CodexRunner {
         [
           this.commandPath,
           "exec",
+          "--skip-git-repo-check",
           "--cd",
           input.workspacePath,
           "--json",
@@ -89,6 +90,7 @@ export class CodexExecutionRunner implements CodexRunner {
         [
           this.commandPath,
           "exec",
+          "--skip-git-repo-check",
           "resume",
           input.sessionId,
           buildResumePrompt(input.workOrder),
