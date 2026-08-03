@@ -327,6 +327,25 @@ export function createApp({
 
       if (
         request.method === "POST" &&
+        url.pathname === "/api/notifications/release"
+      ) {
+        try {
+          const body = (await request.json()) as { id?: number };
+          store.releaseNotificationClaim(body.id ?? NaN);
+          return Response.json({ ok: true });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_NOTIFICATION_RELEASE",
+              error: error instanceof Error ? error.message : "无法重新排队通知",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (
+        request.method === "POST" &&
         url.pathname === "/api/notifications/read"
       ) {
         try {

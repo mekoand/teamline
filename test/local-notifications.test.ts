@@ -106,6 +106,21 @@ describe("local work-order notifications", () => {
       "auto_run_stopped",
     ]);
     expect(second.notifications).toEqual([]);
+
+    const release = await app.fetch(
+      new Request("http://teamline.local/api/notifications/release", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: first.notifications[0].id }),
+      }),
+    );
+    const retried = await app.fetch(
+      new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
+    );
+    expect(release.status).toBe(200);
+    expect((await retried.json()).notifications).toEqual([
+      expect.objectContaining({ id: first.notifications[0].id, kind: "auto_run_stopped" }),
+    ]);
   });
 
   test("notification API retains unread notices and marks only the opened work order read", async () => {
@@ -245,6 +260,8 @@ describe("local work-order notifications", () => {
     expect(script).toContain("Notification.requestPermission()");
     expect(script).toContain('requestJson("/api/notifications/claim"');
     expect(script).toContain('searchParams.get("stage")');
+    expect(script).toContain('searchParams.delete("stage")');
+    expect(script).toContain('requestJson("/api/notifications/release"');
     expect(script).toContain("unread-indicator");
     expect(styles).toContain(".notification-dialog");
     expect(styles).toContain("@media (max-width: 680px)");

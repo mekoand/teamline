@@ -451,6 +451,17 @@ export class WorkOrderStore {
     return transaction();
   }
 
+  releaseNotificationClaim(id: number): void {
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error("通知编号无效");
+    this.database
+      .query(`
+        UPDATE local_notifications
+        SET claimed_at = NULL
+        WHERE id = ? AND read_at IS NULL
+      `)
+      .run(id);
+  }
+
   markNotificationRead(id: number): void {
     if (!Number.isSafeInteger(id) || id < 1) throw new Error("通知编号无效");
     this.database

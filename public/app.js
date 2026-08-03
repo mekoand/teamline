@@ -154,7 +154,16 @@ async function refreshConsole({
         const requestedStageIndex = workOrder.plan?.stages.findIndex(
           (stage) => stage.id === requestedStageId,
         );
-        if (requestedStageIndex >= 0) state.selectedStageIndex = requestedStageIndex;
+        if (requestedStageIndex >= 0) {
+          state.selectedStageIndex = requestedStageIndex;
+          const canonicalUrl = new URL(window.location.href);
+          canonicalUrl.searchParams.delete("stage");
+          history.replaceState(
+            {},
+            "",
+            `${canonicalUrl.pathname}${canonicalUrl.search}`,
+          );
+        }
       }
       state.events = workOrder.runStatus
         ? (await requestJson(`/api/work-orders/${encodeURIComponent(selectedId)}/events`)).events
@@ -285,18 +294,26 @@ async function showPendingNativeNotifications() {
       method: "POST",
     });
     for (const localNotification of notifications) {
-      const systemNotification = new Notification(localNotification.title, {
-        body: localNotification.body,
-        tag: `teamline-${localNotification.id}`,
-      });
-      systemNotification.addEventListener("click", () => {
-        window.focus();
-        void openLocalNotification(localNotification);
-        systemNotification.close();
-      });
+      try {
+        const systemNotification = new Notification(localNotification.title, {
+          body: localNotification.body,
+          tag: `teamline-${localNotification.id}`,
+        });
+        systemNotification.addEventListener("click", () => {
+          window.focus();
+          void openLocalNotification(localNotification);
+          systemNotification.close();
+        });
+      } catch {
+        await requestJson("/api/notifications/release", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: localNotification.id }),
+        });
+      }
     }
   } catch {
-    // 网页内未读通知仍会保留，下一次轮询再尝试系统通知。
+    // 网页内未读通知仍会保留。
   } finally {
     state.nativeNotificationCheckInFlight = false;
   }
