@@ -24,7 +24,8 @@ const bundleVersion = 1 as const;
 const maxBundleBytes = 5 * 1024 * 1024;
 const maxWorkOrders = 1_000;
 const maxCheckpointsPerWorkOrder = 1_000;
-const maxGitWorkspacesToInspect = 50;
+const maxGitWorkspacesToInspect = 10;
+const checkpointInspectionTimeoutMs = 500;
 
 export type LocalStateBundle = {
   format: typeof bundleFormat;
@@ -475,9 +476,16 @@ function inspectCheckpointAvailability(
     const checked = Bun.spawnSync(
       ["git", "-C", workspacePath, "cat-file", "--batch-check=%(objectname) %(objecttype)"],
       {
+        env: {
+          ...process.env,
+          GIT_NO_LAZY_FETCH: "1",
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_OPTIONAL_LOCKS: "0",
+        },
         stdin: Buffer.from(`${ordered.map((hash) => `${hash}^{tree}`).join("\n")}\n`),
         stdout: "pipe",
         stderr: "pipe",
+        timeout: checkpointInspectionTimeoutMs,
       },
     );
     if (checked.exitCode !== 0) continue;

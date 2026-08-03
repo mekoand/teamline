@@ -466,6 +466,13 @@ describe("local Teamline state transfer", () => {
     );
     expect(tooManyResponse.status).toBe(400);
     expect((await tooManyResponse.json()).code).toBe("INVALID_STATE_BUNDLE");
+
+    const transferSource = await Bun.file(
+      resolve(import.meta.dir, "../src/local-state-transfer.ts"),
+    ).text();
+    expect(transferSource).toContain('GIT_NO_LAZY_FETCH: "1"');
+    expect(transferSource).toContain('GIT_TERMINAL_PROMPT: "0"');
+    expect(transferSource).toContain("timeout: checkpointInspectionTimeoutMs");
   });
 
   test("rejects unknown fields and embedded credential properties before preview", async () => {
