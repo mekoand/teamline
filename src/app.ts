@@ -30,6 +30,14 @@ import type {
   CodexSessionProvider,
   DiscoveredCodexSession,
 } from "./codex-session-discovery";
+import {
+  assertStateBundleSize,
+  InvalidStateBundleError,
+  LocalStateTransfer,
+  RestoreChoiceRequiredError,
+  RestorePreviewMissingError,
+  RestorePreviewStaleError,
+} from "./local-state-transfer";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -83,6 +91,7 @@ export function createApp({
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
   const stopReasons = new Map<string, string>();
+  const localStateTransfer = new LocalStateTransfer(store);
   let autoRunCheckInFlight:
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
@@ -305,6 +314,56 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/health") {
         return Response.json({ ok: true });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/local-state/export") {
+        const date = new Date().toISOString().slice(0, 10);
+        return Response.json(localStateTransfer.export(), {
+          headers: {
+            "content-disposition": `attachment; filename="teamline-state-${date}.json"`,
+            "cache-control": "no-store",
+          },
+        });
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/local-state/restore/preview"
+      ) {
+        try {
+          const text = await request.text();
+          assertStateBundleSize(text);
+          const body = JSON.parse(text) as { bundle?: unknown };
+          return Response.json(localStateTransfer.preview(body.bundle));
+        } catch (error) {
+          return localStateErrorResponse(error);
+        }
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/local-state/restore/confirm"
+      ) {
+        try {
+          const text = await request.text();
+          assertStateBundleSize(text);
+          const body = JSON.parse(text) as {
+            previewId?: string;
+            resolutions?: Record<string, "keep_existing" | "import_copy">;
+            settingsResolution?: "keep_existing" | "use_imported";
+          };
+          if (!body.previewId?.trim()) {
+            throw new RestorePreviewMissingError("恢复预览已失效，请重新预览");
+          }
+          const result = localStateTransfer.confirm({
+            previewId: body.previewId,
+            resolutions: body.resolutions,
+            settingsResolution: body.settingsResolution,
+          });
+          return Response.json(result, { status: 201 });
+        } catch (error) {
+          return localStateErrorResponse(error);
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/api/notifications") {
@@ -1852,6 +1911,42 @@ function workspaceErrorResponse(error: WorkspaceValidationError): Response {
     },
   }[error];
   return Response.json(details, { status: error === "in_use" ? 409 : 400 });
+}
+
+function localStateErrorResponse(error: unknown): Response {
+  if (error instanceof RestoreChoiceRequiredError) {
+    return Response.json(
+      {
+        code: "RESTORE_CHOICE_REQUIRED",
+        error: error.message,
+        conflicts: error.conflicts,
+        settingsConflict: error.settingsConflict,
+      },
+      { status: 409 },
+    );
+  }
+  if (error instanceof RestorePreviewStaleError) {
+    return Response.json(
+      { code: "RESTORE_PREVIEW_STALE", error: error.message },
+      { status: 409 },
+    );
+  }
+  if (error instanceof RestorePreviewMissingError) {
+    return Response.json(
+      { code: "RESTORE_PREVIEW_MISSING", error: error.message },
+      { status: 404 },
+    );
+  }
+  const message =
+    error instanceof InvalidStateBundleError
+      ? error.message
+      : error instanceof SyntaxError
+        ? "导出文件不是有效的 JSON"
+        : "无法读取这个导出文件";
+  return Response.json(
+    { code: "INVALID_STATE_BUNDLE", error: message },
+    { status: 400 },
+  );
 }
 
 function directoryWorkspaceInUse(

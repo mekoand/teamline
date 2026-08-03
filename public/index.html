@@ -49,6 +49,9 @@
         <button class="sidebar-nav" id="open-resources" type="button">
           <span>资源</span><small>额度与安排</small>
         </button>
+        <button class="sidebar-nav" id="open-local-state" type="button">
+          <span>本地数据</span><small>导出与恢复</small>
+        </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ 新建委托</button>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
       </aside>
@@ -160,6 +163,39 @@
           <button type="submit" class="primary-button" id="submit-session-import">导入所选会话</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="local-state-dialog" class="local-state-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="overline">本地数据</p>
+          <h2>导出与恢复</h2>
+        </div>
+        <button type="button" class="icon-button" id="close-local-state" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-description">
+        只保存 Teamline 的委托状态与位置引用，不复制仓库、文件或外部文档，也不保存凭据。
+      </p>
+      <section class="local-state-export">
+        <div>
+          <strong>导出本地状态</strong>
+          <small>生成一个可在新本地数据库中预览的 JSON 文件。</small>
+        </div>
+        <button class="secondary-button" id="export-local-state" type="button">导出 JSON</button>
+      </section>
+      <section class="local-state-restore">
+        <label class="restore-file-picker">
+          <span>恢复状态</span>
+          <input id="restore-state-file" type="file" accept="application/json,.json" />
+          <small>选择文件后只做预览，不会立即写入。</small>
+        </label>
+        <div id="restore-preview" class="restore-preview" aria-live="polite"></div>
+      </section>
+      <p id="local-state-feedback" class="inline-feedback" role="status"></p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary-button" id="cancel-local-state">关闭</button>
+        <button type="button" class="primary-button" id="confirm-state-restore" hidden>确认恢复</button>
+      </div>
     </dialog>
 
     <script type="module" src="/app.js"></script>

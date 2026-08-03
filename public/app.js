@@ -26,6 +26,7 @@ const state = {
   unreadNotificationCount: 0,
   notificationSettings: { autoRunStarted: true, autoRunStopped: true },
   nativeNotificationCheckInFlight: false,
+  restorePreview: null,
   refreshTimer: null,
   theme: readTheme(),
 };
@@ -43,6 +44,7 @@ const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
 const sessionImportError = document.querySelector("#session-import-error");
 const notificationDialog = document.querySelector("#notification-dialog");
+const localStateDialog = document.querySelector("#local-state-dialog");
 
 applyTheme(state.theme);
 bindShellEvents();
@@ -81,6 +83,15 @@ function bindShellEvents() {
     state.draftStages = null;
     refreshConsole();
   });
+  document.querySelector("#open-local-state").addEventListener("click", () => {
+    resetRestorePreview();
+    localStateDialog.showModal();
+  });
+  document.querySelector("#close-local-state").addEventListener("click", closeLocalState);
+  document.querySelector("#cancel-local-state").addEventListener("click", closeLocalState);
+  document.querySelector("#export-local-state").addEventListener("click", exportLocalState);
+  document.querySelector("#restore-state-file").addEventListener("change", previewStateRestore);
+  document.querySelector("#confirm-state-restore").addEventListener("click", confirmStateRestore);
   document.querySelector("#open-session-import").addEventListener("click", () => {
     closeCreateDialog();
     openSessionImport();
@@ -100,6 +111,129 @@ function bindShellEvents() {
     state.draftStages = null;
     refreshConsole();
   });
+}
+
+function closeLocalState() {
+  localStateDialog.close();
+}
+
+function resetRestorePreview() {
+  state.restorePreview = null;
+  document.querySelector("#restore-state-file").value = "";
+  document.querySelector("#restore-preview").innerHTML = "";
+  document.querySelector("#confirm-state-restore").hidden = true;
+  setFeedback("local-state-feedback", "", false);
+}
+
+async function exportLocalState() {
+  const button = document.querySelector("#export-local-state");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/local-state/export", { cache: "no-store" });
+    if (!response.ok) throw new Error("无法导出本地状态");
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "teamline-state.json";
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    setFeedback("local-state-feedback", "已生成本地状态文件。", false);
+  } catch (error) {
+    setFeedback("local-state-feedback", messageFrom(error, "无法导出本地状态。"), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function previewStateRestore(event) {
+  const file = event.currentTarget.files?.[0];
+  if (!file) return;
+  state.restorePreview = null;
+  document.querySelector("#confirm-state-restore").hidden = true;
+  document.querySelector("#restore-preview").innerHTML = '<div class="loading-state">正在检查恢复内容…</div>';
+  setFeedback("local-state-feedback", "", false);
+  try {
+    const bundle = JSON.parse(await file.text());
+    const preview = await requestJson("/api/local-state/restore/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle }),
+    });
+    state.restorePreview = preview;
+    renderRestorePreview();
+    document.querySelector("#confirm-state-restore").hidden = false;
+  } catch (error) {
+    document.querySelector("#restore-preview").innerHTML = "";
+    setFeedback("local-state-feedback", messageFrom(error, "无法预览这个文件。"), true);
+  }
+}
+
+function renderRestorePreview() {
+  const preview = state.restorePreview;
+  if (!preview) return;
+  const rows = preview.workOrders.map((workOrder) => {
+    const attention = workOrder.attention;
+    return `
+      <article class="restore-order-card">
+        <div class="restore-order-heading">
+          <strong>${escapeHtml(workOrder.title)}</strong>
+          <span class="status-pill ${workOrder.conflict || attention.length ? "response" : ""}">${workOrder.conflict ? "有冲突" : attention.length ? "需处理" : "可恢复"}</span>
+        </div>
+        ${attention.length
+          ? `<ul class="restore-attention-list">${attention.map((item) => `<li><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.reason)}</span><code>${escapeHtml(shortPath(item.location))}</code></li>`).join("")}</ul>`
+          : '<p class="muted">没有发现缺失的位置引用。</p>'}
+        ${workOrder.conflict
+          ? `<label class="restore-conflict-choice"><span>已有同一委托</span><select data-restore-resolution="${escapeHtml(workOrder.sourceId)}"><option value="">请选择</option><option value="keep_existing">保留现有，不导入</option><option value="import_copy">另存为副本</option></select></label>`
+          : ""}
+      </article>`;
+  }).join("");
+  document.querySelector("#restore-preview").innerHTML = `
+    <div class="restore-summary">
+      <strong>将恢复 ${preview.summary.total} 项委托</strong>
+      <span>${preview.summary.conflicts} 项冲突 · ${preview.summary.needsAttention} 项恢复后需处理</span>
+    </div>
+    ${preview.settingsConflict
+      ? `<label class="restore-conflict-choice settings-choice"><span>本机设置不同</span><select id="restore-settings-resolution"><option value="">请选择</option><option value="keep_existing">保留现有设置</option><option value="use_imported">使用导入设置</option></select></label>`
+      : ""}
+    <div class="restore-order-list">${rows || '<p class="muted">文件中没有委托。</p>'}</div>
+    <p class="restore-safety-note">确认后也不会覆盖已有委托；缺失位置会保留并标为需处理。</p>`;
+}
+
+async function confirmStateRestore() {
+  const preview = state.restorePreview;
+  if (!preview) return;
+  const button = document.querySelector("#confirm-state-restore");
+  const resolutions = Object.fromEntries(
+    [...document.querySelectorAll("[data-restore-resolution]")]
+      .filter((select) => select.value)
+      .map((select) => [select.dataset.restoreResolution, select.value]),
+  );
+  const settingsResolution = document.querySelector("#restore-settings-resolution")?.value || undefined;
+  button.disabled = true;
+  try {
+    const result = await requestJson("/api/local-state/restore/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ previewId: preview.previewId, resolutions, settingsResolution }),
+    });
+    state.restorePreview = null;
+    button.hidden = true;
+    document.querySelector("#restore-preview").innerHTML = `
+      <section class="restore-complete">
+        <strong>恢复完成</strong>
+        <p>已恢复 ${result.imported} 项，另存副本 ${result.copied} 项，保留现有 ${result.skipped} 项。</p>
+      </section>`;
+    setFeedback("local-state-feedback", "请处理预览中标出的缺失位置后再继续运行。", false);
+    await refreshConsole();
+  } catch (error) {
+    setFeedback("local-state-feedback", messageFrom(error, "无法恢复本地状态。"), true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function refreshConsole({

@@ -1535,6 +1535,165 @@ dialog::backdrop {
   overflow: auto;
 }
 
+.local-state-dialog {
+  width: min(700px, calc(100% - 32px));
+  max-height: min(820px, calc(100vh - 48px));
+  padding: 28px;
+  overflow: auto;
+}
+
+.local-state-export {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.local-state-export > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.local-state-export small,
+.restore-file-picker small,
+.restore-summary span,
+.restore-attention-list span,
+.restore-safety-note,
+.restore-complete p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.local-state-restore {
+  margin-top: 18px;
+}
+
+.restore-file-picker {
+  display: grid;
+  gap: 7px;
+}
+
+.restore-file-picker > span {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.restore-file-picker input {
+  padding: 8px;
+  background: var(--panel-soft);
+}
+
+.restore-preview {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.restore-preview:empty {
+  display: none;
+}
+
+.restore-preview .loading-state {
+  min-height: 100px;
+}
+
+.restore-summary,
+.restore-order-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.restore-order-list {
+  display: grid;
+  gap: 10px;
+  max-height: 330px;
+  overflow: auto;
+}
+
+.restore-order-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.restore-order-heading strong {
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.restore-attention-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.restore-attention-list li {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--attention-soft);
+}
+
+.restore-attention-list strong {
+  color: var(--attention);
+  font-size: 11px;
+}
+
+.restore-attention-list code {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.restore-conflict-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.restore-conflict-choice > span {
+  margin: 0;
+}
+
+.settings-choice {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--attention);
+  border-radius: 10px;
+  background: var(--attention-soft);
+}
+
+.restore-safety-note {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+}
+
+.restore-complete {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+}
+
 .notification-settings {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2068,6 +2227,28 @@ dialog::backdrop {
     width: calc(100% - 20px);
     max-height: calc(100vh - 20px);
     padding: 22px 18px;
+  }
+
+  .local-state-dialog {
+    width: calc(100% - 20px);
+    max-height: calc(100vh - 20px);
+    padding: 22px 18px;
+  }
+
+  .local-state-export,
+  .restore-summary,
+  .restore-order-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .local-state-export .secondary-button {
+    width: 100%;
+  }
+
+  .restore-conflict-choice {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .notification-settings {
