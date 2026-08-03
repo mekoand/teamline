@@ -2,7 +2,9 @@ import { Database } from "bun:sqlite";
 import {
   createWorkOrder,
   type CreateWorkOrderInput,
+  type PlanReference,
   type PlanStageInput,
+  type PlanWorkspace,
   type WorkOrder,
   type WorkOrderPlan,
   type WorkOrderRunEvent,
@@ -81,6 +83,13 @@ export class WorkOrderStore {
         FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
       )
     `);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS local_preferences (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
     this.addRunEventColumnsToExistingDatabase();
     this.backfillLegacyRunNumbers();
   }
@@ -99,6 +108,26 @@ export class WorkOrderStore {
       .get(id);
 
     return row ? mapRow(row) : null;
+  }
+
+  getExecutionMapView(): "map" | "list" {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'execution-map-view'",
+      )
+      .get();
+    return row?.value === "list" ? "list" : "map";
+  }
+
+  saveExecutionMapView(view: "map" | "list"): "map" | "list" {
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('execution-map-view', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(view, new Date().toISOString());
+    return view;
   }
 
   create(input: CreateWorkOrderInput): WorkOrder {
@@ -149,16 +178,50 @@ export class WorkOrderStore {
       throw new Error("计划内容不完整，请检查每个阶段");
     }
 
-    const normalizedStages = stages.map((stage) => ({
-      id: stage.id || crypto.randomUUID(),
-      outcome: stage.outcome.trim(),
-      scope: stage.scope.trim(),
-      verification: stage.verification.trim(),
-      ...(typeof stage.verificationCommand === "string" &&
-      stage.verificationCommand.trim()
-        ? { verificationCommand: stage.verificationCommand.trim() }
-        : {}),
-    }));
+    const stageIds = stages.map((stage) =>
+      typeof stage.id === "string" && stage.id.trim()
+        ? stage.id.trim()
+        : crypto.randomUUID(),
+    );
+    if (new Set(stageIds).size !== stageIds.length) {
+      throw new Error("计划节点标识不能重复");
+    }
+    const validStageIds = new Set(stageIds);
+    const normalizedStages = stages.map((stage, index) => {
+      const dependsOn = normalizeDependencies(stage.dependsOn);
+      const executionMethod = normalizeExecutionMethod(stage.executionMethod);
+      const workspace = normalizeWorkspace(stage.workspace, workOrder.repositoryPath);
+      if (
+        dependsOn.includes(stageIds[index]!) ||
+        dependsOn.some((dependencyId) => !validStageIds.has(dependencyId))
+      ) {
+        throw new Error("计划节点依赖无效");
+      }
+      if (
+        executionMethod !== "codex" ||
+        workspace.kind !== "git" ||
+        workspace.path !== workOrder.repositoryPath
+      ) {
+        throw new Error("当前版本只支持 Codex 在 Git 委托工作区执行");
+      }
+      return {
+        id: stageIds[index]!,
+        outcome: stage.outcome.trim(),
+        scope: stage.scope.trim(),
+        verification: stage.verification.trim(),
+        ...(typeof stage.verificationCommand === "string" &&
+        stage.verificationCommand.trim()
+          ? { verificationCommand: stage.verificationCommand.trim() }
+          : {}),
+        dependsOn,
+        executionMethod,
+        workspace,
+        materials: normalizeReferences(stage.materials),
+        artifacts: normalizeReferences(stage.artifacts),
+        status: "planning" as const,
+        statusReason: "等待确认并启动",
+      };
+    });
 
     if (
       normalizedStages.some(
@@ -166,6 +229,9 @@ export class WorkOrderStore {
       )
     ) {
       throw new Error("计划内容不完整，请检查每个阶段");
+    }
+    if (hasDependencyCycle(normalizedStages)) {
+      throw new Error("计划节点依赖不能形成循环");
     }
 
     const now = new Date().toISOString();
@@ -377,19 +443,22 @@ export class WorkOrderStore {
   }
 
   completeReview(id: string, result: WorkOrderResult): WorkOrder {
+    const workOrder = this.get(id);
     const hasConfiguredCommand = result.verifications.some(
       (verification) => verification.status !== "not_configured",
     );
+    const plan = planWithVerificationStatuses(workOrder?.plan ?? null, result);
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'review', run_status = 'completed', result_json = ?,
+        SET status = 'review', run_status = 'completed', result_json = ?, plan_json = ?,
             current_summary = ?, last_error = NULL, updated_at = ?
         WHERE id = ? AND run_status = 'verifying'
       `)
       .run(
         JSON.stringify(result),
+        plan ? JSON.stringify(plan) : null,
         hasConfiguredCommand ? "自动验证通过，等待人工验收" : "等待人工验收",
         now,
         id,
@@ -398,16 +467,18 @@ export class WorkOrderStore {
   }
 
   recordVerificationFailure(id: string, result: WorkOrderResult): WorkOrder {
+    const workOrder = this.get(id);
+    const plan = planWithVerificationStatuses(workOrder?.plan ?? null, result);
     const now = new Date().toISOString();
     const error = "自动验证未通过，请查看验证结果后继续处理";
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'interrupted', run_status = 'failed', result_json = ?,
+        SET status = 'interrupted', run_status = 'failed', result_json = ?, plan_json = ?,
             current_summary = '自动验证未通过', last_error = ?, updated_at = ?
         WHERE id = ? AND run_status = 'verifying'
       `)
-      .run(JSON.stringify(result), error, now, id);
+      .run(JSON.stringify(result), plan ? JSON.stringify(plan) : null, error, now, id);
     return this.get(id)!;
   }
 
@@ -453,7 +524,11 @@ export class WorkOrderStore {
     const now = new Date().toISOString();
     const nextPlan: WorkOrderPlan = {
       version: workOrder.plan.version + 1,
-      stages: workOrder.plan.stages.map((stage) => ({ ...stage })),
+      stages: workOrder.plan.stages.map((stage) => ({
+        ...stage,
+        status: "planning",
+        statusReason: "等待确认并启动",
+      })),
       updatedAt: now,
     };
     this.database
@@ -678,7 +753,9 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     acceptance: row.acceptance,
     status: row.status === "completed" ? "delivered" : row.status,
     currentSummary: row.current_summary,
-    plan: row.plan_json ? JSON.parse(row.plan_json) : null,
+    plan: row.plan_json
+      ? normalizeStoredPlan(JSON.parse(row.plan_json), row.repository_path)
+      : null,
     result: row.result_json ? (JSON.parse(row.result_json) as WorkOrderResult) : null,
     revisionNote: row.revision_note,
     worktreePath: row.worktree_path,
@@ -696,6 +773,143 @@ function mapRow(row: WorkOrderRow): WorkOrder {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeStoredPlan(
+  plan: WorkOrderPlan,
+  repositoryPath: string,
+): WorkOrderPlan {
+  return {
+    ...plan,
+    stages: plan.stages.map((stage) => ({
+      ...stage,
+      dependsOn: normalizeDependencies(stage.dependsOn),
+      executionMethod: normalizeExecutionMethod(stage.executionMethod),
+      workspace: normalizeWorkspace(stage.workspace, repositoryPath),
+      materials: normalizeReferences(stage.materials),
+      artifacts: normalizeReferences(stage.artifacts),
+      status: stage.status ?? "planning",
+      statusReason: stage.statusReason?.trim() || "等待确认并启动",
+    })),
+  };
+}
+
+function planWithVerificationStatuses(
+  plan: WorkOrderPlan | null,
+  result: WorkOrderResult,
+): WorkOrderPlan | null {
+  if (!plan || result.planVersion !== plan.version) return plan;
+  const evidenceByStage = new Map(
+    result.verifications.map((verification) => [verification.stageId, verification]),
+  );
+  return {
+    ...plan,
+    stages: plan.stages.map((stage) => {
+      const verification = evidenceByStage.get(stage.id);
+      if (!verification) return stage;
+      if (verification.status === "passed") {
+        return {
+          ...stage,
+          status: "response",
+          statusReason: "自动验证通过，等待阶段检查点",
+        };
+      }
+      if (verification.status === "failed") {
+        return { ...stage, status: "response", statusReason: "自动验证未通过" };
+      }
+      return { ...stage, status: "response", statusReason: "等待人工验收" };
+    }),
+  };
+}
+
+function normalizeDependencies(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error("计划节点依赖无效");
+  }
+  return [...new Set(value.map((item) => item.trim()).filter(Boolean))];
+}
+
+function hasDependencyCycle(
+  stages: Array<{ id: string; dependsOn: string[] }>,
+): boolean {
+  const dependencies = new Map(stages.map((stage) => [stage.id, stage.dependsOn]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  const visit = (id: string): boolean => {
+    if (visiting.has(id)) return true;
+    if (visited.has(id)) return false;
+    visiting.add(id);
+    for (const dependencyId of dependencies.get(id) ?? []) {
+      if (visit(dependencyId)) return true;
+    }
+    visiting.delete(id);
+    visited.add(id);
+    return false;
+  };
+
+  return stages.some((stage) => visit(stage.id));
+}
+
+function normalizeExecutionMethod(value: unknown): "codex" | "external" {
+  if (value === undefined) return "codex";
+  if (value !== "codex" && value !== "external") {
+    throw new Error("计划节点执行方式无效");
+  }
+  return value;
+}
+
+function normalizeWorkspace(value: unknown, repositoryPath: string): PlanWorkspace {
+  if (value === undefined) {
+    return { kind: "git", path: repositoryPath };
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("计划节点工作空间无效");
+  }
+  const workspace = value as Partial<PlanWorkspace>;
+  if (
+    !["git", "directory", "external"].includes(workspace.kind ?? "") ||
+    (workspace.path !== null && typeof workspace.path !== "string")
+  ) {
+    throw new Error("计划节点工作空间无效");
+  }
+  return {
+    kind: workspace.kind!,
+    path: typeof workspace.path === "string" ? workspace.path.trim() || null : null,
+  };
+}
+
+function normalizeReferences(value: unknown): PlanReference[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("计划节点引用无效");
+  }
+  return value.map((reference) => {
+    if (!reference || typeof reference !== "object") {
+      throw new Error("计划节点引用无效");
+    }
+    const candidate = reference as Partial<PlanReference>;
+    if (
+      typeof candidate.id !== "string" ||
+      !["repository", "folder", "file", "image", "link"].includes(
+        candidate.type ?? "",
+      ) ||
+      typeof candidate.label !== "string" ||
+      typeof candidate.location !== "string" ||
+      !candidate.id.trim() ||
+      !candidate.label.trim() ||
+      !candidate.location.trim()
+    ) {
+      throw new Error("计划节点引用无效");
+    }
+    return {
+      id: candidate.id.trim(),
+      type: candidate.type!,
+      label: candidate.label.trim(),
+      location: candidate.location.trim(),
+    };
+  });
 }
 
 function currentRuntime(row: WorkOrderRow): number {

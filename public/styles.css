@@ -470,6 +470,41 @@ pre {
   letter-spacing: -0.025em;
 }
 
+.map-heading-actions,
+.map-view-controls,
+.map-node-topline,
+.node-status-line {
+  display: flex;
+  align-items: center;
+}
+
+.map-heading-actions {
+  gap: 10px;
+}
+
+.map-view-controls {
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.map-view-controls button {
+  min-height: 27px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+
+.map-view-controls button.active,
+.map-view-controls button:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
 .plan-empty {
   padding: 24px;
   border-radius: 12px;
@@ -491,6 +526,106 @@ pre {
   position: relative;
   display: grid;
   gap: 10px;
+}
+
+.execution-map-list,
+.execution-map-graph {
+  display: grid;
+  gap: 10px;
+}
+
+.execution-map-graph {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.map-node {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--panel-soft);
+  text-align: left;
+}
+
+.execution-map-list .map-node,
+.map-node.single {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.execution-map-list .map-node > strong,
+.execution-map-list .map-node > small,
+.execution-map-list .map-node > .dependency-label,
+.map-node.single > strong,
+.map-node.single > small {
+  grid-column: 2;
+}
+
+.execution-map-list .map-node > .map-node-topline,
+.map-node.single > .map-node-topline {
+  grid-row: 1 / 4;
+  align-self: start;
+}
+
+.map-node:hover,
+.map-node.selected {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(32, 34, 31, 0.06);
+}
+
+.map-node-topline {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.map-node strong {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.map-node small,
+.dependency-label,
+.node-status {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.node-status {
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+}
+
+.node-status.running {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.node-status.response {
+  color: var(--attention);
+  background: var(--attention-soft);
+}
+
+.node-status.completed {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.dependency-label {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.map-evidence-note {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .stage-flow::before {
@@ -589,6 +724,14 @@ pre {
   padding: 0;
   color: var(--danger);
   background: transparent;
+  font-size: 11px;
+}
+
+.plan-stage-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -756,6 +899,72 @@ textarea {
   margin-bottom: 16px;
   font-size: 16px;
   line-height: 1.4;
+}
+
+.context-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  margin-bottom: 20px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.context-tabs button {
+  min-width: 0;
+  min-height: 30px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+
+.context-tabs button.active {
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 1px 5px rgba(32, 34, 31, 0.08);
+}
+
+.context-tab-panel {
+  min-height: 190px;
+}
+
+.node-status-line {
+  gap: 7px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reference-list {
+  display: grid;
+  gap: 9px;
+}
+
+.reference-card {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.reference-card span,
+.reference-card small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.reference-card strong {
+  font-size: 12px;
+}
+
+.reference-card code {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 10px;
 }
 
 .context-section,
@@ -956,6 +1165,10 @@ dialog::backdrop {
   .section-heading {
     align-items: start;
     flex-direction: column;
+  }
+
+  .execution-map-graph {
+    grid-template-columns: 1fr;
   }
 
   .stage-row {

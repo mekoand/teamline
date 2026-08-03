@@ -249,7 +249,7 @@ function buildExecutionPrompt(
   const stages = workOrder.plan?.stages
     .map(
       (stage, index) =>
-        `${index + 1}. 目标结果：${stage.outcome}\n   影响范围：${stage.scope}\n   验证方式：${stage.verification}\n   自动验证命令：${stage.verificationCommand || "未配置"}`,
+        `${index + 1}. 节点：${stage.id}\n   目标结果：${stage.outcome}\n   前置节点：${stage.dependsOn.length ? stage.dependsOn.join("、") : "无"}\n   执行方式：${stage.executionMethod === "external" ? "外部工作" : "Codex AI 执行"}\n   工作空间：${stage.workspace.path || stage.workspace.kind}\n   影响范围：${stage.scope}\n   验证方式：${stage.verification}\n   自动验证命令：${stage.verificationCommand || "未配置"}`,
     )
     .join("\n");
   const acceptance = workOrder.acceptance

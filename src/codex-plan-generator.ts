@@ -95,11 +95,14 @@ function buildPrompt(workOrder: WorkOrder): string {
 工作目标：
 ${workOrder.goal}${acceptance}
 
-请把工作拆成少量能够独立检查的阶段。每个阶段只填写：
+请把工作拆成少量能够独立检查的阶段。每个阶段填写：
+- id：在本计划内唯一、简短稳定的英文标识
 - outcome：完成后得到什么结果
 - scope：预计影响哪些代码范围
 - verification：如何检查这一阶段完成
 - verificationCommand：只有存在明确、可直接运行的自动验证命令时才填写，否则填写 null。不要把自然语言说明复制为命令
+- dependsOn：这个阶段依赖的前置阶段 id；没有依赖时填写空数组。不要仅因书写顺序假定依赖，可以并行时保持为空
+- executionMethod：当前版本固定填写 codex
 
 不要执行计划，只返回符合指定 JSON Schema 的结果。`;
 }

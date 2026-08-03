@@ -98,6 +98,27 @@ export function createApp({
         return Response.json({ workOrders: presentConsoleWorkOrders(store.list()) });
       }
 
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/preferences/execution-map-view"
+      ) {
+        return Response.json({ view: store.getExecutionMapView() });
+      }
+
+      if (
+        request.method === "PUT" &&
+        url.pathname === "/api/preferences/execution-map-view"
+      ) {
+        const body = (await request.json()) as { view?: string };
+        if (body.view !== "map" && body.view !== "list") {
+          return Response.json(
+            { code: "INVALID_EXECUTION_MAP_VIEW", error: "请选择节点图或纵向列表" },
+            { status: 400 },
+          );
+        }
+        return Response.json({ view: store.saveExecutionMapView(body.view) });
+      }
+
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
       if (request.method === "POST" && startMatch) {
         const id = decodeURIComponent(startMatch[1]);

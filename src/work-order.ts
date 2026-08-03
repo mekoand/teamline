@@ -25,12 +25,38 @@ export type WorkOrderRunEvent = {
   createdAt: string;
 };
 
+export type PlanNodeStatus =
+  | "planning"
+  | "running"
+  | "queued"
+  | "response"
+  | "completed";
+
+export type PlanReference = {
+  id: string;
+  type: "repository" | "folder" | "file" | "image" | "link";
+  label: string;
+  location: string;
+};
+
+export type PlanWorkspace = {
+  kind: "git" | "directory" | "external";
+  path: string | null;
+};
+
 export type PlanStage = {
   id: string;
   outcome: string;
   scope: string;
   verification: string;
   verificationCommand?: string;
+  dependsOn: string[];
+  executionMethod: "codex" | "external";
+  workspace: PlanWorkspace;
+  materials: PlanReference[];
+  artifacts: PlanReference[];
+  status: PlanNodeStatus;
+  statusReason: string;
 };
 
 export type GitChangeSummary = {
@@ -60,7 +86,29 @@ export type WorkOrderPlan = {
   updatedAt: string;
 };
 
-export type PlanStageInput = Omit<PlanStage, "id"> & { id?: string };
+export type PlanStageInput = Omit<
+  PlanStage,
+  | "id"
+  | "dependsOn"
+  | "executionMethod"
+  | "workspace"
+  | "materials"
+  | "artifacts"
+  | "status"
+  | "statusReason"
+> &
+  Partial<
+    Pick<
+      PlanStage,
+      | "dependsOn"
+      | "executionMethod"
+      | "workspace"
+      | "materials"
+      | "artifacts"
+      | "status"
+      | "statusReason"
+    >
+  > & { id?: string };
 
 export type WorkOrder = {
   id: string;

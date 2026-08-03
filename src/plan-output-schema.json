@@ -10,12 +10,19 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["outcome", "scope", "verification", "verificationCommand"],
+        "required": ["id", "outcome", "scope", "verification", "verificationCommand", "dependsOn", "executionMethod"],
         "properties": {
+          "id": { "type": "string", "minLength": 1 },
           "outcome": { "type": "string", "minLength": 1 },
           "scope": { "type": "string", "minLength": 1 },
           "verification": { "type": "string", "minLength": 1 },
-          "verificationCommand": { "type": ["string", "null"] }
+          "verificationCommand": { "type": ["string", "null"] },
+          "dependsOn": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "executionMethod": { "const": "codex" }
         }
       }
     }

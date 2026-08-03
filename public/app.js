@@ -11,6 +11,8 @@ const state = {
   selected: null,
   selectedStageIndex: 0,
   draftStages: null,
+  mapView: null,
+  contextTab: "details",
   events: [],
   refreshTimer: null,
   theme: readTheme(),
@@ -57,6 +59,10 @@ async function refreshConsole({ polling = false } = {}) {
   }
 
   try {
+    if (state.mapView === null) {
+      const preference = await requestJson("/api/preferences/execution-map-view");
+      state.mapView = preference.view;
+    }
     const { workOrders } = await requestJson("/api/console");
     state.workOrders = workOrders;
     const requestedId = selectedIdFromPath();
@@ -172,7 +178,7 @@ function renderOrderRow(workOrder) {
 function renderWorkspace(workOrder, feedback) {
   const presentation = visibleStatus(workOrder, state.workOrders);
   const stages = state.draftStages ?? workOrder.plan?.stages ?? null;
-  const canEditPlan = workOrder.status === "ready" || state.draftStages !== null;
+  const canEditPlan = state.draftStages !== null;
   return `
     <section class="workspace-content">
       <header class="workspace-heading">
@@ -193,7 +199,10 @@ function renderWorkspace(workOrder, feedback) {
             <p class="overline">执行地图</p>
             <h2>${stages ? (canEditPlan ? "检查并编辑计划" : "当前计划") : "先把工作想清楚"}</h2>
           </div>
-          ${workOrder.plan ? `<span class="subtle-label">版本 ${workOrder.plan.version}</span>` : ""}
+          <div class="map-heading-actions">
+            ${workOrder.plan && !canEditPlan ? renderMapViewControls(workOrder) : ""}
+            ${workOrder.plan ? `<span class="subtle-label">版本 ${workOrder.plan.version}</span>` : ""}
+          </div>
         </div>
         ${workOrder.revisionNote ? `<aside class="notice"><strong>补充要求</strong><p>${escapeHtml(workOrder.revisionNote)}</p></aside>` : ""}
         ${renderPlanArea(workOrder, stages, canEditPlan)}
@@ -217,23 +226,49 @@ function renderPlanArea(workOrder, stages, canEditPlan) {
       </div>`;
   }
   if (canEditPlan) return renderPlanForm(stages);
+  return renderExecutionMap(workOrder, stages);
+}
 
+function renderMapViewControls(workOrder) {
+  const canEdit = workOrder.status === "ready" && !workOrder.runStatus;
   return `
-    <div class="stage-flow">
-      ${stages
-        .map((stage, index) => {
-          return `
-            <button class="stage-row ${state.selectedStageIndex === index ? "selected" : ""}" data-stage-index="${index}" type="button">
-              <span class="stage-index">${index + 1}</span>
-              <span class="stage-copy">
-                <strong>${escapeHtml(stage.outcome)}</strong>
-                <small>${escapeHtml(stage.scope)}</small>
-              </span>
-              <span class="subtle-label">计划阶段</span>
-            </button>`;
-        })
-        .join("")}
+    <div class="map-view-controls" aria-label="执行地图视图">
+      <button type="button" data-map-view="map" class="${state.mapView === "map" ? "active" : ""}" aria-pressed="${state.mapView === "map"}">节点图</button>
+      <button type="button" data-map-view="list" class="${state.mapView === "list" ? "active" : ""}" aria-pressed="${state.mapView === "list"}">纵向列表</button>
+      ${canEdit ? '<button type="button" id="edit-plan">编辑计划</button>' : ""}
     </div>`;
+}
+
+function renderExecutionMap(workOrder, stages) {
+  const stageById = new Map(stages.map((stage, index) => [stage.id, { stage, index }]));
+  const singleStage = stages.length === 1;
+  const className = state.mapView === "list" || singleStage
+    ? "execution-map-list"
+    : "execution-map-graph";
+  return `
+    <div class="${className}" data-map-mode="${escapeHtml(state.mapView ?? "map")}">
+      ${stages.map((stage, index) => renderMapNode(stage, index, stageById, singleStage)).join("")}
+    </div>
+    ${workOrder.runStatus && stages.every((stage) => stage.status === "planning")
+      ? '<p class="map-evidence-note">Codex 尚未提供可归因到节点的进展；这里保留已知的计划状态，不推测某个节点正在运行。</p>'
+      : ""}`;
+}
+
+function renderMapNode(stage, index, stageById, singleStage) {
+  const dependencies = (stage.dependsOn ?? [])
+    .map((id) => stageById.get(id))
+    .filter(Boolean)
+    .map(({ stage: dependency, index: dependencyIndex }) => `节点 ${dependencyIndex + 1} · ${dependency.outcome}`);
+  return `
+    <button class="map-node ${singleStage ? "single" : ""} ${state.selectedStageIndex === index ? "selected" : ""}" data-stage-index="${index}" type="button">
+      <span class="map-node-topline">
+        <span class="stage-index">${index + 1}</span>
+        <span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(visibleStatusLabels[stage.status] ?? "规划中")} · ${escapeHtml(stage.statusReason)}</span>
+      </span>
+      <strong>${escapeHtml(stage.outcome)}</strong>
+      <small>${escapeHtml(stage.scope)}</small>
+      ${dependencies.length && !singleStage ? `<span class="dependency-label">依赖 ${escapeHtml(dependencies.join("；"))}</span>` : ""}
+    </button>`;
 }
 
 function renderPlanForm(stages) {
@@ -252,6 +287,21 @@ function renderPlanForm(stages) {
               <label><span>预计影响范围</span><textarea name="scope" rows="2" required>${escapeHtml(stage.scope ?? "")}</textarea></label>
               <label><span>验证方式</span><textarea name="verification" rows="2" required>${escapeHtml(stage.verification ?? "")}</textarea></label>
               <label><span>自动验证命令 <em>可选</em></span><input name="verificationCommand" value="${escapeHtml(stage.verificationCommand ?? "")}" placeholder="例如：bun test" /></label>
+              <label><span>依赖节点 <em>可多选</em></span>
+                <select name="dependsOn" multiple size="${Math.min(3, Math.max(2, stages.length - 1))}">
+                  ${stages
+                    .filter((candidate) => candidate.id !== stage.id)
+                    .map((candidate) => {
+                      const actualIndex = stages.indexOf(candidate);
+                      return `<option value="${escapeHtml(candidate.id)}" ${(stage.dependsOn ?? []).includes(candidate.id) ? "selected" : ""}>节点 ${actualIndex + 1} · ${escapeHtml(candidate.outcome || "未命名")}</option>`;
+                    })
+                    .join("")}
+                </select>
+              </label>
+              <div class="plan-stage-metadata">
+                <span>执行方式：${escapeHtml(executionMethodLabel(stage.executionMethod))}</span>
+                <span>工作空间：${escapeHtml(workspaceLabel(stage.workspace))}</span>
+              </div>
             </article>`,
         )
         .join("")}
@@ -329,33 +379,100 @@ function renderContext(workOrder) {
     <section class="context-content">
       <div class="context-heading">
         <div><p class="overline">上下文</p><h2>${stage ? `阶段 ${selectedIndex + 1}` : "委托详情"}</h2></div>
-        <span class="status-dot ${presentation.status}" title="${visibleStatusLabels[presentation.status]}"></span>
+        <span class="status-dot ${stage?.status ?? presentation.status}" title="${escapeHtml(stage?.statusReason ?? presentation.reason)}"></span>
       </div>
 
-      ${stage
-        ? `<div class="context-stage">
-            <h3>${escapeHtml(stage.outcome)}</h3>
-            <dl class="context-list">
-              <div><dt>影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
-              <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
-              <div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>
-            </dl>
-          </div>`
-        : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
-
-      <div class="context-section">
-        <p class="overline">委托信息</p>
-        <dl class="context-list">
-          <div><dt>仓库</dt><dd><code>${escapeHtml(shortPath(workOrder.repositoryPath))}</code></dd></div>
-          <div><dt>目标</dt><dd>${escapeHtml(workOrder.goal)}</dd></div>
-          <div><dt>完成要求</dt><dd>${escapeHtml(workOrder.acceptance || "未单独填写")}</dd></div>
-        </dl>
-      </div>
+      ${stage ? renderContextTabs() : ""}
+      ${stage ? renderContextTabContent(workOrder, stage) : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
 
       ${renderContextAction(workOrder)}
       <p class="inline-feedback" id="execution-feedback" role="status"></p>
       <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
+}
+
+function renderContextTabs() {
+  const tabs = [
+    ["details", "详情"],
+    ["materials", "素材"],
+    ["artifacts", "成果"],
+    ["conversation", "对话"],
+  ];
+  return `
+    <div class="context-tabs" role="tablist" aria-label="节点上下文">
+      ${tabs
+        .map(
+          ([id, label]) => `<button type="button" role="tab" data-context-tab="${id}" aria-selected="${state.contextTab === id}" class="${state.contextTab === id ? "active" : ""}">${label}</button>`,
+        )
+        .join("")}
+    </div>`;
+}
+
+function renderContextTabContent(workOrder, stage) {
+  if (state.contextTab === "materials") {
+    const references = stage.materials ?? [];
+    return `
+      <div class="context-stage context-tab-panel" role="tabpanel">
+        <h3>节点素材</h3>
+        <div class="reference-list">
+          ${references.length
+            ? references.map(renderReference).join("")
+            : '<p class="muted">这个节点还没有单独添加素材。</p>'}
+          <article class="reference-card">
+            <span>工作空间</span>
+            <strong>${escapeHtml(workspaceLabel(stage.workspace))}</strong>
+            <code>${escapeHtml(resolvedWorkspacePath(workOrder, stage))}</code>
+          </article>
+        </div>
+      </div>`;
+  }
+
+  if (state.contextTab === "artifacts") {
+    const references = stage.artifacts ?? [];
+    const verification = workOrder.result?.verifications?.find(
+      (candidate) => candidate.stageId === stage.id,
+    );
+    return `
+      <div class="context-stage context-tab-panel" role="tabpanel">
+        <h3>节点成果</h3>
+        <div class="reference-list">
+          ${references.length ? references.map(renderReference).join("") : ""}
+          ${verification
+            ? `<article class="reference-card"><span>验证结果</span><strong>${escapeHtml(verificationLabel(verification.status))}</strong><code>${escapeHtml(verification.command || "人工检查")}</code></article>`
+            : references.length ? "" : '<p class="muted">执行后，成果引用与验证结果会集中显示在这里。</p>'}
+        </div>
+      </div>`;
+  }
+
+  if (state.contextTab === "conversation") {
+    return `
+      <div class="context-stage context-tab-panel" role="tabpanel">
+        <h3>节点对话</h3>
+        <p class="muted">对话是节点的辅助上下文，执行地图仍是主要工作界面。</p>
+        ${workOrder.sessionId
+          ? `<article class="reference-card"><span>Codex 会话</span><strong>${escapeHtml(workOrder.sessionId)}</strong><small>最近活动：${escapeHtml(state.events.at(-1)?.message ?? "暂无活动")}</small></article>`
+          : '<p class="muted">启动 Codex 后，这里会显示关联会话和最近活动。</p>'}
+      </div>`;
+  }
+
+  return `
+    <div class="context-stage context-tab-panel" role="tabpanel">
+      <h3>${escapeHtml(stage.outcome)}</h3>
+      <p class="node-status-line"><span class="status-dot ${escapeHtml(stage.status)}"></span>${escapeHtml(visibleStatusLabels[stage.status] ?? "规划中")} · ${escapeHtml(stage.statusReason)}</p>
+      <dl class="context-list">
+        <div><dt>影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
+        <div><dt>执行方式</dt><dd>${escapeHtml(executionMethodLabel(stage.executionMethod))}</dd></div>
+        <div><dt>工作空间</dt><dd><code>${escapeHtml(resolvedWorkspacePath(workOrder, stage))}</code></dd></div>
+        <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
+        <div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>
+        <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
+        <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
+      </dl>
+    </div>`;
+}
+
+function renderReference(reference) {
+  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code></article>`;
 }
 
 function renderContextAction(workOrder) {
@@ -406,6 +523,41 @@ function bindRenderedEvents() {
   document.querySelectorAll("[data-stage-index]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedStageIndex = Number(button.dataset.stageIndex);
+      renderConsole();
+    });
+  });
+
+  document.querySelectorAll("[data-map-view]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const view = button.dataset.mapView;
+      if (view === state.mapView) return;
+      try {
+        const saved = await requestJson("/api/preferences/execution-map-view", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ view }),
+        });
+        state.mapView = saved.view;
+        renderConsole();
+      } catch (error) {
+        setFeedback("plan-feedback", messageFrom(error, "无法保存视图偏好"), true);
+      }
+    });
+  });
+
+  document.querySelector("#edit-plan")?.addEventListener("click", () => {
+    state.draftStages = state.selected.plan.stages.map((stage) => ({
+      ...stage,
+      dependsOn: [...(stage.dependsOn ?? [])],
+      materials: [...(stage.materials ?? [])],
+      artifacts: [...(stage.artifacts ?? [])],
+    }));
+    renderConsole();
+  });
+
+  document.querySelectorAll("[data-context-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.contextTab = button.dataset.contextTab;
       renderConsole();
     });
   });
@@ -465,7 +617,6 @@ function bindRenderedEvents() {
 
   document.querySelector("#max-run-minutes")?.addEventListener("change", async (event) => {
     const select = event.currentTarget;
-    const draftStages = readPlanStages();
     select.disabled = true;
     try {
       const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/execution-settings`, {
@@ -473,7 +624,6 @@ function bindRenderedEvents() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ maxRunMinutes: Number(select.value) }),
       });
-      state.draftStages = draftStages;
       await acceptWorkOrderResult(result.workOrder);
     } catch (error) {
       select.disabled = false;
@@ -558,6 +708,7 @@ function selectWorkOrder(id) {
   if (!id || id === state.selected?.id) return;
   state.draftStages = null;
   state.selectedStageIndex = 0;
+  state.contextTab = "details";
   history.pushState({}, "", `/work-orders/${encodeURIComponent(id)}`);
   refreshConsole();
 }
@@ -585,13 +736,26 @@ function scheduleRefresh() {
 }
 
 function readPlanStages() {
-  return [...document.querySelectorAll("[data-plan-stage]")].map((stage) => ({
-    id: stage.querySelector('[name="id"]').value || undefined,
-    outcome: stage.querySelector('[name="outcome"]').value,
-    scope: stage.querySelector('[name="scope"]').value,
-    verification: stage.querySelector('[name="verification"]').value,
-    verificationCommand: stage.querySelector('[name="verificationCommand"]').value,
-  }));
+  const sourceStages = state.draftStages ?? state.selected?.plan?.stages ?? [];
+  return [...document.querySelectorAll("[data-plan-stage]")].map((stage) => {
+    const id = stage.querySelector('[name="id"]').value || crypto.randomUUID();
+    const source = sourceStages.find((candidate) => candidate.id === id) ?? {};
+    return {
+      ...source,
+      id,
+      outcome: stage.querySelector('[name="outcome"]').value,
+      scope: stage.querySelector('[name="scope"]').value,
+      verification: stage.querySelector('[name="verification"]').value,
+      verificationCommand: stage.querySelector('[name="verificationCommand"]').value,
+      dependsOn: [...stage.querySelector('[name="dependsOn"]').selectedOptions].map(
+        (option) => option.value,
+      ),
+      executionMethod: source.executionMethod ?? "codex",
+      workspace: source.workspace ?? { kind: "git", path: state.selected.repositoryPath },
+      materials: source.materials ?? [],
+      artifacts: source.artifacts ?? [],
+    };
+  });
 }
 
 function selectedIdFromPath() {
@@ -604,7 +768,20 @@ function encodedSelectedId() {
 }
 
 function emptyStage() {
-  return { outcome: "", scope: "", verification: "", verificationCommand: "" };
+  return {
+    id: crypto.randomUUID(),
+    outcome: "",
+    scope: "",
+    verification: "",
+    verificationCommand: "",
+    dependsOn: [],
+    executionMethod: "codex",
+    workspace: { kind: "git", path: state.selected?.repositoryPath ?? null },
+    materials: [],
+    artifacts: [],
+    status: "planning",
+    statusReason: "等待确认并启动",
+  };
 }
 
 function readTheme() {
@@ -681,6 +858,35 @@ function formatDate(value) {
 function shortPath(path) {
   const parts = String(path).split("/").filter(Boolean);
   return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
+}
+
+function executionMethodLabel(method) {
+  return method === "external" ? "外部工作" : "Codex · AI 执行";
+}
+
+function workspaceLabel(workspace) {
+  return {
+    git: "Git 委托工作区",
+    directory: "本地文件夹",
+    external: "外部工作空间",
+  }[workspace?.kind] ?? "Git 委托工作区";
+}
+
+function resolvedWorkspacePath(workOrder, stage) {
+  if (stage.workspace?.kind === "git") {
+    return workOrder.worktreePath || stage.workspace.path || workOrder.repositoryPath;
+  }
+  return stage.workspace?.path || "未配置路径";
+}
+
+function referenceTypeLabel(type) {
+  return {
+    repository: "仓库",
+    folder: "文件夹",
+    file: "文件",
+    image: "图片",
+    link: "链接",
+  }[type] ?? "素材";
 }
 
 async function requestJson(url, options = {}) {
