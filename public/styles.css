@@ -168,6 +168,27 @@ pre {
   gap: 10px;
 }
 
+.concurrency-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.concurrency-control span {
+  white-space: nowrap;
+}
+
+.concurrency-control input {
+  width: 64px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
 .local-status {
   gap: 7px;
   color: var(--muted);

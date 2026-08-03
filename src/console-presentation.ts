@@ -12,16 +12,22 @@ export type ConsoleWorkOrder = WorkOrder & {
   statusReason: string;
 };
 
-export function presentConsoleWorkOrders(workOrders: WorkOrder[]): ConsoleWorkOrder[] {
+export function presentConsoleWorkOrders(
+  workOrders: WorkOrder[],
+  maxConcurrency = 2,
+): ConsoleWorkOrder[] {
+  const activeCount = workOrders.filter((workOrder) =>
+    ["running", "stopping", "verifying"].includes(workOrder.runStatus ?? ""),
+  ).length;
   return workOrders.map((workOrder) => ({
     ...workOrder,
-    ...presentStatus(workOrder, workOrders),
+    ...presentStatus(workOrder, activeCount >= maxConcurrency),
   }));
 }
 
 function presentStatus(
   workOrder: WorkOrder,
-  workOrders: WorkOrder[],
+  capacityReached: boolean,
 ): Pick<ConsoleWorkOrder, "userStatus" | "statusReason"> {
   if (workOrder.status === "delivered") {
     return { userStatus: "completed", statusReason: "已确认交付" };
@@ -46,13 +52,8 @@ function presentStatus(
     return { userStatus: "running", statusReason };
   }
   if (workOrder.status === "ready") {
-    const anotherRunIsActive = workOrders.some(
-      (candidate) =>
-        candidate.id !== workOrder.id &&
-        ["running", "stopping", "verifying"].includes(candidate.runStatus ?? ""),
-    );
-    return anotherRunIsActive
-      ? { userStatus: "queued", statusReason: "等待当前委托结束" }
+    return capacityReached
+      ? { userStatus: "queued", statusReason: "等待可用并发位置" }
       : { userStatus: "planning", statusReason: "待确认计划" };
   }
   return { userStatus: "planning", statusReason: "待生成计划" };

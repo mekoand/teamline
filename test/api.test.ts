@@ -391,8 +391,9 @@ describe("work order API", () => {
     }
   });
 
-  test("a running work order blocks duplicate and concurrent starts but a finished run does not", async () => {
+  test("a running work order blocks duplicate starts and respects a configured limit", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
+    store.saveMaxConcurrency(1);
     let finishFirstRun: (() => void) | undefined;
     let startCount = 0;
     const app = createApp({
@@ -440,8 +441,8 @@ describe("work order API", () => {
     );
     expect(concurrent.status).toBe(409);
     expect(await concurrent.json()).toEqual({
-      code: "ACTIVE_WORK_ORDER_EXISTS",
-      error: "已有另一项委托正在运行，请等待它结束后再启动",
+      code: "CONCURRENCY_LIMIT_REACHED",
+      error: "已达到本机最大并发数（1），请等待一项委托结束或调整设置",
     });
 
     finishFirstRun?.();

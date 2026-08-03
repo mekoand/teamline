@@ -95,6 +95,14 @@ export class WorkOrderStore {
     `);
     this.addRunEventColumnsToExistingDatabase();
     this.backfillLegacyRunNumbers();
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS execution_settings (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        max_concurrency INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO execution_settings (singleton, max_concurrency)
+      VALUES (1, 2);
+    `);
   }
 
   list(): WorkOrder[] {
@@ -131,6 +139,36 @@ export class WorkOrderStore {
       `)
       .run(view, new Date().toISOString());
     return view;
+  }
+
+  getExecutionSettings(): { maxConcurrency: number } {
+    const row = this.database
+      .query<{ max_concurrency: number }, []>(
+        "SELECT max_concurrency FROM execution_settings WHERE singleton = 1",
+      )
+      .get();
+    return { maxConcurrency: row?.max_concurrency ?? 2 };
+  }
+
+  saveMaxConcurrency(maxConcurrency: number): { maxConcurrency: number } {
+    if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
+      throw new Error("最大并发数必须是正整数");
+    }
+    this.database
+      .query(
+        "UPDATE execution_settings SET max_concurrency = ? WHERE singleton = 1",
+      )
+      .run(maxConcurrency);
+    return this.getExecutionSettings();
+  }
+
+  activeRunIds(): string[] {
+    return this.database
+      .query<{ id: string }, []>(
+        "SELECT id FROM work_orders WHERE run_status IN ('running', 'stopping', 'verifying')",
+      )
+      .all()
+      .map((row) => row.id);
   }
 
   create(input: CreateWorkOrderInput): WorkOrder {
@@ -376,13 +414,7 @@ export class WorkOrderStore {
   }
 
   hasActiveRun(): boolean {
-    return Boolean(
-      this.database
-        .query<{ present: number }, []>(
-          "SELECT 1 AS present FROM work_orders WHERE run_status IN ('running', 'stopping', 'verifying') LIMIT 1",
-        )
-        .get(),
-    );
+    return this.activeRunIds().length > 0;
   }
 
   recordRunPid(id: string, pid: number | null): void {

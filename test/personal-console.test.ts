@@ -23,8 +23,12 @@ describe("personal console", () => {
     expect(page).toContain('id="work-order-workspace"');
     expect(page).toContain('id="context-panel"');
     expect(page).toContain('id="theme-toggle"');
+    expect(page).toContain('id="max-concurrency"');
+    expect(page).toContain('type="number" min="1" step="1"');
     expect(script).toContain('localStorage.getItem("teamline-theme")');
     expect(script).toContain('localStorage.setItem("teamline-theme"');
+    expect(script).toContain('"/api/execution-settings"');
+    expect(script).toContain("state.workOrders.some((workOrder)");
   });
 
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {

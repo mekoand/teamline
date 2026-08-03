@@ -15,7 +15,7 @@ import {
   type WorkOrderMaterialKind,
 } from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
-import type { WorktreeManager } from "./worktree-manager";
+import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -49,7 +49,8 @@ export function createApp({
   resultProcessor,
   runTimeoutScheduler = scheduleTimeout,
 }: AppDependencies) {
-  let startingWorkOrderId: string | null = null;
+  const startingWorkOrderIds = new Set<string>();
+  const startingWorkspacePaths = new Map<string, string>();
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
   const stopReasons = new Map<string, string>();
@@ -85,6 +86,37 @@ export function createApp({
     stopReasons.delete(id);
     return reason;
   };
+  const executionCapacityReached = () => {
+    const activeOrStarting = new Set([
+      ...store.activeRunIds(),
+      ...startingWorkOrderIds,
+    ]);
+    return activeOrStarting.size >= store.getExecutionSettings().maxConcurrency;
+  };
+  const workspaceOwner = (id: string, workspacePath: string) => {
+    const targetPath = canonicalWorkspacePath(workspacePath);
+    const activeOwner = store
+      .list()
+      .find(
+        (candidate) =>
+          candidate.id !== id &&
+          ["running", "stopping", "verifying"].includes(
+            candidate.runStatus ?? "",
+          ) &&
+          candidate.worktreePath &&
+          canonicalWorkspacePath(candidate.worktreePath) === targetPath,
+      );
+    if (activeOwner) return activeOwner.id;
+    for (const [candidateId, candidatePath] of startingWorkspacePaths) {
+      if (
+        candidateId !== id &&
+        canonicalWorkspacePath(candidatePath) === targetPath
+      ) {
+        return candidateId;
+      }
+    }
+    return null;
+  };
 
   return {
     async fetch(request: Request): Promise<Response> {
@@ -99,7 +131,35 @@ export function createApp({
       }
 
       if (request.method === "GET" && url.pathname === "/api/console") {
-        return Response.json({ workOrders: presentConsoleWorkOrders(store.list()) });
+        const executionSettings = store.getExecutionSettings();
+        return Response.json({
+          workOrders: presentConsoleWorkOrders(
+            store.list(),
+            executionSettings.maxConcurrency,
+          ),
+          executionSettings,
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/execution-settings") {
+        return Response.json({ executionSettings: store.getExecutionSettings() });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/api/execution-settings") {
+        try {
+          const body = (await request.json()) as { maxConcurrency?: number };
+          return Response.json({
+            executionSettings: store.saveMaxConcurrency(body.maxConcurrency ?? NaN),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_EXECUTION_SETTINGS",
+              error: error instanceof Error ? error.message : "无法保存执行设置",
+            },
+            { status: 400 },
+          );
+        }
       }
 
       if (
@@ -133,7 +193,7 @@ export function createApp({
             { status: 404 },
           );
         }
-        if (workOrder.runStatus === "running" || startingWorkOrderId === id) {
+        if (workOrder.runStatus === "running" || startingWorkOrderIds.has(id)) {
           return Response.json(
             { code: "WORK_ORDER_ALREADY_RUNNING", error: "这项委托已经在运行" },
             { status: 409 },
@@ -171,22 +231,23 @@ export function createApp({
           if ("error" in resolved) return workspaceErrorResponse(resolved.error);
           workspacePath = resolved.path;
         }
-        if (store.hasActiveRun() || startingWorkOrderId) {
+        if (executionCapacityReached()) {
+          const { maxConcurrency } = store.getExecutionSettings();
           return Response.json(
             {
-              code: "ACTIVE_WORK_ORDER_EXISTS",
-              error: "已有另一项委托正在运行，请等待它结束后再启动",
+              code: "CONCURRENCY_LIMIT_REACHED",
+              error: `已达到本机最大并发数（${maxConcurrency}），请等待一项委托结束或调整设置`,
             },
             { status: 409 },
           );
         }
 
-        startingWorkOrderId = id;
+        startingWorkOrderIds.add(id);
         try {
+          let delegatedWorktree: DelegatedWorktree | null = null;
           if (workOrder.workspace.kind === "git") {
             try {
-              const delegatedWorktree = await worktreeManager!.prepare(workOrder);
-              store.saveWorktree(id, delegatedWorktree);
+              delegatedWorktree = await worktreeManager!.prepare(workOrder);
               workspacePath = delegatedWorktree.path;
             } catch (error) {
               const message = "无法准备独立 Git worktree，请确认仓库和分支状态后重试";
@@ -196,6 +257,21 @@ export function createApp({
                 { status: 500 },
               );
             }
+          }
+
+          if (workspaceOwner(id, workspacePath!)) {
+            return Response.json(
+              {
+                code: "WORKSPACE_IN_USE",
+                error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+              },
+              { status: 409 },
+            );
+          }
+          startingWorkspacePaths.set(id, workspacePath!);
+
+          if (workOrder.workspace.kind === "git") {
+            store.saveWorktree(id, delegatedWorktree!);
           } else {
             store.saveDirectWorkspace(id, workspacePath!);
           }
@@ -236,7 +312,8 @@ export function createApp({
           });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {
-          startingWorkOrderId = null;
+          startingWorkOrderIds.delete(id);
+          startingWorkspacePaths.delete(id);
         }
       }
 
@@ -342,16 +419,28 @@ export function createApp({
           workOrder.workspace.kind === "directory"
             ? resolvedWorkspace.path
             : workOrder.worktreePath;
-        if (store.hasActiveRun() || startingWorkOrderId) {
+        if (executionCapacityReached()) {
+          const { maxConcurrency } = store.getExecutionSettings();
           return Response.json(
             {
-              code: "ACTIVE_WORK_ORDER_EXISTS",
-              error: "已有另一项委托正在运行，请等待它结束后再继续",
+              code: "CONCURRENCY_LIMIT_REACHED",
+              error: `已达到本机最大并发数（${maxConcurrency}），请等待一项委托结束或调整设置`,
             },
             { status: 409 },
           );
         }
-        startingWorkOrderId = id;
+        startingWorkOrderIds.add(id);
+        if (workspaceOwner(id, workspacePath)) {
+          startingWorkOrderIds.delete(id);
+          return Response.json(
+            {
+              code: "WORKSPACE_IN_USE",
+              error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+            },
+            { status: 409 },
+          );
+        }
+        startingWorkspacePaths.set(id, workspacePath);
         try {
           const continued = store.markContinued(id);
           let run;
@@ -411,7 +500,8 @@ export function createApp({
           });
           return Response.json({ workOrder: continued });
         } finally {
-          startingWorkOrderId = null;
+          startingWorkOrderIds.delete(id);
+          startingWorkspacePaths.delete(id);
         }
       }
 
@@ -958,4 +1048,9 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
   const timeout = setTimeout(callback, delayMs);
   timeout.unref?.();
   return () => clearTimeout(timeout);
+}
+
+function canonicalWorkspacePath(workspacePath: string): string {
+  const absolutePath = resolve(workspacePath);
+  return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
 }

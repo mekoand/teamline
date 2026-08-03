@@ -25,6 +25,10 @@
         </a>
         <div class="topbar-status" aria-label="本地服务状态">
           <span class="local-status"><i></i> 本地运行</span>
+          <label class="concurrency-control" title="同时运行的委托上限">
+            <span>最大并发</span>
+            <input id="max-concurrency" type="number" min="1" step="1" value="2" inputmode="numeric" aria-label="本机最大并发数" />
+          </label>
           <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅色主题">
             <span aria-hidden="true">◐</span>
           </button>

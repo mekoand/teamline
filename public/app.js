@@ -14,6 +14,7 @@ const state = {
   mapView: null,
   contextTab: "details",
   events: [],
+  executionSettings: { maxConcurrency: 2 },
   refreshTimer: null,
   theme: readTheme(),
 };
@@ -37,6 +38,8 @@ function bindShellEvents() {
     localStorage.setItem("teamline-theme", state.theme);
     applyTheme(state.theme);
   });
+
+  document.querySelector("#max-concurrency").addEventListener("change", saveMaxConcurrency);
 
   document.querySelector("#open-create").addEventListener("click", () => {
     createDialog.showModal();
@@ -64,8 +67,12 @@ async function refreshConsole({ polling = false } = {}) {
       const preference = await requestJson("/api/preferences/execution-map-view");
       state.mapView = preference.view;
     }
-    const { workOrders } = await requestJson("/api/console");
+    const { workOrders, executionSettings } = await requestJson("/api/console");
     state.workOrders = workOrders;
+    state.executionSettings = executionSettings;
+    document.querySelector("#max-concurrency").value = String(
+      executionSettings.maxConcurrency,
+    );
     const requestedId = selectedIdFromPath();
     const selectedId = requestedId ?? state.selected?.id ?? workOrders[0]?.id ?? null;
 
@@ -98,6 +105,26 @@ async function refreshConsole({ polling = false } = {}) {
       </section>`;
     contextElement.innerHTML = '<div class="loading-state">本地状态暂时不可用</div>';
     document.querySelector("#retry-load")?.addEventListener("click", () => refreshConsole());
+  }
+}
+
+async function saveMaxConcurrency(event) {
+  const input = event.currentTarget;
+  const previousValue = state.executionSettings.maxConcurrency;
+  input.disabled = true;
+  try {
+    const { executionSettings } = await requestJson("/api/execution-settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ maxConcurrency: Number(input.value) }),
+    });
+    state.executionSettings = executionSettings;
+    await refreshConsole({ polling: true });
+  } catch (error) {
+    input.value = String(previousValue);
+    input.title = messageFrom(error, "无法保存最大并发数");
+  } finally {
+    input.disabled = false;
   }
 }
 
@@ -823,7 +850,11 @@ function visibleStatus(workOrder, allWorkOrders) {
 
 function scheduleRefresh() {
   clearTimeout(state.refreshTimer);
-  if (["running", "stopping", "verifying"].includes(state.selected?.runStatus)) {
+  if (
+    state.workOrders.some((workOrder) =>
+      ["running", "stopping", "verifying"].includes(workOrder.runStatus),
+    )
+  ) {
     state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 2_000);
   }
 }

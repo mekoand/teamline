@@ -104,6 +104,7 @@ describe("interrupt and continue API", () => {
 
     try {
       const store = new WorkOrderStore(new Database(":memory:"));
+      store.saveMaxConcurrency(1);
       let releaseExit!: () => void;
       const exitRequested = new Promise<void>((resolve) => {
         releaseExit = resolve;
@@ -174,7 +175,7 @@ describe("interrupt and continue API", () => {
       );
       expect(blockedStart.status).toBe(409);
       expect(await blockedStart.json()).toMatchObject({
-        code: "ACTIVE_WORK_ORDER_EXISTS",
+        code: "CONCURRENCY_LIMIT_REACHED",
       });
 
       releaseExit();
