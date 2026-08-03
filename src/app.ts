@@ -26,6 +26,10 @@ import {
 } from "./resource-provider";
 import { presentResources } from "./resource-presentation";
 import { decideAutoRun } from "./resource-scheduler";
+import type {
+  CodexSessionProvider,
+  DiscoveredCodexSession,
+} from "./codex-session-discovery";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -46,6 +50,7 @@ type AppDependencies = {
     delayMs: number,
   ) => () => void;
   autoRunRetryMs?: number;
+  codexSessionProvider?: CodexSessionProvider;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -70,6 +75,7 @@ export function createApp({
   checkpointManager,
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
+  codexSessionProvider,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
@@ -239,6 +245,90 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/work-orders") {
         return Response.json({ workOrders: store.list() });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/codex-sessions") {
+        if (!codexSessionProvider) {
+          return Response.json({
+            status: "unavailable",
+            message: "Codex 会话发现服务尚未配置",
+            sessions: [],
+          });
+        }
+        const result = await codexSessionProvider.discover();
+        const query = url.searchParams.get("q")?.trim().toLocaleLowerCase() ?? "";
+        const workOrders = store.list();
+        const sessions = result.sessions
+          .filter((session) => matchesSessionSearch(session, query))
+          .map((session) => presentCodexSession(session, workOrders));
+        return Response.json({ ...result, sessions });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/codex-sessions/import") {
+        if (!codexSessionProvider) {
+          return Response.json(
+            { code: "CODEX_SESSION_DISCOVERY_UNAVAILABLE", error: "Codex 会话发现服务尚未配置" },
+            { status: 503 },
+          );
+        }
+        try {
+          const body = (await request.json()) as {
+            sessions?: Array<{ id?: string; goal?: string }>;
+          };
+          const requested = normalizeSessionImports(body.sessions);
+          const discovered = await codexSessionProvider.discover();
+          const candidates = new Map(discovered.sessions.map((session) => [session.id, session]));
+          for (const request of requested) {
+            const candidate = candidates.get(request.id);
+            if (!candidate) throw new Error("选中的 Codex 会话已经不可用，请刷新后重试");
+            if (!candidate.sourcePath || candidate.availability === "unavailable") {
+              throw new Error(`“${candidate.title}”的来源文件不可用，无法导入`);
+            }
+          }
+
+          const imported: WorkOrder[] = [];
+          const existing: WorkOrder[] = [];
+          for (const request of requested) {
+            const candidate = candidates.get(request.id)!;
+            const duplicate = findImportedSession(store.list(), candidate.sourcePath!);
+            if (duplicate) {
+              existing.push(duplicate);
+              continue;
+            }
+            const materials: Array<{ kind: WorkOrderMaterialKind; value: string }> = [
+              ...(candidate.workspacePath
+                ? [{ kind: "folder" as const, value: candidate.workspacePath }]
+                : []),
+              { kind: "file", value: candidate.sourcePath! },
+            ];
+            const workOrder = store.create({ goal: request.goal, materials });
+            const planned = store.savePlan(workOrder.id, [
+              {
+                outcome: request.goal,
+                scope: candidate.workspacePath
+                  ? `继续处理 ${candidate.projectLabel} 中与本会话相关的工作`
+                  : "确认需要继续处理的文件和工作范围",
+                verification: "确认目标、完成要求和后续执行安排",
+                materials: materials.map((material) => ({
+                  id: crypto.randomUUID(),
+                  type: material.kind,
+                  label: material.kind === "file" ? "Codex 会话" : candidate.projectLabel,
+                  location: material.value,
+                })),
+              },
+            ]);
+            imported.push(planned);
+          }
+          return Response.json({ imported, existing }, { status: 201 });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_CODEX_SESSION_IMPORT",
+              error: error instanceof Error ? error.message : "无法导入 Codex 会话",
+            },
+            { status: 400 },
+          );
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/api/console") {
@@ -1436,6 +1526,75 @@ function normalizeMaterials(
     }
     return { kind: kind as WorkOrderMaterialKind, value };
   });
+}
+
+function normalizeSessionImports(
+  sessions: Array<{ id?: string; goal?: string }> | undefined,
+): Array<{ id: string; goal: string }> {
+  if (!Array.isArray(sessions) || sessions.length === 0) {
+    throw new Error("请选择至少一个 Codex 会话");
+  }
+  if (sessions.length > 20) throw new Error("一次最多导入 20 个 Codex 会话");
+  const normalized = sessions.map((session) => ({
+    id: session?.id?.trim() ?? "",
+    goal: session?.goal?.trim() ?? "",
+  }));
+  if (normalized.some((session) => !session.id || !session.goal)) {
+    throw new Error("请为每个选中的会话确认委托目标");
+  }
+  if (new Set(normalized.map((session) => session.id)).size !== normalized.length) {
+    throw new Error("请勿重复选择同一个 Codex 会话");
+  }
+  return normalized;
+}
+
+function matchesSessionSearch(session: DiscoveredCodexSession, query: string): boolean {
+  if (!query) return true;
+  return [session.title, session.projectLabel, session.workspacePath, session.id]
+    .filter(Boolean)
+    .some((value) => value!.toLocaleLowerCase().includes(query));
+}
+
+function presentCodexSession(session: DiscoveredCodexSession, workOrders: WorkOrder[]) {
+  const imported = session.sourcePath
+    ? findImportedSession(workOrders, session.sourcePath)
+    : null;
+  const suggested = session.workspacePath
+    ? workOrders.find(
+        (workOrder) =>
+          workOrder.workspace?.path === session.workspacePath ||
+          workOrder.materials.some(
+            (material) => material.kind === "folder" && material.value === session.workspacePath,
+          ),
+      )
+    : null;
+  return {
+    id: session.id,
+    title: session.title,
+    workspacePath: session.workspacePath,
+    projectLabel: session.projectLabel,
+    lastActiveAt: session.lastActiveAt,
+    availability: session.availability,
+    message: session.message,
+    importedWorkOrderId: imported?.id ?? null,
+    suggestion:
+      suggested && suggested.id !== imported?.id
+        ? { workOrderId: suggested.id, title: suggested.title }
+        : null,
+  };
+}
+
+function findImportedSession(
+  workOrders: WorkOrder[],
+  sourcePath: string,
+): WorkOrder | null {
+  return (
+    workOrders.find((workOrder) =>
+      workOrder.materials.some(
+        (material) => material.kind === "file" && material.value === sourcePath,
+      ),
+    ) ?? null
+  );
 }
 
 function planIsEditable(workOrder: { status: string; runStatus: string | null }): boolean {

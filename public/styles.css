@@ -1363,6 +1363,149 @@ dialog::backdrop {
   padding: 28px;
 }
 
+#session-import-form {
+  display: flex;
+  flex-direction: column;
+  max-height: min(780px, calc(100vh - 48px));
+  padding: 28px;
+}
+
+.session-import-dialog {
+  width: min(720px, calc(100% - 32px));
+  max-height: min(780px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.dialog-description {
+  margin: -10px 0 20px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.65;
+  line-break: strict;
+  text-wrap: balance;
+}
+
+.dialog-heading h2,
+.session-select strong,
+.session-suggestion,
+.session-warning,
+.sidebar-nav span {
+  line-break: strict;
+  overflow-wrap: break-word;
+  text-wrap: balance;
+  word-break: normal;
+}
+
+.session-search {
+  display: grid;
+  gap: 7px;
+}
+
+.session-search span,
+.session-goal span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-search input,
+.session-goal input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.session-source-message {
+  min-height: 18px;
+  margin: 10px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-candidate-list {
+  display: grid;
+  flex: 1 1 320px;
+  gap: 9px;
+  min-height: 160px;
+  max-height: 390px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.session-candidate {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.session-candidate.disabled {
+  opacity: 0.64;
+}
+
+.session-select {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  cursor: pointer;
+}
+
+.session-select input {
+  margin-top: 3px;
+}
+
+.session-select span {
+  display: grid;
+  gap: 4px;
+}
+
+.session-select strong {
+  font-size: 13px;
+}
+
+.session-select small,
+.session-select em,
+.session-suggestion,
+.session-warning {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.session-select em {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+}
+
+.session-goal {
+  display: grid;
+  gap: 6px;
+  padding-left: 28px;
+}
+
+.session-suggestion,
+.session-warning {
+  padding-left: 28px;
+}
+
+.session-warning {
+  color: var(--attention);
+}
+
+.session-empty {
+  padding: 36px 16px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+
 .dialog-heading {
   display: flex;
   align-items: start;
@@ -1593,5 +1736,38 @@ dialog::backdrop {
 
   .material-row {
     grid-template-columns: 96px minmax(0, 1fr) 34px;
+  }
+
+  #session-import-form {
+    max-height: calc(100vh - 20px);
+    padding: 22px 18px;
+  }
+
+  .session-import-dialog {
+    width: calc(100% - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .session-select {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .session-select em {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .session-goal,
+  .session-suggestion,
+  .session-warning {
+    padding-left: 0;
+  }
+
+  .session-candidate-list {
+    max-height: 47vh;
+  }
+
+  .session-import-dialog .dialog-actions {
+    flex-wrap: wrap;
   }
 }

@@ -48,6 +48,9 @@
         <button class="sidebar-nav" id="open-resources" type="button">
           <span>资源</span><small>额度与用量</small>
         </button>
+        <button class="sidebar-nav" id="open-session-import" type="button">
+          <span>导入 Codex 会话</span><small>从本机继续整理</small>
+        </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ 新建委托</button>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
       </aside>
@@ -95,6 +98,32 @@
         <div class="dialog-actions">
           <button type="button" class="secondary-button" id="cancel-create">取消</button>
           <button type="submit" class="primary-button" id="submit-create">创建委托</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="session-import-dialog" class="session-import-dialog">
+      <form id="session-import-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="overline">本机 Codex</p>
+            <h2>选择要继续管理的会话</h2>
+          </div>
+          <button type="button" class="icon-button" id="close-session-import" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-description">Teamline 只读取本机会话的标题、文件夹和活动时间。导入后先生成待确认的委托与执行地图，不会启动或接管原会话。</p>
+        <label class="session-search">
+          <span>搜索会话</span>
+          <input id="session-search" type="search" placeholder="标题或文件夹" autocomplete="off" />
+        </label>
+        <p id="session-source-message" class="session-source-message" role="status"></p>
+        <div id="session-candidate-list" class="session-candidate-list" aria-live="polite">
+          <div class="loading-state">正在读取本机会话…</div>
+        </div>
+        <p class="form-error" id="session-import-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" id="cancel-session-import">取消</button>
+          <button type="submit" class="primary-button" id="submit-session-import">导入所选会话</button>
         </div>
       </form>
     </dialog>

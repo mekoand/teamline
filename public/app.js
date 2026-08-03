@@ -20,6 +20,8 @@ const state = {
   resourceRefreshInFlight: false,
   autoRunCheckRequested: true,
   resourceProgressTimer: null,
+  sessionDiscovery: null,
+  sessionSearch: "",
   refreshTimer: null,
   theme: readTheme(),
 };
@@ -33,6 +35,9 @@ const createForm = document.querySelector("#create-form");
 const formError = document.querySelector("#form-error");
 const createButton = document.querySelector("#submit-create");
 const resourceSummaryElement = document.querySelector("#resource-summary");
+const sessionImportDialog = document.querySelector("#session-import-dialog");
+const sessionImportForm = document.querySelector("#session-import-form");
+const sessionImportError = document.querySelector("#session-import-error");
 
 applyTheme(state.theme);
 bindShellEvents();
@@ -56,6 +61,14 @@ function bindShellEvents() {
     state.draftStages = null;
     refreshConsole();
   });
+  document.querySelector("#open-session-import").addEventListener("click", openSessionImport);
+  document.querySelector("#close-session-import").addEventListener("click", closeSessionImport);
+  document.querySelector("#cancel-session-import").addEventListener("click", closeSessionImport);
+  document.querySelector("#session-search").addEventListener("input", (event) => {
+    state.sessionSearch = event.currentTarget.value;
+    renderSessionCandidates();
+  });
+  sessionImportForm.addEventListener("submit", importSelectedSessions);
   document.querySelector("#close-create").addEventListener("click", closeCreateDialog);
   document.querySelector("#cancel-create").addEventListener("click", closeCreateDialog);
   createForm.addEventListener("submit", createWorkOrder);
@@ -1058,6 +1071,107 @@ async function createWorkOrder(event) {
   } catch (error) {
     formError.textContent = messageFrom(error, "创建委托失败");
     resetBusy(createButton, "创建委托");
+  }
+}
+
+async function openSessionImport() {
+  state.sessionSearch = "";
+  state.sessionDiscovery = null;
+  sessionImportError.textContent = "";
+  document.querySelector("#session-search").value = "";
+  document.querySelector("#session-candidate-list").innerHTML =
+    '<div class="loading-state">正在读取本机会话…</div>';
+  document.querySelector("#session-source-message").textContent = "";
+  sessionImportDialog.showModal();
+  try {
+    state.sessionDiscovery = await requestJson("/api/codex-sessions");
+    renderSessionCandidates();
+    document.querySelector("#session-search").focus();
+  } catch (error) {
+    sessionImportError.textContent = messageFrom(error, "无法读取本机 Codex 会话");
+  }
+}
+
+function closeSessionImport() {
+  sessionImportDialog.close();
+  sessionImportForm.reset();
+  sessionImportError.textContent = "";
+}
+
+function renderSessionCandidates() {
+  const discovery = state.sessionDiscovery;
+  if (!discovery) return;
+  document.querySelector("#session-source-message").textContent = discovery.message;
+  const query = state.sessionSearch.trim().toLocaleLowerCase();
+  const sessions = discovery.sessions.filter((session) =>
+    !query || [session.title, session.projectLabel, session.workspacePath, session.id]
+      .filter(Boolean)
+      .some((value) => value.toLocaleLowerCase().includes(query)),
+  );
+  const list = document.querySelector("#session-candidate-list");
+  if (!sessions.length) {
+    list.innerHTML = `<div class="session-empty">${discovery.sessions.length ? "没有匹配的会话" : "没有找到可导入的 Codex 会话"}</div>`;
+    return;
+  }
+  list.innerHTML = sessions.map((session) => {
+    const unavailable = session.availability === "unavailable";
+    const imported = Boolean(session.importedWorkOrderId);
+    const disabled = unavailable || imported;
+    const stateLabel = imported
+      ? "已导入"
+      : unavailable
+        ? "来源不可用"
+        : session.availability === "degraded"
+          ? "部分信息不可用"
+          : "可导入";
+    return `
+      <article class="session-candidate ${disabled ? "disabled" : ""}">
+        <label class="session-select">
+          <input type="checkbox" name="sessionId" value="${escapeHtml(session.id)}" ${disabled ? "disabled" : ""} />
+          <span>
+            <strong>${escapeHtml(session.title)}</strong>
+            <small>${escapeHtml(session.projectLabel)} · ${formatDate(session.lastActiveAt)}</small>
+          </span>
+          <em>${stateLabel}</em>
+        </label>
+        ${!disabled ? `<label class="session-goal"><span>委托目标</span><input data-session-goal="${escapeHtml(session.id)}" value="${escapeHtml(session.title)}" autocomplete="off" /></label>` : ""}
+        ${session.suggestion ? `<p class="session-suggestion">可能与现有委托“${escapeHtml(session.suggestion.title)}”相关；本次仍会默认创建新委托。</p>` : ""}
+        ${session.message ? `<p class="session-warning">${escapeHtml(session.message)}</p>` : ""}
+      </article>`;
+  }).join("");
+}
+
+async function importSelectedSessions(event) {
+  event.preventDefault();
+  sessionImportError.textContent = "";
+  const selected = [...sessionImportForm.querySelectorAll('input[name="sessionId"]:checked')];
+  if (!selected.length) {
+    sessionImportError.textContent = "请选择至少一个 Codex 会话";
+    return;
+  }
+  const sessions = selected.map((checkbox) => ({
+    id: checkbox.value,
+    goal: sessionImportForm.querySelector(`[data-session-goal="${CSS.escape(checkbox.value)}"]`)?.value,
+  }));
+  const button = document.querySelector("#submit-session-import");
+  setBusy(button, "正在导入…");
+  try {
+    const result = await requestJson("/api/codex-sessions/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessions }),
+    });
+    const workOrder = result.imported[0] ?? result.existing[0];
+    closeSessionImport();
+    if (workOrder) {
+      history.pushState({}, "", `/work-orders/${encodeURIComponent(workOrder.id)}`);
+      state.selected = workOrder;
+      state.selectedStageIndex = 0;
+    }
+    await refreshConsole();
+  } catch (error) {
+    resetBusy(button, "导入所选会话");
+    sessionImportError.textContent = messageFrom(error, "无法导入 Codex 会话");
   }
 }
 

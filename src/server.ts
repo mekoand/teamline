@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { createApp } from "./app";
 import { CodexPlanGenerator } from "./codex-plan-generator";
 import { CodexExecutionRunner } from "./codex-runner";
@@ -9,6 +10,7 @@ import { GitWorktreeManager } from "./worktree-manager";
 import { LocalWorkOrderResultProcessor } from "./result-processor";
 import { createServerResourceProvider } from "./server-resources";
 import { GitCheckpointManager } from "./checkpoint-manager";
+import { LocalCodexSessionProvider } from "./codex-session-discovery";
 
 const projectRoot = resolve(import.meta.dir, "..");
 const dataDirectory = resolve(process.env.TEAMLINE_DATA_DIR ?? join(projectRoot, ".teamline"));
@@ -25,6 +27,9 @@ const app = createApp({
   resultProcessor: new LocalWorkOrderResultProcessor(),
   resourceProvider: createServerResourceProvider(),
   checkpointManager: new GitCheckpointManager(),
+  codexSessionProvider: new LocalCodexSessionProvider(
+    resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
+  ),
   projectRoot,
 });
 

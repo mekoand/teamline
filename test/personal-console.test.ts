@@ -74,6 +74,23 @@ describe("personal console", () => {
     expect(script).toContain("workOrder.usage.message");
   });
 
+  test("offers an explicit local Codex session import flow", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [pageResponse, scriptResponse] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")),
+      app.fetch(new Request("http://teamline.local/app.js")),
+    ]);
+    const page = await pageResponse.text();
+    const script = await scriptResponse.text();
+
+    expect(page).toContain('id="open-session-import"');
+    expect(page).toContain('id="session-import-dialog"');
+    expect(page).toContain("不会启动或接管原会话");
+    expect(script).toContain('requestJson("/api/codex-sessions")');
+    expect(script).toContain('requestJson("/api/codex-sessions/import"');
+    expect(script).toContain("data-session-goal");
+  });
+
   test("restores persisted work and exposes the five user-facing states", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-console-"));
     const databasePath = join(directory, "teamline.db");
