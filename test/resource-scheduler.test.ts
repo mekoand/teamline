@@ -68,6 +68,29 @@ function oneShotScheduler() {
       timer.callback();
       return timer;
     },
+    activeCount() {
+      return timers.filter((timer) => timer.active).length;
+    },
+  };
+}
+
+function availableResourceProvider(): ResourceProvider {
+  return {
+    async read() {
+      return {
+        observedAt: new Date().toISOString(),
+        codex: availableQuota(),
+        openaiApi: {
+          status: "not_connected" as const,
+          source: null,
+          observedAt: new Date().toISOString(),
+          message: "未连接",
+          scope: null,
+          usage: null,
+        },
+        workOrderUsage: [],
+      };
+    },
   };
 }
 
@@ -344,6 +367,147 @@ describe("work-order resource scheduling", () => {
       database.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("plan and workspace APIs immediately recheck a previously authorized work order", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "teamline-auto-run-static-"));
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const workOrder = store.create({ goal: "补齐静态执行条件" });
+      const scheduler = oneShotScheduler();
+      const starts: string[] = [];
+      const app = createApp({
+        store,
+        resourceProvider: availableResourceProvider(),
+        codexRunner: {
+          async start({ workOrder: started }) {
+            starts.push(started.id);
+            return {
+              interrupt() {},
+              events: (async function* (): AsyncGenerator<CodexRunEvent> {
+                await new Promise(() => {});
+              })(),
+            };
+          },
+          async resume() {
+            throw new Error("not used");
+          },
+        },
+        autoRunRetryScheduler: scheduler.schedule,
+      });
+
+      await app.fetch(
+        new Request(`http://teamline.local/api/work-orders/${workOrder.id}/resource-plan`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            priority: "normal",
+            pace: "balanced",
+            runWhenQuotaAvailable: true,
+          }),
+        }),
+      );
+      expect(scheduler.activeCount()).toBe(1);
+      expect(scheduler.runNext().delayMs).toBe(0);
+      await Bun.sleep(0);
+      expect(store.get(workOrder.id)?.resourcePlan.autoRunReason).toBe(
+        "等待确认计划",
+      );
+      expect(scheduler.activeCount()).toBe(0);
+
+      await app.fetch(
+        new Request(`http://teamline.local/api/work-orders/${workOrder.id}/plan`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            stages: [{ outcome: "完成", scope: "当前文件夹", verification: "检查" }],
+          }),
+        }),
+      );
+      expect(scheduler.activeCount()).toBe(1);
+      expect(scheduler.runNext().delayMs).toBe(0);
+      await Bun.sleep(0);
+      expect(store.get(workOrder.id)?.resourcePlan.autoRunReason).toBe(
+        "等待选择工作空间",
+      );
+      expect(scheduler.activeCount()).toBe(0);
+
+      await app.fetch(
+        new Request(`http://teamline.local/api/work-orders/${workOrder.id}/workspace`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: workspace }),
+        }),
+      );
+      expect(scheduler.activeCount()).toBe(1);
+      expect(scheduler.runNext().delayMs).toBe(0);
+      const deadline = Date.now() + 1_000;
+      while (starts.length === 0 && Date.now() < deadline) await Bun.sleep(5);
+      expect(starts).toEqual([workOrder.id]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("raising max concurrency immediately rechecks queued authorized work", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "teamline-auto-run-capacity-"));
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      store.saveMaxConcurrency(1);
+      const active = ready(store, "占用唯一并发");
+      store.markStarted(active.id);
+      const waiting = store.create({
+        workspace: { kind: "directory", path: workspace },
+        goal: "等待并发提高",
+      });
+      store.savePlan(waiting.id, [
+        { outcome: "完成", scope: "当前文件夹", verification: "检查" },
+      ]);
+      enable(store, waiting.id);
+      const scheduler = oneShotScheduler();
+      const starts: string[] = [];
+      const app = createApp({
+        store,
+        resourceProvider: availableResourceProvider(),
+        codexRunner: {
+          async start({ workOrder: started }) {
+            starts.push(started.id);
+            return {
+              interrupt() {},
+              events: (async function* (): AsyncGenerator<CodexRunEvent> {
+                await new Promise(() => {});
+              })(),
+            };
+          },
+          async resume() {
+            throw new Error("not used");
+          },
+        },
+        autoRunRetryScheduler: scheduler.schedule,
+      });
+
+      expect(scheduler.runNext().delayMs).toBe(0);
+      await Bun.sleep(0);
+      expect(store.get(waiting.id)?.resourcePlan.autoRunReason).toBe(
+        "等待可用并发位置",
+      );
+      expect(scheduler.activeCount()).toBe(0);
+
+      await app.fetch(
+        new Request("http://teamline.local/api/execution-settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ maxConcurrency: 2 }),
+        }),
+      );
+      expect(scheduler.activeCount()).toBe(1);
+      expect(scheduler.runNext().delayMs).toBe(0);
+      const deadline = Date.now() + 1_000;
+      while (starts.length === 0 && Date.now() < deadline) await Bun.sleep(5);
+      expect(starts).toEqual([waiting.id]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 });

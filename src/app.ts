@@ -259,9 +259,11 @@ export function createApp({
       if (request.method === "PUT" && url.pathname === "/api/execution-settings") {
         try {
           const body = (await request.json()) as { maxConcurrency?: number };
-          return Response.json({
-            executionSettings: store.saveMaxConcurrency(body.maxConcurrency ?? NaN),
-          });
+          const executionSettings = store.saveMaxConcurrency(
+            body.maxConcurrency ?? NaN,
+          );
+          scheduleAutoRunCheck();
+          return Response.json({ executionSettings });
         } catch (error) {
           return Response.json(
             {
@@ -897,7 +899,9 @@ export function createApp({
               }, planGenerationTimeoutMs);
             }),
           ]).finally(() => clearTimeout(timeout));
-          return Response.json({ workOrder: store.savePlan(id, generated.stages) });
+          const savedWorkOrder = store.savePlan(id, generated.stages);
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder: savedWorkOrder });
         } catch (error) {
           if (error instanceof PlanGenerationTimeoutError) {
             return Response.json(
@@ -943,7 +947,9 @@ export function createApp({
           if (!Array.isArray(body.stages)) {
             throw new Error("请填写委托计划");
           }
-          return Response.json({ workOrder: store.savePlan(id, body.stages) });
+          const workOrder = store.savePlan(id, body.stages);
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
         } catch (error) {
           if (error instanceof PlanLockedError) {
             return Response.json(
@@ -974,9 +980,12 @@ export function createApp({
         }
         try {
           const body = (await request.json()) as { maxRunMinutes?: number };
-          return Response.json({
-            workOrder: store.saveMaxRunMinutes(id, body.maxRunMinutes ?? NaN),
-          });
+          const workOrder = store.saveMaxRunMinutes(
+            id,
+            body.maxRunMinutes ?? NaN,
+          );
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
         } catch (error) {
           const message = error instanceof Error ? error.message : "无法保存执行条件";
           return Response.json(
@@ -1049,12 +1058,12 @@ export function createApp({
           if (kind === "directory" && directoryWorkspaceInUse(store, id, canonicalPath)) {
             return workspaceErrorResponse("in_use");
           }
-          return Response.json({
-            workOrder: store.saveWorkspace(id, {
-              kind,
-              path: canonicalPath,
-            }),
+          const workOrder = store.saveWorkspace(id, {
+            kind,
+            path: canonicalPath,
           });
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
         } catch (error) {
           const message = error instanceof Error ? error.message : "无法保存工作空间";
           return Response.json(
