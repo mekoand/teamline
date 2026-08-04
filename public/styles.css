@@ -1824,9 +1824,14 @@ dialog::backdrop {
 
 .session-import-settings {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(180px, 0.65fr);
+  grid-template-columns: minmax(130px, 0.55fr) minmax(0, 1.35fr) minmax(180px, 0.7fr);
   gap: 10px;
   margin: 16px 0 12px;
+}
+
+.source-import-only {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .session-import-settings label {

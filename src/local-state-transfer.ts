@@ -181,7 +181,7 @@ export class LocalStateTransfer {
     }
     for (const workOrder of bundle.workOrders) {
       for (const source of workOrder.sourceSessions) {
-        const owner = findSourceSessionOwner(this.store, source.id);
+        const owner = findSourceSessionOwner(this.store, source);
         if (owner && owner.id !== workOrder.id) {
           throw new InvalidStateBundleError(
             `来源会话 ${source.id} 已属于本机另一个目标`,
@@ -777,7 +777,7 @@ function insertWorkOrder(
   copy: boolean,
 ): void {
   for (const sourceSession of source.sourceSessions) {
-    const owner = findSourceSessionOwner(store, sourceSession.id);
+    const owner = findSourceSessionOwner(store, sourceSession);
     if (owner) {
       throw new InvalidStateBundleError(
         `来源会话 ${sourceSession.id} 已属于本机另一个目标`,
@@ -892,11 +892,13 @@ function insertWorkOrder(
 
 function findSourceSessionOwner(
   store: WorkOrderStore,
-  sourceId: string,
+  target: Pick<WorkOrderImportSource, "kind" | "id">,
 ): WorkOrder | null {
   return (
     store.list().find((workOrder) =>
-      workOrder.sourceSessions.some((source) => source.id === sourceId),
+      workOrder.sourceSessions.some(
+        (source) => source.kind === target.kind && source.id === target.id,
+      ),
     ) ?? null
   );
 }
@@ -1010,10 +1012,11 @@ function parseBundle(value: unknown): LocalStateBundle {
   const sourceSessionIds = new Set<string>();
   for (const workOrder of workOrders) {
     for (const source of workOrder.sourceSessions) {
-      if (sourceSessionIds.has(source.id)) {
+      const key = `${source.kind}:${source.id}`;
+      if (sourceSessionIds.has(key)) {
         throw new InvalidStateBundleError(`来源会话 ${source.id} 被多个目标重复使用`);
       }
-      sourceSessionIds.add(source.id);
+      sourceSessionIds.add(key);
     }
   }
   return {
@@ -1035,8 +1038,9 @@ function assignLegacySourceOwnership(workOrders: ExportedWorkOrder[]): void {
   );
   for (const workOrder of stableOrder) {
     workOrder.sourceSessions = workOrder.sourceSessions.filter((source) => {
-      if (claimedSourceIds.has(source.id)) return false;
-      claimedSourceIds.add(source.id);
+      const key = `${source.kind}:${source.id}`;
+      if (claimedSourceIds.has(key)) return false;
+      claimedSourceIds.add(key);
       return true;
     });
   }
@@ -1115,6 +1119,9 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   const sourceSessions = version === 1
     ? sessionReferences.imported ? [sessionReferences.imported] : []
     : array(item.sourceSessions, parseSessionSource, 20);
+  if (new Set(sourceSessions.map((source) => source.kind)).size > 1) {
+    throw new InvalidStateBundleError("一个目标的来源会话必须来自同一个工具");
+  }
   const importContext = version === 3 && item.importContext !== undefined
     ? parseImportContext(item.importContext)
     : null;
@@ -1221,11 +1228,14 @@ function parseSessionReferences(value: unknown): ExportedWorkOrder["sessionRefer
 function parseSessionSource(value: unknown): WorkOrderImportSource {
   const source = object(value, "会话来源格式无法识别");
   exactKeys(source, ["kind", "id", "lastActiveAt", "lastReadAt", "version"], true);
-  if (source.kind !== "codex_session" || source.version !== 1) {
+  if (
+    !["codex_session", "claude_code_session"].includes(String(source.kind)) ||
+    source.version !== 1
+  ) {
     throw new InvalidStateBundleError("会话来源格式无法识别");
   }
   return {
-    kind: "codex_session",
+    kind: source.kind as WorkOrderImportSource["kind"],
     id: nonempty(source.id),
     lastActiveAt: dateString(source.lastActiveAt),
     ...(source.lastReadAt === null

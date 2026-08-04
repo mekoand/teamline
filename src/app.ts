@@ -23,6 +23,7 @@ import {
   type PlanStageInput,
   type PlanStage,
   type WorkOrderMaterialKind,
+  type WorkOrderImportSource,
   type WorkOrderCheckpoint,
   type WorkOrderWorkspace,
   type WorkOrder,
@@ -39,8 +40,8 @@ import { presentResources } from "./resource-presentation";
 import { decideAutoRun } from "./resource-scheduler";
 import type {
   CodexSessionProvider,
-  DiscoveredCodexSession,
 } from "./codex-session-discovery";
+import type { DiscoveredSession, SessionProvider } from "./session-discovery";
 import type { SessionOrganizer } from "./session-organizer";
 import {
   assertStateBundleSize,
@@ -71,6 +72,7 @@ type AppDependencies = {
   ) => () => void;
   autoRunRetryMs?: number;
   codexSessionProvider?: CodexSessionProvider;
+  claudeCodeSessionProvider?: SessionProvider;
   sessionOrganizer?: SessionOrganizer;
   sessionOrganizationTimeoutMs?: number;
   dataDirectory?: string;
@@ -104,6 +106,7 @@ export function createApp({
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
   codexSessionProvider,
+  claudeCodeSessionProvider,
   sessionOrganizer,
   sessionOrganizationTimeoutMs = 5 * 60 * 1000,
   dataDirectory = join(projectRoot, ".teamline"),
@@ -219,17 +222,24 @@ export function createApp({
     }
     organizingWorkOrderIds.add(id);
     try {
-      if (!codexSessionProvider || !sessionOrganizer) {
+      const sourceKinds = new Set(workOrder.sourceSessions.map((source) => source.kind));
+      const sourceKind = workOrder.sourceSessions[0]!.kind;
+      const sourceProvider = sourceKinds.size === 1
+        ? sessionProviderForKind(sourceKind, codexSessionProvider, claudeCodeSessionProvider)
+        : undefined;
+      if (!sourceProvider || !sessionOrganizer) {
         const failed = store.markSessionOrganizationFailed(
           id,
-          !codexSessionProvider
-            ? "Codex 会话发现服务尚未配置"
-            : "Codex 会话整理服务尚未配置",
+          !sourceProvider
+            ? sourceKinds.size > 1
+              ? "一个目标的来源会话必须来自同一个工具"
+              : `${sourceKindLabel(sourceKind)} 会话发现服务尚未配置`
+            : "会话整理服务尚未配置",
         );
         return { outcome: "failed" as const, workOrder: failed };
       }
       try {
-        const discovered = await codexSessionProvider.discover();
+        const discovered = await sourceProvider.discover();
         const candidates = new Map(discovered.sessions.map((session) => [session.id, session]));
         const sessions = workOrder.sourceSessions.map((source) => {
           const candidate = candidates.get(source.id);
@@ -241,7 +251,12 @@ export function createApp({
         const controller = new AbortController();
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const organization = await Promise.race([
-          sessionOrganizer.organize({ name: workOrder.name, sessions }, controller.signal),
+          sessionOrganizer.organize({
+            name: workOrder.name,
+            sourceLabel: sourceKindLabel(sourceKind),
+            sourceKind,
+            sessions,
+          }, controller.signal),
           new Promise<never>((_, reject) => {
             timeout = setTimeout(() => {
               controller.abort();
@@ -250,7 +265,7 @@ export function createApp({
           }),
         ]).finally(() => clearTimeout(timeout));
         const observedSources = sessions.map((session) => ({
-          kind: "codex_session" as const,
+          kind: sourceKind,
           id: session.id,
           lastActiveAt: session.lastActiveAt,
           version: 1 as const,
@@ -387,7 +402,7 @@ export function createApp({
     autoRunCheckInFlight = (async () => {
       const snapshot = await readResourceSnapshot();
       const decision = decideAutoRun(
-        store.list(),
+        store.list().filter((workOrder) => !isImportOnlyWorkOrder(workOrder)),
         snapshot.codex,
         store.getExecutionSettings().maxConcurrency,
       );
@@ -429,7 +444,10 @@ export function createApp({
     if (
       !store
         .list()
-        .some((workOrder) => workOrder.resourcePlan.runWhenQuotaAvailable)
+        .some(
+          (workOrder) =>
+            workOrder.resourcePlan.runWhenQuotaAvailable && !isImportOnlyWorkOrder(workOrder),
+        )
     ) {
       cancelAutoRunTimer?.();
       cancelAutoRunTimer = null;
@@ -763,25 +781,42 @@ export function createApp({
         }
       }
 
-      if (request.method === "GET" && url.pathname === "/api/codex-sessions") {
-        if (!codexSessionProvider) {
+      if (
+        request.method === "GET" &&
+        ["/api/sessions", "/api/codex-sessions"].includes(url.pathname)
+      ) {
+        const sourceKind = sessionSourceKindFromRequest(url);
+        const sourceProvider = sessionProviderForKind(
+          sourceKind,
+          codexSessionProvider,
+          claudeCodeSessionProvider,
+        );
+        if (!sourceProvider) {
           return Response.json({
             status: "unavailable",
-            message: "Codex 会话发现服务尚未配置",
+            message: `${sourceKindLabel(sourceKind)} 会话发现服务尚未配置`,
             sessions: [],
           });
         }
-        const result = await codexSessionProvider.discover();
+        const result = await sourceProvider.discover();
         const query = url.searchParams.get("q")?.trim().toLocaleLowerCase() ?? "";
         const workOrders = store.list();
         const sessions = result.sessions
           .filter((session) => matchesSessionSearch(session, query))
-          .map((session) => presentCodexSession(session, workOrders));
-        return Response.json({ ...result, sessions });
+          .map((session) => presentSession(session, workOrders, sourceKind));
+        return Response.json({ ...result, sourceKind, sourceLabel: sourceKindLabel(sourceKind), sessions });
       }
 
-      if (request.method === "POST" && url.pathname === "/api/codex-sessions/import") {
-        if (!codexSessionProvider) {
+      if (
+        request.method === "POST" &&
+        ["/api/sessions/import", "/api/codex-sessions/import"].includes(url.pathname)
+      ) {
+        let sourceKind: WorkOrder["sourceSessions"][number]["kind"] = "codex_session";
+        let sourceProvider: SessionProvider | undefined;
+        if (url.pathname === "/api/codex-sessions/import") {
+          sourceProvider = codexSessionProvider;
+        }
+        if (!sourceProvider && url.pathname === "/api/codex-sessions/import") {
           return Response.json(
             { code: "CODEX_SESSION_DISCOVERY_UNAVAILABLE", error: "Codex 会话发现服务尚未配置" },
             { status: 503 },
@@ -792,21 +827,41 @@ export function createApp({
             name?: string;
             projectId?: string | null;
             sessionIds?: string[];
+            source?: string;
           };
+          if (url.pathname === "/api/sessions/import") {
+            sourceKind = parseSessionSourceKind(body.source);
+            sourceProvider = sessionProviderForKind(
+              sourceKind,
+              codexSessionProvider,
+              claudeCodeSessionProvider,
+            );
+          }
+          if (!sourceProvider) {
+            return Response.json(
+              {
+                code: "SESSION_DISCOVERY_UNAVAILABLE",
+                error: `${sourceKindLabel(sourceKind)} 会话发现服务尚未配置`,
+              },
+              { status: 503 },
+            );
+          }
           const name = body.name?.trim() ?? "";
           if (!name) throw new Error("请填写目标名称");
           const sessionIds = normalizeSessionIds(body.sessionIds);
           const projectId = body.projectId?.trim() || null;
           if (projectId && !store.getProject(projectId)) throw new Error("找不到所选项目");
-          const discovered = await codexSessionProvider.discover();
+          const discovered = await sourceProvider.discover();
           const candidates = new Map(discovered.sessions.map((session) => [session.id, session]));
           const selected = sessionIds.map((id) => {
             const candidate = candidates.get(id);
-            if (!candidate) throw new Error("选中的 Codex 会话已经不可用，请刷新后重试");
+            if (!candidate) {
+              throw new Error(`选中的 ${sourceKindLabel(sourceKind)} 会话已经不可用，请刷新后重试`);
+            }
             if (!candidate.sourcePath || candidate.availability === "unavailable") {
               throw new Error(`“${candidate.title}”的来源文件不可用，无法导入`);
             }
-            const duplicate = findImportedSession(store.list(), candidate.id);
+            const duplicate = findImportedSession(store.list(), sourceKind, candidate.id);
             if (duplicate) {
               throw new Error(`“${candidate.title}”已经属于目标“${duplicate.name}”`);
             }
@@ -824,7 +879,7 @@ export function createApp({
                 }
               : null,
             sourceSessions: selected.map((candidate) => ({
-                kind: "codex_session",
+                kind: sourceKind,
                 id: candidate.id,
                 lastActiveAt: candidate.lastActiveAt,
                 lastReadAt: null,
@@ -845,8 +900,10 @@ export function createApp({
         } catch (error) {
           return Response.json(
             {
-              code: "INVALID_CODEX_SESSION_IMPORT",
-              error: error instanceof Error ? error.message : "无法导入 Codex 会话",
+              code: url.pathname === "/api/codex-sessions/import"
+                ? "INVALID_CODEX_SESSION_IMPORT"
+                : "INVALID_SESSION_IMPORT",
+              error: error instanceof Error ? error.message : "无法导入会话",
             },
             { status: 400 },
           );
@@ -949,6 +1006,9 @@ export function createApp({
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
+        }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
         }
         if (workOrder.runStatus === "running" || startingWorkOrderIds.has(id)) {
           return Response.json(
@@ -1236,6 +1296,9 @@ export function createApp({
             { status: 404 },
           );
         }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
+        }
         if (workOrder.status !== "interrupted") {
           return Response.json(
             { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的目标可以继续" },
@@ -1388,6 +1451,9 @@ export function createApp({
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
+        }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
         }
         if (workOrder.status !== "interrupted") {
           return Response.json(
@@ -1659,6 +1725,9 @@ export function createApp({
             { status: 404 },
           );
         }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
+        }
         if (!planIsEditable(workOrder)) {
           return Response.json(
             { code: "WORK_ORDER_CONVERSATION_LOCKED", error: "当前状态不能更新目标对话" },
@@ -1748,6 +1817,9 @@ export function createApp({
             { status: 404 },
           );
         }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
+        }
         if (!planIsEditable(workOrder)) {
           return Response.json(
             { code: "WORK_ORDER_PLAN_LOCKED", error: "目标开始执行后不能直接修改计划" },
@@ -1805,6 +1877,9 @@ export function createApp({
             { status: 404 },
           );
         }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
+        }
         if (!planIsEditable(workOrder)) {
           return Response.json(
             { code: "WORK_ORDER_PLAN_LOCKED", error: "目标开始执行后不能直接修改计划" },
@@ -1848,11 +1923,15 @@ export function createApp({
       );
       if (request.method === "PUT" && settingsMatch) {
         const id = decodeURIComponent(settingsMatch[1]);
-        if (!store.get(id)) {
+        const workOrder = store.get(id);
+        if (!workOrder) {
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
+        }
+        if (isImportOnlyWorkOrder(workOrder)) {
+          return importOnlyResponse();
         }
         try {
           const body = (await request.json()) as { maxRunMinutes?: number };
@@ -1876,11 +1955,15 @@ export function createApp({
       );
       if (request.method === "PUT" && resourcePlanMatch) {
         const id = decodeURIComponent(resourcePlanMatch[1]);
-        if (!store.get(id)) {
+        const existingWorkOrder = store.get(id);
+        if (!existingWorkOrder) {
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
+        }
+        if (isImportOnlyWorkOrder(existingWorkOrder)) {
+          return importOnlyResponse();
         }
         if (planningWorkOrderIds.has(id)) {
           return Response.json(
@@ -1970,7 +2053,17 @@ export function createApp({
             { status: 404 },
           );
         }
-        const sourceStatus = await inspectSourceSessions(workOrder, codexSessionProvider);
+        const sourceKind = workOrder.sourceSessions[0]?.kind;
+        const sourceStatus = await inspectSourceSessions(
+          workOrder,
+          sourceKind
+            ? sessionProviderForKind(
+                sourceKind,
+                codexSessionProvider,
+                claudeCodeSessionProvider,
+              )
+            : undefined,
+        );
         return Response.json({
           workOrder: await withRecoverySite(workOrder, checkpointManager),
           ...(sourceStatus ? { sourceStatus } : {}),
@@ -2534,20 +2627,20 @@ function safeUploadName(value: string): string {
 
 function normalizeSessionIds(sessionIds: string[] | undefined): string[] {
   if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
-    throw new Error("请选择至少一个 Codex 会话");
+    throw new Error("请选择至少一个会话");
   }
-  if (sessionIds.length > 20) throw new Error("一次最多选择 20 个 Codex 会话");
+  if (sessionIds.length > 20) throw new Error("一次最多选择 20 个会话");
   const normalized = sessionIds.map((id) => typeof id === "string" ? id.trim() : "");
   if (normalized.some((id) => !id)) {
-    throw new Error("选中的 Codex 会话无效");
+    throw new Error("选中的会话无效");
   }
   if (new Set(normalized).size !== normalized.length) {
-    throw new Error("请勿重复选择同一个 Codex 会话");
+    throw new Error("请勿重复选择同一个会话");
   }
   return normalized;
 }
 
-function sharedSessionWorkspace(sessions: DiscoveredCodexSession[]): string | null {
+function sharedSessionWorkspace(sessions: DiscoveredSession[]): string | null {
   if (sessions.length === 0 || sessions.some((session) => !session.workspacePath)) return null;
   const paths = new Set(sessions.map((session) => session.workspacePath));
   return paths.size === 1 ? sessions[0]!.workspacePath : null;
@@ -2555,7 +2648,7 @@ function sharedSessionWorkspace(sessions: DiscoveredCodexSession[]): string | nu
 
 async function inspectSourceSessions(
   workOrder: WorkOrder,
-  provider?: CodexSessionProvider,
+  provider?: SessionProvider,
 ): Promise<{
   status: "available" | "partial" | "unavailable";
   message: string;
@@ -2563,7 +2656,7 @@ async function inspectSourceSessions(
   hasUpdates: boolean;
   sessions: Array<{
     id: string;
-    availability: DiscoveredCodexSession["availability"] | "unavailable";
+    availability: DiscoveredSession["availability"] | "unavailable";
     latestActiveAt: string | null;
     updateAvailable: boolean;
   }>;
@@ -2571,7 +2664,7 @@ async function inspectSourceSessions(
   if (workOrder.sourceSessions.length === 0) return null;
   const checkedAt = new Date().toISOString();
   if (!provider) {
-    return unavailableSourceStatus(workOrder, checkedAt, "Codex 会话发现服务尚未配置");
+    return unavailableSourceStatus(workOrder, checkedAt, "会话发现服务尚未配置");
   }
   try {
     const discovery = await provider.discover();
@@ -2619,15 +2712,19 @@ function unavailableSourceStatus(
   };
 }
 
-function matchesSessionSearch(session: DiscoveredCodexSession, query: string): boolean {
+function matchesSessionSearch(session: DiscoveredSession, query: string): boolean {
   if (!query) return true;
   return [session.title, session.projectLabel, session.workspacePath, session.id]
     .filter(Boolean)
     .some((value) => value!.toLocaleLowerCase().includes(query));
 }
 
-function presentCodexSession(session: DiscoveredCodexSession, workOrders: WorkOrder[]) {
-  const imported = findImportedSession(workOrders, session.id);
+function presentSession(
+  session: DiscoveredSession,
+  workOrders: WorkOrder[],
+  sourceKind: WorkOrder["sourceSessions"][number]["kind"],
+) {
+  const imported = findImportedSession(workOrders, sourceKind, session.id);
   const suggested = session.workspacePath
     ? workOrders.find(
         (workOrder) =>
@@ -2655,15 +2752,57 @@ function presentCodexSession(session: DiscoveredCodexSession, workOrders: WorkOr
 
 function findImportedSession(
   workOrders: WorkOrder[],
+  sourceKind: WorkOrder["sourceSessions"][number]["kind"],
   sourceId: string,
 ): WorkOrder | null {
   return (
     workOrders.find(
       (workOrder) =>
         workOrder.sourceSessions.some(
-          (source) => source.kind === "codex_session" && source.id === sourceId,
+          (source) => source.kind === sourceKind && source.id === sourceId,
         ),
     ) ?? null
+  );
+}
+
+function parseSessionSourceKind(value: unknown): WorkOrderImportSource["kind"] {
+  if (value === "codex" || value === "codex_session" || value === undefined) {
+    return "codex_session";
+  }
+  if (value === "claude_code" || value === "claude_code_session") {
+    return "claude_code_session";
+  }
+  throw new Error("不支持这个会话来源");
+}
+
+function sessionSourceKindFromRequest(url: URL): WorkOrderImportSource["kind"] {
+  if (url.pathname === "/api/codex-sessions") return "codex_session";
+  return parseSessionSourceKind(url.searchParams.get("source") ?? undefined);
+}
+
+function sessionProviderForKind(
+  kind: WorkOrderImportSource["kind"],
+  codexProvider?: SessionProvider,
+  claudeCodeProvider?: SessionProvider,
+): SessionProvider | undefined {
+  return kind === "claude_code_session" ? claudeCodeProvider : codexProvider;
+}
+
+function sourceKindLabel(kind: WorkOrderImportSource["kind"]): string {
+  return kind === "claude_code_session" ? "Claude Code" : "Codex";
+}
+
+function isImportOnlyWorkOrder(workOrder: WorkOrder): boolean {
+  return workOrder.sourceSessions[0]?.kind === "claude_code_session";
+}
+
+function importOnlyResponse(): Response {
+  return Response.json(
+    {
+      code: "IMPORT_ONLY_GOAL",
+      error: "Claude Code 来源目标目前只支持导入与状态整理",
+    },
+    { status: 409 },
   );
 }
 

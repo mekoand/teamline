@@ -914,7 +914,9 @@ export class WorkOrderStore {
     }
     const occupiedSource = workOrder.sourceSessions.find((source) =>
       this.list().some((existing) =>
-        existing.sourceSessions.some((candidate) => candidate.id === source.id),
+        existing.sourceSessions.some(
+          (candidate) => candidate.kind === source.kind && candidate.id === source.id,
+        ),
       ),
     );
     if (occupiedSource) {
@@ -966,8 +968,8 @@ export class WorkOrderStore {
     if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
       throw new Error("这个目标没有可整理的来源会话");
     }
-    const expectedIds = workOrder.sourceSessions.map((source) => source.id).sort();
-    const observedIds = observedSources.map((source) => source.id).sort();
+    const expectedIds = workOrder.sourceSessions.map(sourceKey).sort();
+    const observedIds = observedSources.map(sourceKey).sort();
     if (JSON.stringify(expectedIds) !== JSON.stringify(observedIds)) {
       throw new Error("来源会话已经变化，请刷新后重试");
     }
@@ -979,7 +981,7 @@ export class WorkOrderStore {
     }
     const historicalStages = normalizeImportedHistoricalStages(
       input.historicalStages,
-      new Set(expectedIds),
+      new Set(workOrder.sourceSessions.map((source) => source.id)),
     );
     const artifacts = normalizeReferences(input.artifacts);
     const now = new Date().toISOString();
@@ -2605,7 +2607,7 @@ function normalizeImportSource(value: string | null): WorkOrderImportSource | nu
   try {
     const stored = JSON.parse(value) as Partial<WorkOrderImportSource>;
     if (
-      stored.kind !== "codex_session" ||
+      !["codex_session", "claude_code_session"].includes(String(stored.kind)) ||
       typeof stored.id !== "string" ||
       !stored.id.trim() ||
       typeof stored.lastActiveAt !== "string" ||
@@ -2615,7 +2617,7 @@ function normalizeImportSource(value: string | null): WorkOrderImportSource | nu
       return null;
     }
     return {
-      kind: "codex_session",
+      kind: stored.kind as WorkOrderImportSource["kind"],
       id: stored.id.trim(),
       lastActiveAt: new Date(stored.lastActiveAt).toISOString(),
       ...(stored.lastReadAt === null
@@ -2628,6 +2630,10 @@ function normalizeImportSource(value: string | null): WorkOrderImportSource | nu
   } catch {
     return null;
   }
+}
+
+function sourceKey(source: Pick<WorkOrderImportSource, "kind" | "id">): string {
+  return `${source.kind}:${source.id}`;
 }
 
 function normalizeImportContext(value: string | null): WorkOrderImportContext | null {

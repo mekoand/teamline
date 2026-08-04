@@ -123,7 +123,7 @@
         </section>
 
         <div class="dialog-secondary-entry">
-          <span>已有 Codex 会话？</span>
+          <span>已有本机会话？</span>
           <button type="button" class="text-button" id="open-session-import">导入会话</button>
         </div>
 
@@ -175,8 +175,9 @@
           </div>
           <button type="button" class="icon-button" id="close-session-import" aria-label="关闭">×</button>
         </div>
-        <p class="dialog-description">选择服务于同一结果的会话。确认后会读取完整内容并整理历史，不会继续运行原会话。</p>
+        <p class="dialog-description">选择服务于同一结果的会话。Teamline 只导入并整理状态，不会继续运行原会话。</p>
         <div class="session-import-settings">
+          <label><span>来源工具</span><select id="session-import-source" name="source"><option value="codex">Codex</option><option value="claude_code">Claude Code</option></select></label>
           <label><span>目标名称</span><input id="session-import-name" name="name" autocomplete="off" required placeholder="例如：发布 Personal Beta" /></label>
           <label><span>所属项目 <em>可选</em></span><select id="session-import-project" name="projectId"><option value="">暂不归入项目</option></select></label>
         </div>

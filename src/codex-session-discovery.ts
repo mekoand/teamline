@@ -9,27 +9,15 @@ import {
   statSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import type {
+  DiscoveredSession,
+  SessionDiscoveryResult,
+  SessionProvider,
+} from "./session-discovery";
 
-export type DiscoveredCodexSession = {
-  id: string;
-  title: string;
-  workspacePath: string | null;
-  projectLabel: string;
-  lastActiveAt: string;
-  sourcePath: string | null;
-  availability: "available" | "degraded" | "unavailable";
-  message: string | null;
-};
-
-export type CodexSessionDiscoveryResult = {
-  status: "available" | "partial" | "unavailable";
-  message: string;
-  sessions: DiscoveredCodexSession[];
-};
-
-export interface CodexSessionProvider {
-  discover(): Promise<CodexSessionDiscoveryResult>;
-}
+export type DiscoveredCodexSession = DiscoveredSession;
+export type CodexSessionDiscoveryResult = SessionDiscoveryResult;
+export type CodexSessionProvider = SessionProvider;
 
 type SessionIndexEntry = {
   id: string;
@@ -54,7 +42,7 @@ const MAX_VISIBLE_SESSIONS = 50;
 const MAX_METADATA_BYTES = 256 * 1024;
 const MAX_INDEX_BYTES = 10 * 1024 * 1024;
 
-export class LocalCodexSessionProvider implements CodexSessionProvider {
+export class LocalCodexSessionProvider implements SessionProvider {
   constructor(private readonly codexHome: string) {}
 
   async discover(): Promise<CodexSessionDiscoveryResult> {

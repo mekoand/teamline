@@ -272,7 +272,9 @@ describe("Codex session import API", () => {
     );
 
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toContain("来源文件不可用");
+    const body = await response.json();
+    expect(body.code).toBe("INVALID_CODEX_SESSION_IMPORT");
+    expect(body.error).toContain("来源文件不可用");
     expect(store.list()).toEqual([]);
   });
 });

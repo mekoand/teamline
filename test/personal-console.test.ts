@@ -163,7 +163,7 @@ describe("personal console", () => {
     expect(script).toContain("workOrder.usage.message");
   });
 
-  test("offers an explicit local Codex session import flow", async () => {
+  test("offers one local session import flow for Codex and Claude Code", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const [pageResponse, scriptResponse] = await Promise.all([
       app.fetch(new Request("http://teamline.local/")),
@@ -179,12 +179,21 @@ describe("personal console", () => {
     expect(sidebar).not.toContain('id="open-session-import"');
     expect(createDialog).toContain('id="open-session-import"');
     expect(page).toContain("不会继续运行原会话");
-    expect(script).toContain('requestJson("/api/codex-sessions")');
-    expect(script).toContain('requestJson("/api/codex-sessions/import"');
+    expect(page).toContain('id="session-import-source"');
+    expect(page).toContain('<option value="claude_code">Claude Code</option>');
+    expect(page).toContain("只导入并整理状态");
+    expect(script).toContain('`/api/sessions?source=${encodeURIComponent(state.sessionSource)}`');
+    expect(script).toContain('requestJson("/api/sessions/import"');
     expect(script).toContain("sessionSelectedIds");
     expect(script).toContain("sessionIds");
     expect(script).toContain("codex://threads/");
     expect(script).toContain("复制 CLI 命令");
+    expect(script).toContain("仅导入与状态整理");
+    expect(script).toContain("shortSessionId(session.id)");
+    expect(script).toContain("isImportOnlyGoal(workOrder)");
+    expect(script).toContain("当前版本不会从 Claude Code 来源目标生成计划或开始执行");
+    expect(script).toContain('workOrder.importOnly ? \'<p class="source-import-only">');
+    expect(script).not.toContain("生成后续计划");
     expect(script).not.toContain("data-session-goal");
   });
 

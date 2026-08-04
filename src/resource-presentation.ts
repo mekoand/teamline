@@ -29,6 +29,9 @@ export function presentResources(
     workOrders: presented.map((workOrder) => ({
       id: workOrder.id,
       title: workOrder.title,
+      ...(workOrder.sourceSessions[0]?.kind === "claude_code_session"
+        ? { importOnly: true }
+        : {}),
       status: workOrder.userStatus,
       priority: workOrder.resourcePlan.priority,
       pace: workOrder.resourcePlan.pace,
@@ -38,7 +41,9 @@ export function presentResources(
         usageByWorkOrder.get(workOrder.id),
         snapshot.observedAt,
       ),
-      recommendation: recommendation(workOrder, snapshot.codex),
+      recommendation: workOrder.sourceSessions[0]?.kind === "claude_code_session"
+        ? "仅保留导入状态"
+        : recommendation(workOrder, snapshot.codex),
     })),
   };
 }

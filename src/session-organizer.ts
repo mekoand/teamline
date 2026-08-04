@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { DiscoveredCodexSession } from "./codex-session-discovery";
-import type { WorkOrderImportContext } from "./work-order";
+import type { DiscoveredSession } from "./session-discovery";
+import type { WorkOrderImportContext, WorkOrderImportSource } from "./work-order";
 
 export type SessionOrganization = {
   description: string;
@@ -14,7 +14,9 @@ export type SessionOrganization = {
 
 export type SessionOrganizationInput = {
   name: string;
-  sessions: Array<DiscoveredCodexSession & { sourcePath: string }>;
+  sourceLabel?: string;
+  sourceKind?: WorkOrderImportSource["kind"];
+  sessions: Array<DiscoveredSession & { sourcePath: string }>;
 };
 
 export interface SessionOrganizer {
@@ -46,6 +48,7 @@ export class CodexSessionOrganizer implements SessionOrganizer {
 
     try {
       if (signal?.aborted) throw new Error("会话整理已停止");
+      const preparedInput = prepareOrganizationInput(input, temporaryDirectory);
       subprocess = Bun.spawn(
         [
           this.codexPath,
@@ -63,7 +66,7 @@ export class CodexSessionOrganizer implements SessionOrganizer {
           "--color",
           "never",
           "--ephemeral",
-          buildPrompt(input),
+          buildPrompt(preparedInput),
         ],
         { stdout: "pipe", stderr: "pipe" },
       );
@@ -92,6 +95,42 @@ export class CodexSessionOrganizer implements SessionOrganizer {
   }
 }
 
+function prepareOrganizationInput(
+  input: SessionOrganizationInput,
+  temporaryDirectory: string,
+): SessionOrganizationInput {
+  if (input.sourceKind !== "claude_code_session") return input;
+  const sessions = input.sessions.map((session, index) => {
+    const filteredPath = join(temporaryDirectory, `claude-code-source-${index + 1}.jsonl`);
+    try {
+      writeFileSync(
+        filteredPath,
+        filterClaudeCodeMainChain(readFileSync(session.sourcePath, "utf8")),
+        "utf8",
+      );
+    } catch {
+      throw new Error("Claude Code 来源会话当前不可读取，请刷新后重试");
+    }
+    return { ...session, sourcePath: filteredPath };
+  });
+  return { ...input, sessions };
+}
+
+export function filterClaudeCodeMainChain(input: string): string {
+  const lines: string[] = [];
+  for (const line of input.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (record.isSidechain === true) continue;
+      lines.push(JSON.stringify(record));
+    } catch {
+      // Damaged JSONL records are not useful context and cannot be classified safely.
+    }
+  }
+  return lines.length ? `${lines.join("\n")}\n` : "";
+}
+
 function buildPrompt(input: SessionOrganizationInput): string {
   const sources = input.sessions.map((session) => ({
     id: session.id,
@@ -100,7 +139,7 @@ function buildPrompt(input: SessionOrganizationInput): string {
     lastActiveAt: session.lastActiveAt,
     sourcePath: session.sourcePath,
   }));
-  return `你正在把一个或多个 Codex 历史会话整理成 Teamline 中的一个目标。只读取下面列出的本地 JSONL 会话文件，不要修改任何文件，不要继续执行原会话，也不要创建新的开发任务。
+  return `你正在把一个或多个 ${input.sourceLabel ?? "AI 编码工具"} 历史会话整理成 Teamline 中的一个目标。只读取下面列出的本地 JSONL 会话文件，不要修改任何文件，不要继续执行原会话，也不要创建新的开发任务。
 
 目标名称：${input.name}
 来源会话：

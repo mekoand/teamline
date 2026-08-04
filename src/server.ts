@@ -11,6 +11,7 @@ import { LocalWorkOrderResultProcessor } from "./result-processor";
 import { createServerResourceProvider } from "./server-resources";
 import { GitCheckpointManager } from "./checkpoint-manager";
 import { LocalCodexSessionProvider } from "./codex-session-discovery";
+import { LocalClaudeCodeSessionProvider } from "./claude-code-session-discovery";
 import { CodexSessionOrganizer } from "./session-organizer";
 
 const projectRoot = resolve(import.meta.dir, "..");
@@ -30,6 +31,9 @@ const app = createApp({
   checkpointManager: new GitCheckpointManager(),
   codexSessionProvider: new LocalCodexSessionProvider(
     resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
+  ),
+  claudeCodeSessionProvider: new LocalClaudeCodeSessionProvider(
+    resolve(process.env.CLAUDE_CODE_PROJECTS_DIR ?? join(homedir(), ".claude", "projects")),
   ),
   sessionOrganizer: new CodexSessionOrganizer(),
   projectRoot,

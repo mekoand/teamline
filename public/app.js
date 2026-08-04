@@ -38,6 +38,7 @@ const state = {
   autoRunCheckRequested: true,
   resourceProgressTimer: null,
   sessionDiscovery: null,
+  sessionSource: "codex",
   sessionSearch: "",
   sessionSelectedIds: new Set(),
   sourceStatus: null,
@@ -127,6 +128,17 @@ function bindShellEvents() {
   document.querySelector("#session-search").addEventListener("input", (event) => {
     state.sessionSearch = event.currentTarget.value;
     renderSessionCandidates();
+  });
+  document.querySelector("#session-import-source").addEventListener("change", async (event) => {
+    state.sessionSource = event.currentTarget.value;
+    state.sessionSelectedIds = new Set();
+    state.sessionSearch = "";
+    document.querySelector("#session-search").value = "";
+    document.querySelector("#session-import-name").value = "";
+    document.querySelector("#session-candidate-list").innerHTML =
+      '<div class="loading-state">正在读取本机会话…</div>';
+    document.querySelector("#session-source-message").textContent = "";
+    await loadSessionDiscovery();
   });
   sessionImportForm.addEventListener("submit", importSelectedSessions);
   document.querySelector("#close-create").addEventListener("click", closeCreateDialog);
@@ -669,7 +681,7 @@ function renderAllGoalsWorkspace() {
       <header class="overview-heading">
         <div><p class="overline">工作台</p><h1>全部目标</h1></div>
         <div class="overview-actions">
-          <button class="secondary-button" id="open-session-import-home" type="button">导入 Codex 会话</button>
+          <button class="secondary-button" id="open-session-import-home" type="button">导入会话</button>
           <button class="primary-button" id="open-create-home" type="button">新建目标</button>
         </div>
       </header>
@@ -1022,7 +1034,7 @@ function renderResourceOrder(workOrder) {
     <article class="resource-order-row">
       <div class="resource-order-title"><span class="status-dot ${workOrder.status}"></span><div><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></div></div>
       <dl>
-        <div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}">${resourceOptions([
+        ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}">${resourceOptions([
           ["high", "优先推进"],
           ["normal", "正常推进"],
           ["background", "后台推进"],
@@ -1031,14 +1043,14 @@ function renderResourceOrder(workOrder) {
           ["fast", "尽快完成"],
           ["balanced", "均匀推进"],
           ["saving", "节省额度"],
-        ], workOrder.pace)}</select></dd></div>
+        ], workOrder.pace)}</select></dd></div>`}
         <div><dt>当前用量</dt><dd>${usage}</dd></div>
         <div><dt>运行建议</dt><dd>${escapeHtml(workOrder.recommendation)}</dd></div>
       </dl>
-      <label class="auto-run-toggle">
+      ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : `<label class="auto-run-toggle">
         <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} />
         <span><strong>额度充足时运行</strong><small>${escapeHtml(workOrder.autoRunReason || "每次只开始一轮，并受本轮时长限制")}</small></span>
-      </label>
+      </label>`}
     </article>`;
 }
 
@@ -1150,6 +1162,7 @@ function renderWorkspace(workOrder, feedback) {
 }
 
 function mobileContextActionLabel(workOrder) {
+  if (isImportOnlyGoal(workOrder)) return "查看来源会话";
   if (workOrder.pendingClarification) return "处理待回答问题";
   if (workOrder.status === "review") return "查看验收操作";
   if (workOrder.status === "interrupted") return "处理下一步";
@@ -1157,7 +1170,7 @@ function mobileContextActionLabel(workOrder) {
 }
 
 function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
-  if (workOrder.importContext && !stages && !canEditPlan) {
+  if (isImportOnlyGoal(workOrder) || (workOrder.importContext && !stages && !canEditPlan)) {
     return renderImportedHistorySurface(workOrder, feedback);
   }
   const hasResult = Boolean(workOrder.result && !["ready", "running"].includes(workOrder.status));
@@ -1201,7 +1214,13 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
 }
 
 function renderImportedHistorySurface(workOrder, feedback) {
-  const context = workOrder.importContext;
+  const context = workOrder.importContext ?? {
+    status: "failed",
+    summary: null,
+    currentState: null,
+    historicalStages: [],
+    error: "来源会话尚未整理。",
+  };
   const ready = context.status === "ready";
   const updateAvailable = state.sourceStatus?.hasUpdates;
   return `
@@ -1221,10 +1240,9 @@ function renderImportedHistorySurface(workOrder, feedback) {
                    <span class="stage-index">${index + 1}</span>
                    <div><small>${importedStageStatusLabel(stage.status)}</small><strong>${escapeHtml(stage.outcome)}</strong><p>${escapeHtml(stage.summary)}</p></div>
                  </article>`).join("")
-             : '<p class="muted">没有可确认的历史节点，摘要仍可用于生成后续计划。</p>'}</div>`
+             : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}</div>`
         : `<div class="plan-empty"><p>${escapeHtml(context.error || "来源会话等待整理。")}</p></div>`}
       <div class="import-history-actions">
-        ${ready ? '<button class="primary-button" id="generate-plan" type="button">生成后续计划</button>' : ""}
         <button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>
       </div>
       <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
@@ -1497,7 +1515,9 @@ function renderResultPanel(workOrder) {
 
 function renderContext(workOrder) {
   const presentation = visibleStatus(workOrder, state.workOrders);
-  const stages = state.draftStages ?? workOrder.plan?.stages ?? [];
+  const stages = isImportOnlyGoal(workOrder)
+    ? []
+    : state.draftStages ?? workOrder.plan?.stages ?? [];
   const selectedIndex = Math.min(state.selectedStageIndex, Math.max(0, stages.length - 1));
   const stage = stages[selectedIndex];
   return `
@@ -1525,29 +1545,42 @@ function renderImportedSessionContext(workOrder) {
   const currentSessionId = workOrder.currentSessionId ?? workOrder.sessionId;
   return `
     <details class="context-disclosure source-session-context" open>
-      <summary>会话入口 · ${workOrder.sourceSessions.length} 个来源</summary>
+      <summary>来源会话 · ${workOrder.sourceSessions.length} 个</summary>
       ${status?.hasUpdates ? '<p class="source-update-message">来源会话有新内容，可以重新整理。</p>' : ""}
       ${context.error ? `<p class="form-error">${escapeHtml(context.error)}</p>` : ""}
       <div class="source-session-list">
-        ${workOrder.sourceSessions.map((source, index) => renderSessionEntry(source.id, `来源会话 ${index + 1}`)).join("")}
-        ${currentSessionId ? renderSessionEntry(currentSessionId, "当前执行会话") : ""}
+        ${workOrder.sourceSessions.map((source, index) => renderSessionEntry(source, `来源 ${index + 1}`)).join("")}
+        ${currentSessionId ? renderSessionEntry({ kind: "codex_session", id: currentSessionId }, "当前执行会话") : ""}
       </div>
       <button class="secondary-button full-button" data-reorganize-sessions type="button">${context.status === "ready" ? "重新整理来源" : "重试整理"}</button>
       <p class="inline-feedback" id="session-entry-feedback" role="status"></p>
     </details>`;
 }
 
-function renderSessionEntry(sessionId, label) {
+function renderSessionEntry(source, label) {
+  const codexSource = source.kind === "codex_session";
   return `
     <article class="source-session-entry">
-      <span>${escapeHtml(label)}</span>
-      <code>${escapeHtml(sessionId)}</code>
+      <span>${escapeHtml(label)} · ${sourceKindLabel(source.kind)}</span>
+      <code>${escapeHtml(source.id)}</code>
       <div>
-        <button class="secondary-button" type="button" data-open-codex-session="${escapeHtml(sessionId)}">在 Codex 打开</button>
-        <button class="text-button" type="button" data-copy-session-id="${escapeHtml(sessionId)}">复制 ID</button>
-        <button class="text-button" type="button" data-copy-session-cli="${escapeHtml(sessionId)}">复制 CLI 命令</button>
+        ${codexSource ? `<button class="secondary-button" type="button" data-open-codex-session="${escapeHtml(source.id)}">在 Codex 打开</button>` : '<span class="source-import-only">仅导入与状态整理</span>'}
+        <button class="text-button" type="button" data-copy-session-id="${escapeHtml(source.id)}">复制 ID</button>
+        ${codexSource ? `<button class="text-button" type="button" data-copy-session-cli="${escapeHtml(source.id)}">复制 CLI 命令</button>` : ""}
       </div>
     </article>`;
+}
+
+function sourceKindLabel(kind) {
+  return kind === "claude_code_session" ? "Claude Code" : "Codex";
+}
+
+function isImportOnlyGoal(workOrder) {
+  return workOrder.sourceSessions?.[0]?.kind === "claude_code_session";
+}
+
+function shortSessionId(id) {
+  return String(id).slice(0, 8);
 }
 
 function renderGoalProjectContext(workOrder) {
@@ -1573,7 +1606,7 @@ function renderGoalProjectContext(workOrder) {
       <form id="goal-project-form">
         <label><span>所属项目</span><select name="projectId" ${active ? "disabled" : ""}>${projectOptions(displayProjectId)}</select></label>
         <fieldset ${active ? "disabled" : ""}>
-          <legend>发送给 Codex 的项目素材</legend>
+          <legend>${isImportOnlyGoal(workOrder) ? "关联的项目素材" : "发送给 Codex 的项目素材"}</legend>
           ${materials.length
             ? materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="projectMaterialId" value="${escapeHtml(material.id)}" ${selectedIds.has(material.id) ? "checked" : ""} /><span><strong>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}${recommendedIds.has(material.id) ? " · 建议" : ""}</small></span></label>`).join("")
             : `<p class="muted">${displayProjectId ? "这个项目还没有可选素材。" : "选择项目后可以使用其中的素材。"}</p>`}
@@ -1677,11 +1710,11 @@ function renderContextTabContent(workOrder, stage) {
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
       <details class="node-source-details">
-        <summary>会话入口</summary>
+        <summary>来源会话</summary>
         <dl class="context-list">
           <div><dt>来源会话</dt><dd>${escapeHtml(
             (workOrder.sourceSessions ?? (workOrder.importSource ? [workOrder.importSource] : []))
-              .map((source) => source.id)
+              .map((source) => `${sourceKindLabel(source.kind)} · ${source.id}`)
               .join("、") || "无",
           )}</dd></div>
           <div><dt>当前执行会话</dt><dd>${escapeHtml(workOrder.currentSessionId ?? workOrder.sessionId ?? "未建立")}</dd></div>
@@ -1729,6 +1762,9 @@ function renderReference(reference) {
 }
 
 function renderContextAction(workOrder) {
+  if (isImportOnlyGoal(workOrder)) {
+    return '<section class="context-action completed-action"><strong>仅导入与状态整理</strong><p>当前版本不会从 Claude Code 来源目标生成计划或开始执行。</p></section>';
+  }
   if (state.draftStages !== null) {
     return '<section class="context-action"><p class="overline">正在编辑计划</p><strong>先保存计划再继续</strong><p>执行和成果登记会使用保存后的节点。</p></section>';
   }
@@ -2246,17 +2282,24 @@ async function openSessionImport() {
   sessionImportError.textContent = "";
   document.querySelector("#session-search").value = "";
   document.querySelector("#session-import-name").value = "";
+  document.querySelector("#session-import-source").value = state.sessionSource;
   populateProjectSelect(document.querySelector("#session-import-project"));
   document.querySelector("#session-candidate-list").innerHTML =
     '<div class="loading-state">正在读取本机会话…</div>';
   document.querySelector("#session-source-message").textContent = "";
   sessionImportDialog.showModal();
+  await loadSessionDiscovery();
+}
+
+async function loadSessionDiscovery() {
   try {
-    state.sessionDiscovery = await requestJson("/api/codex-sessions");
+    state.sessionDiscovery = await requestJson(
+      `/api/sessions?source=${encodeURIComponent(state.sessionSource)}`,
+    );
     renderSessionCandidates();
     document.querySelector("#session-search").focus();
   } catch (error) {
-    sessionImportError.textContent = messageFrom(error, "无法读取本机 Codex 会话");
+    sessionImportError.textContent = messageFrom(error, "无法读取本机会话");
   }
 }
 
@@ -2278,7 +2321,7 @@ function renderSessionCandidates() {
   );
   const list = document.querySelector("#session-candidate-list");
   if (!sessions.length) {
-    list.innerHTML = `<div class="session-empty">${discovery.sessions.length ? "没有匹配的会话" : "没有找到可导入的 Codex 会话"}</div>`;
+    list.innerHTML = `<div class="session-empty">${discovery.sessions.length ? "没有匹配的会话" : `没有找到可导入的${discovery.sourceLabel ?? "本机"}会话`}</div>`;
     return;
   }
   list.innerHTML = sessions.map((session) => {
@@ -2298,7 +2341,7 @@ function renderSessionCandidates() {
           <input type="checkbox" name="sessionId" value="${escapeHtml(session.id)}" ${state.sessionSelectedIds.has(session.id) ? "checked" : ""} ${disabled ? "disabled" : ""} />
           <span>
             <strong>${escapeHtml(session.title)}</strong>
-            <small>${escapeHtml(session.projectLabel)} · ${formatDate(session.lastActiveAt)}</small>
+            <small>${escapeHtml(session.projectLabel)}${state.sessionSource === "claude_code" ? ` · ${escapeHtml(shortSessionId(session.id))}` : ""} · ${formatDate(session.lastActiveAt)}</small>
           </span>
           <em>${stateLabel}</em>
         </label>
@@ -2323,7 +2366,7 @@ async function importSelectedSessions(event) {
   event.preventDefault();
   sessionImportError.textContent = "";
   if (!state.sessionSelectedIds.size) {
-    sessionImportError.textContent = "请选择至少一个 Codex 会话";
+    sessionImportError.textContent = "请选择至少一个会话";
     return;
   }
   const name = String(new FormData(sessionImportForm).get("name") ?? "").trim();
@@ -2335,11 +2378,12 @@ async function importSelectedSessions(event) {
   const button = document.querySelector("#submit-session-import");
   setBusy(button, "正在导入…");
   try {
-    const result = await requestJson("/api/codex-sessions/import", {
+    const result = await requestJson("/api/sessions/import", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
+        source: state.sessionSource,
         projectId: new FormData(sessionImportForm).get("projectId") || null,
         sessionIds,
       }),
@@ -2357,7 +2401,7 @@ async function importSelectedSessions(event) {
     await refreshConsole();
   } catch (error) {
     resetBusy(button, "导入目标");
-    sessionImportError.textContent = messageFrom(error, "无法导入 Codex 会话");
+    sessionImportError.textContent = messageFrom(error, "无法导入会话");
   }
 }
 

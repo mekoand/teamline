@@ -95,7 +95,7 @@ export type WorkOrderMaterial = {
 };
 
 export type WorkOrderImportSource = {
-  kind: "codex_session";
+  kind: "codex_session" | "claude_code_session";
   id: string;
   lastActiveAt: string;
   lastReadAt?: string | null;
@@ -296,7 +296,13 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     throw new Error("来源会话格式无效");
   }
   const sourceSessions = rawSourceSessions.map(normalizeSourceSession);
-  if (new Set(sourceSessions.map((source) => source.id)).size !== sourceSessions.length) {
+  if (new Set(sourceSessions.map((source) => source.kind)).size > 1) {
+    throw new Error("一个目标的来源会话必须来自同一个工具");
+  }
+  if (
+    new Set(sourceSessions.map((source) => `${source.kind}:${source.id}`)).size !==
+    sourceSessions.length
+  ) {
     throw new Error("来源会话不能重复");
   }
 
@@ -373,7 +379,7 @@ function normalizeSourceSession(value: unknown): WorkOrderImportSource {
   const id = typeof source.id === "string" ? source.id.trim() : "";
   const lastActiveAt = source.lastActiveAt;
   if (
-    source.kind !== "codex_session" ||
+    !["codex_session", "claude_code_session"].includes(String(source.kind)) ||
     source.version !== 1 ||
     !id ||
     typeof lastActiveAt !== "string" ||
@@ -382,7 +388,7 @@ function normalizeSourceSession(value: unknown): WorkOrderImportSource {
     throw new Error("来源会话格式无效");
   }
   return {
-    kind: "codex_session",
+    kind: source.kind as WorkOrderImportSource["kind"],
     id,
     lastActiveAt,
     ...(source.lastReadAt === null
