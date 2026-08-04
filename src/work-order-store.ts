@@ -1255,7 +1255,7 @@ export class WorkOrderStore {
     const goal = canUpdateGoal
       ? publicPlanningText(generated.goal?.trim() || current.goal)
       : current.goal;
-    const title = titleForGoal(goal);
+    const title = current.title;
     const acceptance = !canUpdateGoal || generated.acceptance === undefined
       ? current.acceptance
       : generated.acceptance?.trim()
@@ -3448,11 +3448,6 @@ function currentRuntime(row: WorkOrderRow): number {
     return row.runtime_ms;
   }
   return row.runtime_ms + Math.max(0, Date.now() - Date.parse(row.runtime_updated_at));
-}
-
-function titleForGoal(goal: string): string {
-  const firstLine = goal.split(/\r?\n/, 1)[0] ?? goal;
-  return firstLine.length > 56 ? `${firstLine.slice(0, 56)}…` : firstLine;
 }
 
 function publicPlanningText(value: string): string {
