@@ -20,7 +20,10 @@ export type RunStatus =
 export type WorkOrderRunEvent = {
   id: number;
   type: "session" | "progress" | "exit";
+  category: "lifecycle" | "message" | "tool" | "log" | "report";
   message: string;
+  stageId: string | null;
+  detail: string | null;
   runNumber: number;
   createdAt: string;
 };

@@ -33,8 +33,14 @@ describe("personal console", () => {
     expect(script).toContain("继续当前现场");
     expect(script).toContain("从最近节点重新执行");
     expect(script).toContain("回到当前节点");
-    expect(script).toContain('className = "execution-map-list"');
-    expect(script).not.toContain('>节点图</button>');
+    expect(script).toContain('data-progress-view="timeline"');
+    expect(script).toContain('>节点图</button>');
+    expect(script).toContain("历史推断");
+    expect(script).toContain("工具与日志");
+    expect(script).toContain("event.stageId === stage.id");
+    expect(script).not.toContain(
+      'event.runNumber === workOrder.runNumber &&\n      event.stageId === stage.id',
+    );
   });
 
   test("makes all goals the home view and keeps detail context separate from the primary work surface", async () => {

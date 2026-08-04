@@ -2213,7 +2213,18 @@ async function consumeRunEvents(
         store.recordSession(workOrderId, event.sessionId);
       } else if (event.type === "progress") {
         const visibleMessage = event.message.replace(stageProgressPattern, "").trim();
-        if (visibleMessage) store.recordProgress(workOrderId, visibleMessage);
+        if (visibleMessage) {
+          const activeStageId = store.get(workOrderId)?.plan?.stages.find(
+            (stage) => stage.status === "running" && stage.executionMethod === "codex",
+          )?.id;
+          store.recordProgress(workOrderId, visibleMessage, {
+            category: event.category,
+            stageId: event.report?.stageId ?? activeStageId ?? null,
+            detail: event.detail ?? (event.report
+              ? JSON.stringify({ reportKind: event.report.kind })
+              : undefined),
+          });
+        }
       } else {
         if (store.get(workOrderId)?.runStatus === "stopping") {
           options.clearRunTimeout?.();
@@ -2443,7 +2454,7 @@ async function continuationContext(
 ): Promise<ContinuationContext> {
   const recentProgress = store
     .listRunEvents(workOrderId, 20)
-    .filter((event) => event.type === "progress")
+    .filter((event) => event.type === "progress" && event.category === "message")
     .slice(-5)
     .map((event) => event.message);
   if (store.get(workOrderId)?.workspace?.kind === "directory") {

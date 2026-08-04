@@ -17,6 +17,33 @@ async function waitFor(condition: () => boolean, timeoutMs = 2_000) {
 }
 
 describe("execution map", () => {
+  test("tool and report events do not replace the current user-facing summary", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const created = store.create({
+      workspace: { kind: "directory", path: repositoryPath },
+      goal: "保留清晰的当前摘要",
+    });
+    store.savePlan(created.id, [
+      { id: "A", outcome: "完成 A", scope: "A", verification: "check" },
+    ]);
+    store.markStarted(created.id);
+    store.recordProgress(created.id, "正在完成 A");
+    store.recordProgress(created.id, "运行命令：bun test", {
+      category: "tool",
+      stageId: "A",
+      detail: "1 pass",
+    });
+    store.recordProgress(created.id, "建议补充说明", {
+      category: "report",
+      stageId: "A",
+    });
+
+    expect(store.get(created.id)).toMatchObject({
+      currentSummary: "正在完成 A",
+      plan: { stages: [{ id: "A", status: "running" }] },
+    });
+  });
+
   test("serial Codex nodes expose one current stage and advance in dependency order", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const created = store.create({ repositoryPath, goal: "依次完成三个文件" });

@@ -216,7 +216,15 @@ describe("real AI node boundaries", () => {
             events: (async function* (): AsyncGenerator<CodexRunEvent> {
               yield {
                 type: "progress",
-                message: "TEAMLINE_STAGE_COMPLETE:A\nTEAMLINE_STAGE_START:B",
+                message: "Codex 报告节点已完成",
+                category: "report",
+                report: { kind: "stage_complete", stageId: "A" },
+              };
+              yield {
+                type: "progress",
+                message: "Codex 报告节点已开始",
+                category: "report",
+                report: { kind: "stage_start", stageId: "B" },
               };
               yield { type: "exit", exitCode: 1, message: "Codex 运行失败" };
             })(),
@@ -245,6 +253,12 @@ describe("real AI node boundaries", () => {
     expect(store.get(created.id)?.plan?.stages).toMatchObject([
       { id: "A", status: "running" },
       { id: "B", status: "queued" },
+    ]);
+    expect(
+      store.listRunEvents(created.id).filter((event) => event.category === "report"),
+    ).toMatchObject([
+      { stageId: "A", message: "Codex 报告节点已完成" },
+      { stageId: "B", message: "Codex 报告节点已开始" },
     ]);
   });
 

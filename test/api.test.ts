@@ -105,6 +105,29 @@ function git(repository: string, ...args: string[]): string {
 }
 
 describe("work order API", () => {
+  test("adds structured progress columns to an existing run event table", () => {
+    const database = new Database(":memory:");
+    database.exec(`
+      CREATE TABLE run_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_order_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        run_number INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      )
+    `);
+    new WorkOrderStore(database);
+
+    const columns = database
+      .query<{ name: string }, []>("PRAGMA table_info(run_events)")
+      .all()
+      .map((column) => column.name);
+    expect(columns).toContain("event_category");
+    expect(columns).toContain("stage_id");
+    expect(columns).toContain("detail_json");
+  });
+
   test("a confirmed plan starts Codex in its delegated worktree", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const starts: Parameters<CodexRunner["start"]>[0][] = [];
@@ -275,6 +298,8 @@ describe("work order API", () => {
           `printf '<%s>\\n' "$@" >> "${invocationLog}"`,
           `printf '%s\\n' '{"type":"thread.started","thread_id":"thread-local"}'`,
           `printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"正在修改文件"}}'`,
+          `printf '%s\\n' '{"type":"item.completed","item":{"type":"command_execution","command":"bun test","aggregated_output":"1 pass"}}'`,
+          `printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"TEAMLINE_SUGGEST_STAGE:补充发布说明"}}'`,
           "sleep 0.05",
           `printf '%s\\n' 'secret-token=should-not-leak auth failed' >&2`,
           "exit 1",
@@ -315,8 +340,26 @@ describe("work order API", () => {
         currentSummary: "Codex 运行失败，请确认已经登录后重试",
       });
       expect(store.listRunEvents(created.id)).toMatchObject([
+        {
+          type: "progress",
+          category: "lifecycle",
+          message: "开始“设置页面跟随系统深色模式”",
+        },
         { type: "session", message: "Codex 会话已连接" },
         { type: "progress", message: "正在修改文件" },
+        {
+          type: "progress",
+          category: "tool",
+          message: "运行命令：bun test",
+          detail: "1 pass",
+        },
+        {
+          type: "progress",
+          category: "report",
+          message: "补充发布说明",
+          stageId: expect.any(String),
+          detail: '{"reportKind":"suggest_stage"}',
+        },
         { type: "exit", message: "Codex 运行失败，请确认已经登录后重试" },
       ]);
       expect(JSON.stringify(store.listRunEvents(created.id))).not.toContain(
@@ -369,6 +412,11 @@ describe("work order API", () => {
       expect(eventsResponse.status).toBe(200);
       expect(await eventsResponse.json()).toMatchObject({
         events: [
+          {
+            type: "progress",
+            category: "lifecycle",
+            message: "开始“设置页面跟随系统深色模式”",
+          },
           { type: "session", message: "Codex 会话已连接" },
           { type: "progress", message: "正在更新设置页面" },
           { type: "exit", message: "Codex 已正常结束，等待结果处理" },

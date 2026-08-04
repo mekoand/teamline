@@ -91,7 +91,10 @@ type ProjectMaterialRow = {
 type RunEventRow = {
   id: number;
   event_type: WorkOrderRunEvent["type"];
+  event_category: WorkOrderRunEvent["category"] | null;
   message: string;
+  stage_id: string | null;
+  detail_json: string | null;
   run_number: number;
   created_at: string;
 };
@@ -216,7 +219,10 @@ export class WorkOrderStore {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         work_order_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
+        event_category TEXT,
         message TEXT NOT NULL,
+        stage_id TEXT,
+        detail_json TEXT,
         run_number INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
@@ -1526,6 +1532,13 @@ export class WorkOrderStore {
         now,
         id,
       );
+    this.appendTimelineEvent(id, {
+      category: "lifecycle",
+      message: `“${stage.outcome}”已由你标记完成`,
+      stageId,
+      detail: conclusion,
+      createdAt: now,
+    });
     return this.get(id)!;
   }
 
@@ -1649,6 +1662,12 @@ export class WorkOrderStore {
         WHERE id = ?
       `)
       .run(JSON.stringify(confirmedPlan), now, now, now, id);
+    this.appendTimelineEvent(id, {
+      category: "lifecycle",
+      message: `开始“${nextStage.outcome}”`,
+      stageId: nextStage.id,
+      createdAt: now,
+    });
     return this.get(id)!;
   }
 
@@ -1770,11 +1789,61 @@ export class WorkOrderStore {
     this.appendRunEvent(id, "session", "Codex 会话已连接", {
       sessionId,
       summary: "Codex 会话已连接",
+      category: "lifecycle",
     });
   }
 
-  recordProgress(id: string, message: string): void {
-    this.appendRunEvent(id, "progress", message, { summary: message });
+  recordProgress(
+    id: string,
+    message: string,
+    options: {
+      category?: WorkOrderRunEvent["category"];
+      stageId?: string | null;
+      detail?: string | null;
+    } = {},
+  ): void {
+    const category = options.category ?? "message";
+    this.appendRunEvent(id, "progress", message, {
+      summary: message,
+      category,
+      stageId: options.stageId,
+      detail: options.detail,
+      preserveSummary: category !== "message",
+    });
+  }
+
+  private appendTimelineEvent(
+    id: string,
+    event: {
+      category: WorkOrderRunEvent["category"];
+      message: string;
+      stageId?: string | null;
+      detail?: string | null;
+      createdAt?: string;
+    },
+  ): void {
+    const row = this.database
+      .query<{ run_number: number }, [string]>(
+        "SELECT run_number FROM work_orders WHERE id = ?",
+      )
+      .get(id);
+    if (!row) return;
+    this.database
+      .query(`
+        INSERT INTO run_events (
+          work_order_id, event_type, event_category, message, stage_id, detail_json,
+          run_number, created_at
+        ) VALUES (?, 'progress', ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        id,
+        event.category,
+        event.message,
+        event.stageId ?? null,
+        truncateRunDetail(event.detail),
+        row.run_number,
+        event.createdAt ?? new Date().toISOString(),
+      );
   }
 
   recordStageProgress(
@@ -1836,6 +1905,7 @@ export class WorkOrderStore {
       summary: message,
       ended: true,
       failed,
+      category: "lifecycle",
     });
   }
 
@@ -1927,6 +1997,16 @@ export class WorkOrderStore {
         now,
         id,
       );
+    for (const verification of result.verifications) {
+      this.appendTimelineEvent(id, {
+        category: "lifecycle",
+        message:
+          verification.status === "passed"
+            ? `“${verification.stageOutcome}”验证通过`
+            : "等待你确认节点结果",
+        stageId: verification.stageId,
+      });
+    }
     return this.get(id)!;
   }
 
@@ -1988,6 +2068,14 @@ export class WorkOrderStore {
         now,
         id,
       );
+    for (const stageId of confirmedIds) {
+      const stage = plan.stages.find((candidate) => candidate.id === stageId);
+      this.appendTimelineEvent(id, {
+        category: "lifecycle",
+        message: `“${stage?.outcome ?? "当前节点"}”已由你确认完成`,
+        stageId,
+      });
+    }
     return this.get(id)!;
   }
 
@@ -2009,6 +2097,15 @@ export class WorkOrderStore {
         WHERE id = ? AND run_status = 'verifying'
       `)
       .run(JSON.stringify(mergedResult), plan ? JSON.stringify(plan) : null, error, now, id);
+    for (const verification of result.verifications.filter(
+      (candidate) => candidate.status === "failed",
+    )) {
+      this.appendTimelineEvent(id, {
+        category: "lifecycle",
+        message: `“${verification.stageOutcome}”验证未通过，需要处理`,
+        stageId: verification.stageId,
+      });
+    }
     return this.get(id)!;
   }
 
@@ -2100,10 +2197,11 @@ export class WorkOrderStore {
     });
   }
 
-  listRunEvents(id: string, limit = 20): WorkOrderRunEvent[] {
+  listRunEvents(id: string, limit = 200): WorkOrderRunEvent[] {
     const rows = this.database
       .query<RunEventRow, [string, number]>(`
-        SELECT id, event_type, message, run_number, created_at
+        SELECT id, event_type, event_category, message, stage_id, detail_json,
+               run_number, created_at
         FROM run_events
         WHERE work_order_id = ?
         ORDER BY id DESC
@@ -2115,7 +2213,10 @@ export class WorkOrderStore {
     return rows.map((row) => ({
       id: row.id,
       type: row.event_type,
+      category: row.event_category ?? legacyEventCategory(row.event_type),
       message: row.message,
+      stageId: row.stage_id,
+      detail: row.detail_json,
       runNumber: row.run_number,
       createdAt: row.created_at,
     }));
@@ -2131,6 +2232,10 @@ export class WorkOrderStore {
       ended?: boolean;
       failed?: boolean;
       interrupted?: boolean;
+      category?: WorkOrderRunEvent["category"];
+      stageId?: string | null;
+      detail?: string | null;
+      preserveSummary?: boolean;
     },
   ): void {
     const row = this.database
@@ -2170,7 +2275,7 @@ export class WorkOrderStore {
         `)
         .run(
           status,
-          options.summary,
+          options.preserveSummary ? row.current_summary : options.summary,
           options.sessionId ?? null,
           runStatus,
           options.ended ? nowIso : null,
@@ -2183,10 +2288,21 @@ export class WorkOrderStore {
         );
       this.database
         .query(`
-          INSERT INTO run_events (work_order_id, event_type, message, run_number, created_at)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO run_events (
+            work_order_id, event_type, event_category, message, stage_id, detail_json,
+            run_number, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `)
-        .run(id, type, message, row.run_number, nowIso);
+        .run(
+          id,
+          type,
+          options.category ?? legacyEventCategory(type),
+          message,
+          options.stageId ?? null,
+          truncateRunDetail(options.detail),
+          row.run_number,
+          nowIso,
+        );
     })();
   }
 
@@ -2265,6 +2381,15 @@ export class WorkOrderStore {
       this.database.exec(
         "ALTER TABLE run_events ADD COLUMN run_number INTEGER NOT NULL DEFAULT 0",
       );
+    }
+    if (!columns.has("event_category")) {
+      this.database.exec("ALTER TABLE run_events ADD COLUMN event_category TEXT");
+    }
+    if (!columns.has("stage_id")) {
+      this.database.exec("ALTER TABLE run_events ADD COLUMN stage_id TEXT");
+    }
+    if (!columns.has("detail_json")) {
+      this.database.exec("ALTER TABLE run_events ADD COLUMN detail_json TEXT");
     }
   }
 
@@ -3325,4 +3450,17 @@ function processIsAlive(pid: number): boolean {
   } catch (error) {
     return error instanceof Error && "code" in error && error.code === "EPERM";
   }
+}
+
+function legacyEventCategory(
+  type: WorkOrderRunEvent["type"],
+): WorkOrderRunEvent["category"] {
+  return type === "progress" ? "message" : "lifecycle";
+}
+
+function truncateRunDetail(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized.length > 2_000 ? `${normalized.slice(0, 2_000)}…` : normalized;
 }

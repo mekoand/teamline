@@ -2,7 +2,16 @@ import type { WorkOrder } from "./work-order";
 
 export type CodexRunEvent =
   | { type: "session"; sessionId: string }
-  | { type: "progress"; message: string }
+  | {
+      type: "progress";
+      message: string;
+      category?: "message" | "tool" | "log" | "report";
+      detail?: string;
+      report?: {
+        kind: "stage_start" | "stage_complete" | "needs_response" | "suggest_stage";
+        stageId?: string;
+      };
+    }
   | {
       type: "exit";
       exitCode: number;
@@ -207,19 +216,34 @@ function parseJsonLine(line: string): ParsedRunLine | null {
         error || eventType === "error" || eventType?.endsWith(".error")
           ? message
           : undefined;
+      const report = parseStructuredReport(message);
       return {
         event: {
           type: "progress",
-          message: diagnostic ? "Codex 报告运行错误" : message,
+          message: diagnostic ? "Codex 报告运行错误" : report?.message ?? message,
+          category: diagnostic ? "log" : report ? "report" : "message",
+          ...(report ? { report: report.report } : {}),
         },
         valid: Boolean(item?.text) && !diagnostic,
         diagnostic,
       };
     }
 
+    const tool = item ? toolProgress(item) : null;
+    if (tool) {
+      return {
+        event: { type: "progress", ...tool },
+        valid: true,
+      };
+    }
+
     return eventType
       ? {
-          event: { type: "progress", message: readableEventType(eventType) },
+          event: {
+            type: "progress",
+            message: readableEventType(eventType),
+            category: "log",
+          },
           valid: ["thread.started", "turn.started", "turn.completed"].includes(eventType),
         }
       : null;
@@ -228,6 +252,7 @@ function parseJsonLine(line: string): ParsedRunLine | null {
       event: {
         type: "progress",
         message: "收到一条无法识别的 Codex 输出",
+        category: "log",
       },
       valid: false,
       diagnostic: trimmed,
@@ -284,7 +309,7 @@ function buildExecutionPrompt(
     workOrder.workspace?.kind === "directory"
       ? "请在用户明确选择的当前本地文件夹中完成以下已确认的工作目标。"
       : "请在当前独立 Git worktree 中完成以下已确认的工作目标。";
-  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n当前 AI 节点：\n${stages ?? "未提供"}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。\n\n节点日志提示：\n- 开始当前节点前，可以单独输出一行 TEAMLINE_STAGE_START:<节点 ID>\n- 完成当前节点后，可以单独输出一行 TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- 这些标记仅用于日志，不决定节点状态${currentContext}`;
+  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n当前 AI 节点：\n${stages ?? "未提供"}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。\n\n进展提示（可选，每条单独一行）：\n- TEAMLINE_STAGE_START:<节点 ID>\n- TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- TEAMLINE_NEEDS_RESPONSE:<需要用户补充的内容>\n- TEAMLINE_SUGGEST_STAGE:<建议增加的节点>\n这些提示只用于展示；Teamline 仍会根据实际启动、退出和验证结果决定节点状态，新增节点也需要用户确认。${currentContext}`;
 }
 
 export function buildResumePrompt(workOrder: WorkOrder): string {
@@ -306,7 +331,7 @@ export function buildResumePrompt(workOrder: WorkOrder): string {
   const stageContext = stage
     ? `\n\n当前 AI 节点：\n节点：${stage.id}\n目标结果：${stage.outcome}\n影响范围：${stage.scope}\n验证方式：${stage.verification}\n补充上下文：${stage.contextNotes?.length ? stage.contextNotes.join("；") : "无"}`
     : "";
-  return `请继续推进已确认的工作目标：${workOrder.goal}${revision}${materials}${stageContext}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。TEAMLINE_STAGE_* 仅作为日志提示，不决定节点状态。`;
+  return `请继续推进已确认的工作目标：${workOrder.goal}${revision}${materials}${stageContext}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。需要时可单独输出 TEAMLINE_STAGE_START:<节点 ID>、TEAMLINE_STAGE_COMPLETE:<节点 ID>、TEAMLINE_NEEDS_RESPONSE:<内容> 或 TEAMLINE_SUGGEST_STAGE:<建议>。这些提示只用于展示，不决定节点状态。`;
 }
 
 function readableEventType(type: string): string {
@@ -317,6 +342,76 @@ function readableEventType(type: string): string {
     return "Codex 已完成本轮处理";
   }
   return `Codex 进展：${type}`;
+}
+
+function toolProgress(item: Record<string, unknown>): {
+  message: string;
+  category: "tool";
+  detail?: string;
+} | null {
+  const type = stringValue(item.type);
+  if (!type || !/(command|tool|file_change|web_search)/i.test(type)) return null;
+  const command = stringValue(item.command);
+  const name = stringValue(item.name) ?? stringValue(item.tool_name);
+  const label = command
+    ? `运行命令：${truncateDetail(command, 160)}`
+    : type === "file_change"
+      ? "修改文件"
+      : `调用工具：${name ?? readableToolType(type)}`;
+  const detailParts = [
+    stringValue(item.aggregated_output),
+    stringValue(item.output),
+    stringValue(item.result),
+  ].filter((value): value is string => Boolean(value));
+  return {
+    message: label,
+    category: "tool",
+    ...(detailParts.length ? { detail: truncateDetail(detailParts.join("\n")) } : {}),
+  };
+}
+
+function readableToolType(type: string): string {
+  return type.replaceAll("_", " ");
+}
+
+function parseStructuredReport(message: string): {
+  message: string;
+  report: {
+    kind: "stage_start" | "stage_complete" | "needs_response" | "suggest_stage";
+    stageId?: string;
+  };
+} | null {
+  const stage = message.match(/(?:^|\n)\s*`?TEAMLINE_STAGE_(START|COMPLETE):([^\s`]+)`?/i);
+  if (stage) {
+    const kind = stage[1]?.toUpperCase() === "START" ? "stage_start" : "stage_complete";
+    return {
+      message: kind === "stage_start" ? "Codex 报告节点已开始" : "Codex 报告节点已完成",
+      report: { kind, stageId: stage[2] },
+    };
+  }
+  const response = message.match(/(?:^|\n)\s*`?TEAMLINE_NEEDS_RESPONSE:(.+?)`?(?:\n|$)/i);
+  if (response) {
+    return {
+      message: response[1]?.trim() || "Codex 需要补充信息",
+      report: { kind: "needs_response" },
+    };
+  }
+  const suggestion = message.match(/(?:^|\n)\s*`?TEAMLINE_SUGGEST_STAGE:(.+?)`?(?:\n|$)/i);
+  if (suggestion) {
+    return {
+      message: suggestion[1]?.trim() || "Codex 建议增加节点",
+      report: { kind: "suggest_stage" },
+    };
+  }
+  return null;
+}
+
+function truncateDetail(value: string, limit = 2_000): string {
+  const normalized = value
+    .trim()
+    .replace(/\b(bearer)\s+[^\s]+/gi, "$1 [已隐藏]")
+    .replace(/\b(secret|token|password|authorization|api[_-]?key)(\s*[:=]\s*|\s+)[^\s]+/gi, "$1$2[已隐藏]");
+  return normalized.length > limit ? `${normalized.slice(0, limit)}…` : normalized;
 }
 
 function stringValue(value: unknown): string | null {

@@ -29,6 +29,7 @@ const state = {
   draftStages: null,
   contextTab: "details",
   primaryView: null,
+  progressView: "timeline",
   mobileContextOpen: false,
   events: [],
   executionSettings: { maxConcurrency: 2 },
@@ -166,6 +167,7 @@ function resetGoalSelection() {
   state.selected = null;
   state.draftStages = null;
   state.primaryView = null;
+  state.progressView = "timeline";
   state.mobileContextOpen = false;
 }
 
@@ -377,7 +379,7 @@ async function refreshConsole({
       if (state.followCurrentStage) {
         state.selectedStageIndex = preferredStageIndex(workOrder);
       }
-      state.events = workOrder.runStatus
+      state.events = workOrder.runNumber > 0
         ? (await requestJson(`/api/work-orders/${encodeURIComponent(selectedId)}/events`)).events
         : [];
     } else {
@@ -1182,7 +1184,7 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
     return `
       <section class="primary-work-surface">
         <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
-          <button type="button" data-primary-view="map" role="tab" aria-selected="false">执行图</button>
+          <button type="button" data-primary-view="map" role="tab" aria-selected="false">进展</button>
           <button type="button" data-primary-view="result" role="tab" aria-selected="true" class="active">成果</button>
         </div>
         ${renderResultPanel(workOrder)}
@@ -1194,7 +1196,7 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
         <div class="section-heading">
           <div>
             <p class="overline">目标主体</p>
-            <h2>${stages ? (canEditPlan ? "编辑执行图" : "执行图") : "准备执行图"}</h2>
+            <h2>${stages ? (canEditPlan ? "编辑执行计划" : "执行进展") : "准备执行计划"}</h2>
           </div>
           <div class="map-heading-actions">
             ${workOrder.plan && !canEditPlan ? renderMapViewControls(workOrder) : ""}
@@ -1203,7 +1205,7 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
         </div>
         ${hasResult ? `
           <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
-            <button type="button" data-primary-view="map" role="tab" aria-selected="true" class="active">执行图</button>
+            <button type="button" data-primary-view="map" role="tab" aria-selected="true" class="active">进展</button>
             <button type="button" data-primary-view="result" role="tab" aria-selected="false">成果</button>
           </div>` : ""}
       </div>
@@ -1234,13 +1236,15 @@ function renderImportedHistorySurface(workOrder, feedback) {
       ${updateAvailable ? '<aside class="notice import-update-notice"><strong>来源会话有新内容</strong><p>重新整理后会更新摘要和历史节点。</p></aside>' : ""}
       ${ready
         ? `<div class="import-summary"><p>${escapeHtml(context.summary)}</p><strong>${escapeHtml(context.currentState)}</strong></div>
-           <div class="import-stage-list">${context.historicalStages.length
-             ? context.historicalStages.map((stage, index) => `
-                 <article class="import-stage-card">
-                   <span class="stage-index">${index + 1}</span>
-                   <div><small>${importedStageStatusLabel(stage.status)}</small><strong>${escapeHtml(stage.outcome)}</strong><p>${escapeHtml(stage.summary)}</p></div>
-                 </article>`).join("")
-             : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}</div>`
+           ${context.historicalStages.length
+             ? `<div class="progress-view-switch" role="tablist" aria-label="历史进展展示方式">
+                  <button type="button" data-progress-view="timeline" role="tab" aria-selected="${state.progressView === "timeline"}" class="${state.progressView === "timeline" ? "active" : ""}">时间线</button>
+                  <button type="button" data-progress-view="map" role="tab" aria-selected="${state.progressView === "map"}" class="${state.progressView === "map" ? "active" : ""}">节点图</button>
+                </div>
+                ${state.progressView === "timeline"
+                  ? renderExecutionTimeline(workOrder, [], context.historicalStages)
+                  : `<div class="execution-map-graph structured-map">${context.historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}</div>`}`
+             : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}`
         : `<div class="plan-empty"><p>${escapeHtml(context.error || "来源会话等待整理。")}</p></div>`}
       <div class="import-history-actions">
         <button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>
@@ -1379,21 +1383,31 @@ function renderMapViewControls(workOrder) {
 function renderExecutionMap(workOrder, stages) {
   const stageById = new Map(stages.map((stage, index) => [stage.id, { stage, index }]));
   const singleStage = stages.length === 1;
-  const className = "execution-map-list";
+  const historicalStages = workOrder.importContext?.historicalStages ?? [];
+  const timeline = state.progressView === "timeline";
   return `
-    <div class="${className}" data-map-mode="list">
-      ${stages.map((stage, index) => renderMapNode(stage, index, stageById, singleStage)).join("")}
+    <div class="progress-view-switch" role="tablist" aria-label="执行进展展示方式">
+      <button type="button" data-progress-view="timeline" role="tab" aria-selected="${timeline}" class="${timeline ? "active" : ""}">时间线</button>
+      <button type="button" data-progress-view="map" role="tab" aria-selected="${!timeline}" class="${timeline ? "" : "active"}">节点图</button>
     </div>
+    ${timeline
+      ? renderExecutionTimeline(workOrder, stages, historicalStages)
+      : `<div class="execution-map-graph structured-map" data-map-mode="graph">
+          ${historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}
+          ${stages.map((stage, index) => renderMapNode(workOrder, stage, index, stageById, singleStage)).join("")}
+        </div>`}
+    ${renderTechnicalActivity(workOrder)}
     ${workOrder.runStatus && stages.every((stage) => stage.status === "planning")
       ? '<p class="map-evidence-note">暂未收到节点进展，计划状态保持不变。</p>'
       : ""}`;
 }
 
-function renderMapNode(stage, index, stageById, singleStage) {
+function renderMapNode(workOrder, stage, index, stageById, singleStage) {
   const dependencies = (stage.dependsOn ?? [])
     .map((id) => stageById.get(id))
     .filter(Boolean)
     .map(({ stage: dependency, index: dependencyIndex }) => `节点 ${dependencyIndex + 1} · ${dependency.outcome}`);
+  const progress = stageProgress(workOrder, stage);
   return `
     <button class="map-node ${singleStage ? "single" : ""} ${state.selectedStageIndex === index ? "selected" : ""}" data-stage-index="${index}" type="button">
       <span class="map-node-topline">
@@ -1401,9 +1415,118 @@ function renderMapNode(stage, index, stageById, singleStage) {
         <span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</span>
       </span>
       <strong>${escapeHtml(stage.outcome)}</strong>
-      <small>${escapeHtml(stage.scope)}</small>
+      <small>${escapeHtml(progress.summary)}</small>
+      <span class="node-metadata">${escapeHtml(progress.timeLabel)}${progress.artifactCount ? ` · ${progress.artifactCount} 项成果` : ""}</span>
       ${dependencies.length ? `<span class="dependency-label">依赖：${escapeHtml(dependencies.join("；"))}</span>` : ""}
     </button>`;
+}
+
+function renderHistoricalMapNode(stage, index) {
+  return `
+    <article class="map-node historical-node" aria-label="历史推断节点">
+      <span class="map-node-topline"><span class="stage-index">H${index + 1}</span><span class="history-badge">历史推断</span></span>
+      <strong>${escapeHtml(stage.outcome)}</strong>
+      <small>${escapeHtml(stage.summary)}</small>
+    </article>`;
+}
+
+function renderExecutionTimeline(workOrder, stages, historicalStages) {
+  return `
+    <div class="execution-timeline">
+      ${historicalStages.map((stage, index) => `
+        <article class="timeline-item historical">
+          <span class="timeline-marker"></span>
+          <div class="timeline-card">
+            <div class="timeline-heading"><span class="history-badge">历史推断</span><span>历史节点 ${index + 1}</span></div>
+            <strong>${escapeHtml(stage.outcome)}</strong>
+            <p>${escapeHtml(stage.summary)}</p>
+          </div>
+        </article>`).join("")}
+      ${stages.map((stage, index) => renderTimelineStage(workOrder, stage, index)).join("")}
+      ${renderUnscopedReports(workOrder)}
+    </div>`;
+}
+
+function renderTimelineStage(workOrder, stage, index) {
+  const progress = stageProgress(workOrder, stage);
+  const reports = state.events.filter(
+    (event) => event.stageId === stage.id && event.category === "report",
+  );
+  return `
+    <button class="timeline-item ${state.selectedStageIndex === index ? "selected" : ""}" data-stage-index="${index}" type="button">
+      <span class="timeline-marker ${escapeHtml(stage.status)}"></span>
+      <span class="timeline-card">
+        <span class="timeline-heading"><span>节点 ${index + 1}</span><span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</span></span>
+        <strong>${escapeHtml(stage.outcome)}</strong>
+        <span class="timeline-summary">${escapeHtml(progress.summary)}</span>
+        ${reports.map((event) => `<span class="timeline-report ${eventReportKind(event) === "suggest_stage" ? "suggestion" : ""}">${eventReportKind(event) === "suggest_stage" ? "建议新增节点 · " : ""}${escapeHtml(event.message)}</span>`).join("")}
+        <span class="node-metadata">${escapeHtml(progress.timeLabel)}${progress.artifactCount ? ` · ${progress.artifactCount} 项成果` : ""}</span>
+      </span>
+    </button>`;
+}
+
+function stageProgress(workOrder, stage) {
+  const events = state.events.filter((event) => event.stageId === stage.id);
+  const visible = events.filter((event) => ["lifecycle", "message", "report"].includes(event.category));
+  const latest = visible.at(-1);
+  const startedAt = events.find((event) => event.category === "lifecycle")?.createdAt ?? null;
+  const finishedAt = [...events].reverse().find(
+    (event) => event.category === "lifecycle" && /(验证通过|确认完成|标记完成)/.test(event.message),
+  )?.createdAt ?? stage.externalResult?.completedAt ?? null;
+  const directArtifacts = (stage.artifacts ?? []).length;
+  const completionSummary = completionSummaryForStage(workOrder, stage);
+  return {
+    summary: latest?.message || completionSummary || stage.statusReason || stage.scope,
+    timeLabel: stageTimeLabel(startedAt, finishedAt),
+    artifactCount: directArtifacts + localArtifactReferences(completionSummary).length,
+    startedAt,
+    updatedAt: latest?.createdAt ?? finishedAt ?? null,
+  };
+}
+
+function stageTimeLabel(startedAt, finishedAt) {
+  if (!startedAt && !finishedAt) return "尚未开始";
+  if (!startedAt) return `完成于 ${formatDate(finishedAt)}`;
+  if (!finishedAt) return `开始于 ${formatDate(startedAt)}`;
+  return `${formatDate(startedAt)} — ${formatDate(finishedAt)}`;
+}
+
+function eventReportKind(event) {
+  if (event.category !== "report" || !event.detail) return null;
+  try {
+    return JSON.parse(event.detail).reportKind ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function renderUnscopedReports(workOrder) {
+  return state.events
+    .filter((event) => event.category === "report" && !event.stageId)
+    .map((event) => `
+      <article class="timeline-item report">
+        <span class="timeline-marker"></span>
+        <div class="timeline-card"><span class="timeline-heading">${eventReportKind(event) === "suggest_stage" ? "建议新增节点" : "运行提示"}</span><strong>${escapeHtml(event.message)}</strong><small>${escapeHtml(formatDate(event.createdAt))}</small></div>
+      </article>`)
+    .join("");
+}
+
+function renderTechnicalActivity(workOrder) {
+  const stage = workOrder.plan?.stages?.[state.selectedStageIndex];
+  const events = state.events.filter(
+    (event) =>
+      (event.category === "tool" || event.category === "log") &&
+      (stage ? event.stageId === stage.id : !event.stageId),
+  );
+  if (!events.length) return "";
+  return `
+    <details class="technical-activity">
+      <summary>${stage ? `节点 ${state.selectedStageIndex + 1} · ` : ""}工具与日志 <span>${events.length}</span></summary>
+      <div class="technical-event-list">
+        ${events.map((event) => `
+          <article><div><time>${escapeHtml(formatDate(event.createdAt))}</time><strong>${escapeHtml(event.message)}</strong></div>${event.detail ? `<pre>${escapeHtml(event.detail)}</pre>` : ""}</article>`).join("")}
+      </div>
+    </details>`;
 }
 
 function renderPlanForm(stages) {
@@ -1695,6 +1818,7 @@ function renderContextTabContent(workOrder, stage) {
       </div>`;
   }
 
+  const progress = stageProgress(workOrder, stage);
   return `
     <div class="context-stage context-tab-panel" role="tabpanel">
       <h3>${escapeHtml(stage.outcome)}</h3>
@@ -1707,6 +1831,10 @@ function renderContextTabContent(workOrder, stage) {
         ${stage.executionMethod === "external" ? "" : `<div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>`}
         <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
         <div><dt>补充上下文</dt><dd>${stage.contextNotes?.length ? stage.contextNotes.map(escapeHtml).join("；") : "暂无"}</dd></div>
+        <div><dt>开始时间</dt><dd>${progress.startedAt ? escapeHtml(formatDate(progress.startedAt)) : "尚未开始"}</dd></div>
+        <div><dt>最近更新</dt><dd>${progress.updatedAt ? escapeHtml(formatDate(progress.updatedAt)) : "暂无运行记录"}</dd></div>
+        <div><dt>当前摘要</dt><dd>${escapeHtml(progress.summary)}</dd></div>
+        <div><dt>成果</dt><dd>${progress.artifactCount ? `${progress.artifactCount} 项，可在“成果”中查看` : "暂无"}</dd></div>
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
       <details class="node-source-details">
@@ -1726,7 +1854,9 @@ function renderContextTabContent(workOrder, stage) {
 function completionSummaryForStage(workOrder, stage) {
   if (stage.executionMethod !== "codex" || !workOrder.result) return null;
   const currentRunEvents = state.events.filter(
-    (event) => event.type === "progress" && event.runNumber === workOrder.runNumber,
+    (event) =>
+      event.type === "progress" &&
+      event.stageId === stage.id,
   );
   return currentRunEvents
     .slice()
@@ -1921,6 +2051,12 @@ function bindRenderedEvents() {
     button.addEventListener("click", () => {
       state.primaryView = button.dataset.primaryView;
       state.mobileContextOpen = false;
+      renderConsole();
+    });
+  });
+  document.querySelectorAll("[data-progress-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.progressView = button.dataset.progressView;
       renderConsole();
     });
   });
@@ -2266,7 +2402,8 @@ async function createWorkOrder(event) {
     state.selected = workOrder;
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
-    state.primaryView = null;
+  state.primaryView = null;
+  state.progressView = "timeline";
     state.mobileContextOpen = false;
     await refreshConsole();
   } catch (error) {

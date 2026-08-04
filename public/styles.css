@@ -2969,6 +2969,218 @@ dialog::backdrop {
   margin: 0 0 14px auto;
 }
 
+.progress-view-switch {
+  display: flex;
+  width: max-content;
+  gap: 2px;
+  margin-bottom: 16px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.progress-view-switch button {
+  min-height: 29px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+
+.progress-view-switch button.active {
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 1px 3px rgba(32, 34, 31, 0.08);
+}
+
+.execution-timeline {
+  position: relative;
+  display: grid;
+  gap: 8px;
+}
+
+.execution-timeline::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 7px;
+  width: 1px;
+  background: var(--line-strong);
+}
+
+.timeline-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.timeline-marker {
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  margin: 18px 0 0 3px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--line-strong);
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+.timeline-marker.running {
+  background: var(--accent);
+}
+
+.timeline-marker.response {
+  background: var(--attention);
+}
+
+.timeline-marker.completed {
+  background: var(--blue);
+}
+
+.timeline-card {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+button.timeline-item:hover .timeline-card,
+button.timeline-item.selected .timeline-card {
+  border-color: var(--accent);
+  background: var(--panel);
+}
+
+.timeline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.timeline-card strong,
+.timeline-summary {
+  line-height: 1.5;
+  word-break: auto-phrase;
+}
+
+.timeline-card strong {
+  font-size: 13px;
+}
+
+.timeline-summary,
+.node-metadata,
+.timeline-card p,
+.timeline-card small {
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.node-metadata {
+  line-height: 1.45;
+}
+
+.timeline-report {
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: var(--text-soft);
+  background: var(--panel-strong);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.timeline-report.suggestion {
+  color: var(--attention);
+  background: var(--attention-soft);
+}
+
+.history-badge {
+  width: max-content;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-strong);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.historical-node {
+  border-style: dashed;
+}
+
+.technical-activity {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.technical-activity > summary,
+.node-source-details > summary {
+  padding: 13px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.technical-activity > summary span {
+  margin-left: 4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+}
+
+.technical-event-list {
+  display: grid;
+  gap: 7px;
+  padding-bottom: 5px;
+}
+
+.technical-event-list article {
+  min-width: 0;
+  padding: 10px 11px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.technical-event-list article > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.technical-event-list time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.technical-event-list strong {
+  min-width: 0;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.technical-event-list pre {
+  max-height: 220px;
+  margin-top: 8px;
+  overflow: auto;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .primary-work-surface > .result-panel {
   margin: 0;
 }
@@ -3237,6 +3449,30 @@ button {
   .result-panel {
     padding: 18px;
     border-radius: 12px;
+  }
+
+  .progress-view-switch {
+    width: 100%;
+  }
+
+  .progress-view-switch button {
+    flex: 1;
+  }
+
+  .timeline-card,
+  .map-node {
+    min-width: 0;
+  }
+
+  .timeline-heading,
+  .technical-event-list article > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .technical-event-list pre {
+    max-width: 100%;
   }
 
   .context-panel {

@@ -188,6 +188,7 @@ describe("interrupt and continue API", () => {
       });
       expect(existsSync(changedFile)).toBe(true);
       expect(store.listRunEvents(created.id)).toMatchObject([
+        { category: "lifecycle", message: "开始“设置页面跟随系统深色模式”", runNumber: 1 },
         { type: "progress", message: "正在修改设置页面", runNumber: 1 },
         { type: "exit", message: "Codex 已中断", runNumber: 1 },
       ]);
@@ -293,6 +294,7 @@ describe("interrupt and continue API", () => {
         new Request(`http://teamline.local/api/work-orders/${created.id}/events`),
       );
       expect((await eventsResponse.json()).events).toMatchObject([
+        { category: "lifecycle", message: "开始“设置页面跟随系统深色模式”", runNumber: 1 },
         { message: "Codex 会话已连接", runNumber: 1 },
         { message: "第一轮已经修改设置页面", runNumber: 1 },
         { message: "Codex 已中断", runNumber: 1 },
