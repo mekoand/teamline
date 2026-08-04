@@ -284,14 +284,24 @@ function buildExecutionPrompt(
     workOrder.workspace?.kind === "directory"
       ? "请在用户明确选择的当前本地文件夹中完成以下已确认的工作目标。"
       : "请在当前独立 Git worktree 中完成以下已确认的工作目标。";
-  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n已确认计划：\n${stages ?? "未提供"}\n\n节点进度回报：\n- 开始每个节点前，单独输出一行 TEAMLINE_STAGE_START:<节点 ID>\n- 完成每个节点后，单独输出一行 TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- 不要把多个进度标记写在同一行${currentContext}`;
+  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n当前 AI 节点：\n${stages ?? "未提供"}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。\n\n节点日志提示：\n- 开始当前节点前，可以单独输出一行 TEAMLINE_STAGE_START:<节点 ID>\n- 完成当前节点后，可以单独输出一行 TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- 这些标记仅用于日志，不决定节点状态${currentContext}`;
 }
 
 function buildResumePrompt(workOrder: WorkOrder): string {
+  const stage = workOrder.plan?.stages.find(
+    (candidate) =>
+      candidate.executionMethod === "codex" &&
+      (candidate.status === "running" || candidate.status === "response"),
+  ) ?? workOrder.plan?.stages.find(
+    (candidate) => candidate.executionMethod === "codex",
+  );
   const revision = workOrder.revisionNote
     ? `\n补充要求：\n${workOrder.revisionNote}`
     : "";
-  return `请继续推进已确认的工作目标：${workOrder.goal}${revision}\n继续按节点执行；开始和完成节点时分别单独输出 TEAMLINE_STAGE_START:<节点 ID> 和 TEAMLINE_STAGE_COMPLETE:<节点 ID>。`;
+  const stageContext = stage
+    ? `\n\n当前 AI 节点：\n节点：${stage.id}\n目标结果：${stage.outcome}\n影响范围：${stage.scope}\n验证方式：${stage.verification}\n补充上下文：${stage.contextNotes?.length ? stage.contextNotes.join("；") : "无"}`
+    : "";
+  return `请继续推进已确认的工作目标：${workOrder.goal}${revision}${stageContext}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。TEAMLINE_STAGE_* 仅作为日志提示，不决定节点状态。`;
 }
 
 function readableEventType(type: string): string {

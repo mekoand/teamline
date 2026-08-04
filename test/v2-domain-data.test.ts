@@ -478,7 +478,14 @@ describe("V2 domain data", () => {
     store.completeReview(reviewGoal.id, {
       planVersion: verifying.plan!.version,
       git: { diffStat: "", statusShort: "" },
-      verifications: [],
+      verifications: [{
+        stageId: verifying.plan!.stages[0]!.id,
+        stageOutcome: verifying.plan!.stages[0]!.outcome,
+        command: "check",
+        status: "passed",
+        exitCode: 0,
+        output: "pass",
+      }],
       completedAt: "2026-08-04T00:00:00.000Z",
     });
 
@@ -506,7 +513,14 @@ describe("V2 domain data", () => {
     store.completeReview(reviewGoal.id, {
       planVersion: verifying.plan!.version,
       git: { diffStat: "", statusShort: "" },
-      verifications: [],
+      verifications: [{
+        stageId: verifying.plan!.stages[0]!.id,
+        stageOutcome: verifying.plan!.stages[0]!.outcome,
+        command: "check",
+        status: "passed",
+        exitCode: 0,
+        output: "pass",
+      }],
       completedAt: "2026-08-04T00:00:00.000Z",
     });
     const responseGoal = store.savePlan(
@@ -549,7 +563,14 @@ describe("V2 domain data", () => {
     store.completeReview(reviewGoal.id, {
       planVersion: verifying.plan!.version,
       git: { diffStat: "", statusShort: "" },
-      verifications: [],
+      verifications: [{
+        stageId: verifying.plan!.stages[0]!.id,
+        stageOutcome: verifying.plan!.stages[0]!.outcome,
+        command: "check",
+        status: "passed",
+        exitCode: 0,
+        output: "pass",
+      }],
       completedAt: "2026-08-04T00:00:00.000Z",
     });
     const responseGoal = store.savePlan(

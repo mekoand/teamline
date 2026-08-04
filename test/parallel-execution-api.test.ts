@@ -434,7 +434,14 @@ describe("parallel work order execution", () => {
           return {
             planVersion: workOrder.plan!.version,
             git: { diffStat: "", statusShort: "" },
-            verifications: [],
+            verifications: [{
+              stageId: workOrder.plan!.stages[0]!.id,
+              stageOutcome: workOrder.plan!.stages[0]!.outcome,
+              command: "check",
+              status: "passed",
+              exitCode: 0,
+              output: "pass",
+            }],
             completedAt: new Date().toISOString(),
           };
         },

@@ -1269,8 +1269,12 @@ function renderContextAction(workOrder) {
         (verification) =>
           verification.stageId === candidate.id && verification.status === "not_configured",
       ),
-  ) && workOrder.plan?.stages?.some((candidate) => candidate.executionMethod === "external");
-  if (workOrder.status === "ready" && !workOrder.runStatus && stage?.executionMethod === "external") {
+  );
+  if (
+    ["ready", "interrupted"].includes(workOrder.status) &&
+    !workOrder.runStatus &&
+    stage?.executionMethod === "external"
+  ) {
     if (stage.status === "completed") {
       return '<section class="context-action completed-action"><strong>这个外部节点已完成。</strong><p>成果仍保留在原位置；选择后续节点继续。</p></section>';
     }
@@ -1298,7 +1302,9 @@ function renderContextAction(workOrder) {
   }
   if (
     needsStageConfirmation &&
-    (workOrder.status === "ready" || workOrder.status === "review")
+    (workOrder.status === "ready" ||
+      workOrder.status === "interrupted" ||
+      workOrder.status === "review")
   ) {
     return `
       <section class="context-action">
@@ -1319,7 +1325,11 @@ function renderContextAction(workOrder) {
   const waitingExternalStage = workOrder.plan?.stages?.find(
     (candidate) => candidate.executionMethod === "external" && candidate.status === "response",
   );
-  if (workOrder.status === "ready" && !workOrder.runStatus && waitingExternalStage) {
+  if (
+    ["ready", "interrupted"].includes(workOrder.status) &&
+    !workOrder.runStatus &&
+    waitingExternalStage
+  ) {
     return `<section class="context-action"><p class="overline">下一步</p><strong>先完成外部节点</strong><p>请先处理“${escapeHtml(waitingExternalStage.outcome)}”，登记结果后再启动 Codex。</p></section>`;
   }
   if (workOrder.status === "ready" && !workOrder.runStatus) {

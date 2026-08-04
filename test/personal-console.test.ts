@@ -80,6 +80,13 @@ describe("personal console", () => {
     expect(script).toContain('id="external-completion-form"');
     expect(script).toContain("Teamline 只保存结论和原始位置，不复制或自动核验正文。");
     expect(script).toContain("/complete-external`");
+    expect(script).toContain('["ready", "interrupted"].includes(workOrder.status)');
+    expect(script).toContain(
+      'workOrder.status === "interrupted" ||\n      workOrder.status === "review"',
+    );
+    expect(script).not.toContain(
+      'workOrder.plan?.stages?.some((candidate) => candidate.executionMethod === "external");',
+    );
   });
 
   test("serves the resource summary and resource-page navigation", async () => {
@@ -192,10 +199,10 @@ describe("personal console", () => {
           {
             stageId: verifying.plan!.stages[0]!.id,
             stageOutcome: "交付结果",
-            command: null,
-            status: "not_configured",
-            exitCode: null,
-            output: "未配置自动验证命令",
+            command: "check",
+            status: "passed",
+            exitCode: 0,
+            output: "pass",
           },
         ],
         completedAt: new Date().toISOString(),
@@ -210,7 +217,14 @@ describe("personal console", () => {
       firstStore.completeReview(delivered.id, {
         planVersion: deliveredVerifying.plan!.version,
         git: { diffStat: "", statusShort: "" },
-        verifications: [],
+        verifications: [{
+          stageId: deliveredVerifying.plan!.stages[0]!.id,
+          stageOutcome: deliveredVerifying.plan!.stages[0]!.outcome,
+          command: "check",
+          status: "passed",
+          exitCode: 0,
+          output: "pass",
+        }],
         completedAt: new Date().toISOString(),
       });
       firstStore.confirmDelivered(delivered.id);

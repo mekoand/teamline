@@ -90,7 +90,7 @@ describe("execution map", () => {
     ]);
   });
 
-  test("Codex stage markers advance the stored current node without entering the run log", async () => {
+  test("Codex stage markers do not advance the stored current node or enter the run log", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const created = store.create({ repositoryPath, goal: "按节点回报进度" });
     const firstId = crypto.randomUUID();
@@ -139,10 +139,10 @@ describe("execution map", () => {
       }),
     );
     expect(response.status).toBe(200);
-    await waitFor(() => store.get(created.id)?.plan?.stages[1]?.status === "running");
+    await Bun.sleep(10);
     expect(store.get(created.id)?.plan?.stages).toMatchObject([
-      { status: "completed", statusReason: "Codex 已完成，等待验证" },
       { status: "running", statusReason: "Codex 执行中" },
+      { status: "queued", statusReason: "等待当前执行的前置节点" },
     ]);
     expect(store.listRunEvents(created.id).map((event) => event.message).join("\n")).not.toContain(
       "TEAMLINE_STAGE_",
@@ -331,16 +331,20 @@ describe("execution map", () => {
   test("node status changes only when verification evidence names that node", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     let finish!: () => void;
+    let starts = 0;
     const app = createApp({
       store,
       codexRunner: {
         async start() {
+          const runNumber = starts++;
           return {
             interrupt() {},
             events: (async function* () {
-              await new Promise<void>((resolve) => {
-                finish = resolve;
-              });
+              if (runNumber === 0) {
+                await new Promise<void>((resolve) => {
+                  finish = resolve;
+                });
+              }
               yield {
                 type: "exit" as const,
                 exitCode: 0,
@@ -367,24 +371,14 @@ describe("execution map", () => {
           return {
             planVersion: workOrder.plan!.version,
             git: { diffStat: "1 file changed", statusShort: " M src/app.ts" },
-            verifications: [
-              {
-                stageId: workOrder.plan!.stages[0]!.id,
-                stageOutcome: workOrder.plan!.stages[0]!.outcome,
-                command: "bun test",
-                status: "passed" as const,
-                exitCode: 0,
-                output: "54 pass",
-              },
-              {
-                stageId: workOrder.plan!.stages[1]!.id,
-                stageOutcome: workOrder.plan!.stages[1]!.outcome,
-                command: null,
-                status: "not_configured" as const,
-                exitCode: null,
-                output: "未配置自动验证命令",
-              },
-            ],
+            verifications: [{
+              stageId: workOrder.plan!.stages[0]!.id,
+              stageOutcome: workOrder.plan!.stages[0]!.outcome,
+              command: starts === 1 ? "bun test" : null,
+              status: starts === 1 ? "passed" as const : "not_configured" as const,
+              exitCode: starts === 1 ? 0 : null,
+              output: starts === 1 ? "54 pass" : "未配置自动验证命令",
+            }],
             completedAt: new Date().toISOString(),
           };
         },
@@ -412,7 +406,7 @@ describe("execution map", () => {
 
     finish();
     const deadline = Date.now() + 2_000;
-    while (store.get(created.id)?.status !== "review") {
+    while (store.get(created.id)?.status !== "interrupted") {
       if (Date.now() >= deadline) throw new Error("result processing timed out");
       await Bun.sleep(2);
     }
@@ -431,6 +425,13 @@ describe("execution map", () => {
         statusReason: "等待人工验收",
       },
     ]);
+
+    const confirmation = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${created.id}/confirm-stage-results`, {
+        method: "POST",
+      }),
+    );
+    expect(confirmation.status).toBe(200);
 
     const reviseResponse = await app.fetch(
       new Request(`http://teamline.local/api/work-orders/${created.id}/revise`, {
@@ -743,7 +744,7 @@ describe("execution map", () => {
     });
 
     expect(store.get(created.id)).toMatchObject({
-      status: "review",
+      status: "interrupted",
       runStatus: "completed",
       plan: {
         stages: [
@@ -772,7 +773,7 @@ describe("execution map", () => {
     );
     expect(confirmation.status).toBe(200);
     expect((await confirmation.json()).workOrder).toMatchObject({
-      status: "ready",
+      status: "interrupted",
       runStatus: null,
       plan: {
         stages: [
@@ -783,114 +784,62 @@ describe("execution map", () => {
     });
   });
 
-  test("parallel manual AI review is preserved while an external node is ready or completed", async () => {
+  test("serial execution handles an earlier manual AI node before a ready external node", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const app = createApp({ store });
-    const prepareMixedResult = (goal: string) => {
-      const created = store.create({ repositoryPath, goal });
-      store.savePlan(created.id, [
-        {
-          id: "verified",
-          outcome: "自动核验的 AI 工作",
-          scope: "src",
-          verification: "bun test",
-          verificationCommand: "bun test",
-          executionMethod: "codex",
-        },
-        {
-          id: "manual",
-          outcome: "人工检查的 AI 工作",
-          scope: "public",
-          verification: "浏览器检查",
-          executionMethod: "codex",
-        },
-        {
-          id: "external",
-          outcome: "外部确认",
-          scope: "外部沟通",
-          verification: "用户确认",
-          dependsOn: ["verified"],
-          executionMethod: "external",
-        },
-      ]);
-      store.markStarted(created.id);
-      store.beginResultProcessing(created.id, "Codex 已结束");
-      store.completeReview(created.id, {
-        planVersion: 1,
-        git: { diffStat: "", statusShort: "" },
-        verifications: [
-          {
-            stageId: "verified",
-            stageOutcome: "自动核验的 AI 工作",
-            command: "bun test",
-            status: "passed",
-            exitCode: 0,
-            output: "pass",
-          },
-          {
-            stageId: "manual",
-            stageOutcome: "人工检查的 AI 工作",
-            command: null,
-            status: "not_configured",
-            exitCode: null,
-            output: "未配置自动验证命令",
-          },
-        ],
-        completedAt: new Date().toISOString(),
-      });
-      return created.id;
-    };
-
-    const confirmFirstId = prepareMixedResult("先确认并行 AI 结果");
-    expect(store.get(confirmFirstId)?.plan?.stages).toMatchObject([
-      { id: "verified", status: "completed" },
-      { id: "manual", status: "response" },
-      { id: "external", status: "response" },
+    const created = store.create({ repositoryPath, goal: "按顺序处理人工与外部节点" });
+    store.savePlan(created.id, [
+      { id: "verified", outcome: "自动核验", scope: "src", verification: "bun test", verificationCommand: "bun test" },
+      { id: "manual", outcome: "人工检查", scope: "public", verification: "浏览器检查" },
+      { id: "external", outcome: "外部确认", scope: "外部", verification: "用户确认", dependsOn: ["verified"], executionMethod: "external" },
     ]);
+    store.markStarted(created.id);
+    store.beginResultProcessing(created.id, "Codex 已结束");
+    store.completeReview(created.id, {
+      planVersion: 1,
+      git: { diffStat: "", statusShort: "" },
+      verifications: [{ stageId: "verified", stageOutcome: "自动核验", command: "bun test", status: "passed", exitCode: 0, output: "pass" }],
+      completedAt: new Date().toISOString(),
+    });
+    expect(store.get(created.id)).toMatchObject({ status: "ready" });
+
+    store.markNextStageStarted(created.id);
+    store.beginResultProcessing(created.id, "Codex 已结束");
+    store.completeReview(created.id, {
+      planVersion: 1,
+      git: { diffStat: "", statusShort: "" },
+      verifications: [{ stageId: "manual", stageOutcome: "人工检查", command: null, status: "not_configured", exitCode: null, output: "未配置自动验证命令" }],
+      completedAt: new Date().toISOString(),
+    });
+
+    const lockedExternal = await app.fetch(
+      new Request(
+        `http://teamline.local/api/work-orders/${created.id}/plan-stages/external/complete-external`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ conclusion: "不能提前完成" }),
+        },
+      ),
+    );
+    expect(lockedExternal.status).toBe(409);
+
     const confirmation = await app.fetch(
       new Request(
-        `http://teamline.local/api/work-orders/${confirmFirstId}/confirm-stage-results`,
+        `http://teamline.local/api/work-orders/${created.id}/confirm-stage-results`,
         { method: "POST" },
       ),
     );
     expect(confirmation.status).toBe(200);
-    expect((await confirmation.json()).workOrder.plan.stages[1]).toMatchObject({
-      id: "manual",
-      status: "completed",
-    });
-
-    const externalFirstId = prepareMixedResult("先完成并行外部节点");
     const external = await app.fetch(
       new Request(
-        `http://teamline.local/api/work-orders/${externalFirstId}/plan-stages/external/complete-external`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ conclusion: "外部确认完成" }),
-        },
+        `http://teamline.local/api/work-orders/${created.id}/plan-stages/external/complete-external`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ conclusion: "外部确认完成" }) },
       ),
     );
     expect(external.status).toBe(200);
     expect((await external.json()).workOrder).toMatchObject({
       status: "review",
-      plan: {
-        stages: [
-          { id: "verified", status: "completed" },
-          { id: "manual", status: "response" },
-          { id: "external", status: "completed" },
-        ],
-      },
-    });
-    const confirmationAfterExternal = await app.fetch(
-      new Request(
-        `http://teamline.local/api/work-orders/${externalFirstId}/confirm-stage-results`,
-        { method: "POST" },
-      ),
-    );
-    expect(confirmationAfterExternal.status).toBe(200);
-    expect((await confirmationAfterExternal.json()).workOrder).toMatchObject({
-      status: "review",
-      runStatus: "completed",
       plan: {
         stages: [
           { id: "verified", status: "completed" },

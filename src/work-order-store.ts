@@ -5,6 +5,7 @@ import {
   type CreateWorkOrderInput,
   type ClarificationQuestion,
   type PlanReference,
+  type PlanStage,
   type PlanStageInput,
   type PlanWorkspace,
   type WorkOrder,
@@ -1086,7 +1087,10 @@ export class WorkOrderStore {
   ): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder?.plan) throw new Error("找不到可更新的执行计划");
-    if (workOrder.runStatus !== null || workOrder.status !== "ready") {
+    if (
+      workOrder.runStatus !== null ||
+      (workOrder.status !== "ready" && workOrder.status !== "interrupted")
+    ) {
       throw new PlanLockedError("当前状态不能标记外部节点完成");
     }
     const stage = workOrder.plan.stages.find((candidate) => candidate.id === stageId);
@@ -1150,16 +1154,10 @@ export class WorkOrderStore {
       }),
     };
     const allCompleted = nextPlan.stages.every((candidate) => candidate.status === "completed");
-    const hasReadyWork = nextPlan.stages.some(
-      (candidate) =>
-        (candidate.executionMethod === "external" && candidate.status === "response") ||
-        (candidate.executionMethod === "codex" && candidate.status === "planning"),
-    );
+    const nextStage = nextRunnableStage(nextPlan);
     const summary = allCompleted
       ? "全部节点已完成，等待验收"
-      : hasReadyWork
-        ? nextPlanSummary(nextPlan)
-        : "等待人工验收";
+      : nextPlanSummary(nextPlan);
     this.database
       .query(`
         UPDATE work_orders
@@ -1168,7 +1166,13 @@ export class WorkOrderStore {
       `)
       .run(
         JSON.stringify(nextPlan),
-        allCompleted || !hasReadyWork ? "review" : "ready",
+        allCompleted
+          ? "review"
+          : nextStage?.executionMethod === "external"
+            ? "interrupted"
+            : nextStage?.executionMethod === "codex"
+              ? "ready"
+              : "review",
         summary,
         now,
         id,
@@ -1252,33 +1256,35 @@ export class WorkOrderStore {
   }
 
   markStarted(id: string): WorkOrder {
+    return this.markCodexStageStarted(id, true);
+  }
+
+  markNextStageStarted(id: string): WorkOrder {
+    return this.markCodexStageStarted(id, false);
+  }
+
+  private markCodexStageStarted(id: string, resetSession: boolean): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder?.plan) throw new Error("找不到可执行的目标计划");
-    const runnableStageIds = codexStageIdsForNextRun(workOrder.plan);
-    if (runnableStageIds.size === 0) throw new Error("当前没有可以启动的 Codex 节点");
-    const stageById = new Map(workOrder.plan.stages.map((stage) => [stage.id, stage]));
-    const firstRunningStageId = workOrder.plan.stages.find(
-      (stage) =>
-        runnableStageIds.has(stage.id) &&
-        stage.dependsOn.every(
-          (dependencyId) => stageById.get(dependencyId)?.status === "completed",
-        ),
-    )?.id;
+    const nextStage = nextRunnableCodexStage(workOrder.plan);
+    if (!nextStage) throw new Error("当前没有可以启动的 Codex 节点");
     const confirmedPlan = {
       ...workOrder.plan,
       confirmationRequired: false,
       stages: workOrder.plan.stages.map((stage) => {
-        if (stage.id === firstRunningStageId) {
+        if (stage.id === nextStage.id) {
           return { ...stage, status: "running" as const, statusReason: "Codex 执行中" };
         }
-        if (!runnableStageIds.has(stage.id)) return stage;
-        return {
-          ...stage,
-          status: "queued" as const,
-          statusReason: stage.dependsOn.length
-            ? "等待当前执行的前置节点"
-            : "等待 Codex 推进",
-        };
+        if (stage.executionMethod === "codex" && stage.status === "planning") {
+          return {
+            ...stage,
+            status: "queued" as const,
+            statusReason: stage.dependsOn.length
+              ? "等待当前执行的前置节点"
+              : "等待 Codex 推进",
+          };
+        }
+        return stage;
       }),
     };
     const now = new Date().toISOString();
@@ -1286,7 +1292,7 @@ export class WorkOrderStore {
       .query(`
         UPDATE work_orders
         SET status = 'running', current_summary = 'Codex 已启动', plan_json = ?,
-            run_status = 'running', session_id = NULL,
+            run_status = 'running', session_id = ${resetSession ? "NULL" : "session_id"},
             run_pid = NULL,
             run_number = run_number + 1,
             run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
@@ -1314,18 +1320,40 @@ export class WorkOrderStore {
   }
 
   markReexecuted(id: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder?.plan) throw new Error("找不到可重新执行的目标计划");
+    const completed = new Set(
+      workOrder.plan.stages
+        .filter((stage) => stage.status === "completed")
+        .map((stage) => stage.id),
+    );
+    const target = workOrder.plan.stages.find(
+      (stage) =>
+        stage.executionMethod === "codex" &&
+        (stage.status === "response" || stage.status === "planning" || stage.status === "running") &&
+        stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
+    );
+    if (!target) throw new Error("当前没有可以重新执行的 Codex 节点");
+    const plan: WorkOrderPlan = {
+      ...workOrder.plan,
+      stages: workOrder.plan.stages.map((stage) =>
+        stage.id === target.id
+          ? { ...stage, status: "running" as const, statusReason: "Codex 执行中" }
+          : stage,
+      ),
+    };
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
         SET status = 'running', current_summary = '正在从最近阶段重新执行',
             run_status = 'running', run_number = run_number + 1,
-            session_id = NULL, run_pid = NULL,
+            session_id = NULL, run_pid = NULL, plan_json = ?,
             run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
             last_error = NULL, updated_at = ?
         WHERE id = ?
       `)
-      .run(now, now, now, id);
+      .run(JSON.stringify(plan), now, now, now, id);
     return this.get(id)!;
   }
 
@@ -1507,15 +1535,24 @@ export class WorkOrderStore {
       checkpointedStageIds(workOrder),
     );
     const mergedResult = mergeResults(workOrder?.result ?? null, result);
-    const pendingExternal = plan?.stages.some(
-      (stage) => stage.executionMethod === "external" && stage.status !== "completed",
-    ) === true;
-    if (pendingExternal && plan) {
+    if (plan) {
       plan = advanceAfterCodexRun(plan, result);
     }
-    const externalReady = plan?.stages.some(
-      (stage) => stage.executionMethod === "external" && stage.status === "response",
-    ) === true;
+    const needsManualConfirmation = result.verifications.some(
+      (verification) => verification.status === "not_configured",
+    );
+    const nextStage = plan ? nextRunnableStage(plan) : undefined;
+    const externalReady = nextStage?.executionMethod === "external";
+    const nextCodexReady = nextStage?.executionMethod === "codex";
+    const allStagesCompleted = plan?.stages.every((stage) => stage.status === "completed") === true;
+    const status = needsManualConfirmation || externalReady
+      ? "interrupted"
+      : nextCodexReady
+        ? "ready"
+        : allStagesCompleted
+          ? "review"
+          : "interrupted";
+    const runStatus = status === "review" || needsManualConfirmation ? "completed" : null;
     const now = new Date().toISOString();
     this.database
       .query(`
@@ -1525,14 +1562,16 @@ export class WorkOrderStore {
         WHERE id = ? AND run_status = 'verifying'
       `)
       .run(
-        externalReady ? "ready" : "review",
-        externalReady ? null : "completed",
+        status,
+        runStatus,
         JSON.stringify(mergedResult),
         plan ? JSON.stringify(plan) : null,
-        externalReady
+        needsManualConfirmation
+          ? "请确认当前 AI 节点结果后继续"
+          : externalReady
           ? nextPlanSummary(plan)
-          : pendingExternal
-            ? "请确认当前 AI 节点结果后继续"
+          : nextCodexReady
+            ? nextPlanSummary(plan)
             : hasConfiguredCommand
               ? "自动验证通过，等待人工验收"
               : "等待人工验收",
@@ -1551,14 +1590,12 @@ export class WorkOrderStore {
       !(
         (workOrder.status === "review" &&
           (workOrder.runStatus === "completed" || workOrder.runStatus === null)) ||
+        (workOrder.status === "interrupted" && workOrder.runStatus === "completed") ||
         (workOrder.status === "ready" && workOrder.runStatus === null)
       )
     ) {
       throw new PlanLockedError("当前没有需要确认的 AI 节点结果");
     }
-    const hasExternalStage = workOrder.plan.stages.some(
-      (stage) => stage.executionMethod === "external",
-    );
     const verificationByStage = new Map(
       workOrder.result.verifications.map((verification) => [verification.stageId, verification]),
     );
@@ -1572,7 +1609,7 @@ export class WorkOrderStore {
         )
         .map((stage) => stage.id),
     );
-    if (!hasExternalStage || confirmedIds.size === 0) {
+    if (confirmedIds.size === 0) {
       throw new PlanLockedError("当前没有需要确认的 AI 节点结果");
     }
 
@@ -1582,11 +1619,12 @@ export class WorkOrderStore {
       confirmedIds,
       "已由你确认完成",
     );
-    const hasReadyWork = plan.stages.some(
-      (stage) =>
-        (stage.executionMethod === "external" && stage.status === "response") ||
-        (stage.executionMethod === "codex" && stage.status === "planning"),
-    );
+    const nextStage = nextRunnableStage(plan);
+    const status = nextStage?.executionMethod === "external"
+      ? "interrupted"
+      : nextStage?.executionMethod === "codex"
+        ? "ready"
+        : "review";
     this.database
       .query(`
         UPDATE work_orders
@@ -1594,10 +1632,10 @@ export class WorkOrderStore {
         WHERE id = ?
       `)
       .run(
-        hasReadyWork ? "ready" : "review",
-        hasReadyWork ? null : "completed",
+        status,
+        status === "review" ? "completed" : null,
         JSON.stringify(plan),
-        hasReadyWork ? nextPlanSummary(plan) : "等待人工验收",
+        status === "review" ? "等待人工验收" : nextPlanSummary(plan),
         now,
         id,
       );
@@ -1606,6 +1644,7 @@ export class WorkOrderStore {
 
   recordVerificationFailure(id: string, result: WorkOrderResult): WorkOrder {
     const workOrder = this.get(id);
+    const mergedResult = mergeResults(workOrder?.result ?? null, result);
     const plan = planWithVerificationStatuses(
       workOrder?.plan ?? null,
       result,
@@ -1620,7 +1659,7 @@ export class WorkOrderStore {
             current_summary = '自动验证未通过', last_error = ?, updated_at = ?
         WHERE id = ? AND run_status = 'verifying'
       `)
-      .run(JSON.stringify(result), plan ? JSON.stringify(plan) : null, error, now, id);
+      .run(JSON.stringify(mergedResult), plan ? JSON.stringify(plan) : null, error, now, id);
     return this.get(id)!;
   }
 
@@ -2447,36 +2486,21 @@ function planWithVerificationStatuses(
   };
 }
 
-function codexStageIdsForNextRun(plan: WorkOrderPlan): Set<string> {
-  const stageById = new Map(plan.stages.map((stage) => [stage.id, stage]));
-  const blockedCache = new Map<string, boolean>();
-  const blockedByExternalDependency = (stageId: string, visiting = new Set<string>()): boolean => {
-    const cached = blockedCache.get(stageId);
-    if (cached !== undefined) return cached;
-    if (visiting.has(stageId)) return true;
-    visiting.add(stageId);
-    const stage = stageById.get(stageId);
-    const blocked = (stage?.dependsOn ?? []).some((dependencyId) => {
-      const dependency = stageById.get(dependencyId);
-      if (!dependency) return true;
-      if (dependency.executionMethod === "external") {
-        return dependency.status !== "completed";
-      }
-      return blockedByExternalDependency(dependencyId, visiting);
-    });
-    visiting.delete(stageId);
-    blockedCache.set(stageId, blocked);
-    return blocked;
-  };
-  return new Set(
-    plan.stages
-      .filter(
-        (stage) =>
-          stage.executionMethod === "codex" &&
-          (stage.status === "planning" || stage.status === "running") &&
-          !blockedByExternalDependency(stage.id),
-      )
-      .map((stage) => stage.id),
+function nextRunnableCodexStage(plan: WorkOrderPlan): PlanStage | undefined {
+  const stage = nextRunnableStage(plan);
+  return stage?.executionMethod === "codex" ? stage : undefined;
+}
+
+function nextRunnableStage(plan: WorkOrderPlan): PlanStage | undefined {
+  const completed = new Set(
+    plan.stages.filter((stage) => stage.status === "completed").map((stage) => stage.id),
+  );
+  return plan.stages.find(
+    (stage) =>
+      (stage.executionMethod === "codex"
+        ? stage.status === "planning" || stage.status === "running"
+        : stage.status === "response") &&
+      stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
   );
 }
 

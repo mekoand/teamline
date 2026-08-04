@@ -18,6 +18,7 @@ import {
   type WorkOrderCheckpoint,
   type WorkOrderWorkspace,
   type WorkOrder,
+  type WorkOrderResult,
 } from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
 import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
@@ -60,6 +61,11 @@ type AppDependencies = {
   ) => () => void;
   autoRunRetryMs?: number;
   codexSessionProvider?: CodexSessionProvider;
+};
+
+type NextStageRun = {
+  run: StartedCodexRun;
+  fallback?: () => Promise<StartedCodexRun | null>;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -221,6 +227,66 @@ export function createApp({
       }
     }
     return null;
+  };
+
+  const startNextCodexStage = async (
+    id: string,
+    workspacePath: string,
+  ): Promise<NextStageRun | null> => {
+    if (!codexRunner) return null;
+    const started = store.markNextStageStarted(id);
+    const scopedWorkOrder = codexRunWorkOrder(started);
+    let run: StartedCodexRun;
+    let fallback: NextStageRun["fallback"];
+    try {
+      if (started.sessionId) {
+        run = await codexRunner.resume({
+          workOrder: scopedWorkOrder,
+          workspacePath,
+          sessionId: started.sessionId,
+        });
+        fallback = async () => {
+          if (store.get(id)?.runStatus === "stopping") return null;
+          store.recordProgress(
+            id,
+            "保存的 Codex 会话不可用，已使用当前现场启动新的执行",
+          );
+          return codexRunner.start({
+            workOrder: codexRunWorkOrder(store.get(id)!),
+            workspacePath,
+            continuation: await continuationContext(store, id, workspacePath),
+          });
+        };
+      } else {
+        run = await codexRunner.start({
+          workOrder: scopedWorkOrder,
+          workspacePath,
+          continuation: await continuationContext(store, id, workspacePath),
+        });
+      }
+    } catch (error) {
+      store.recordExit(id, -1, safeCodexStartError(error));
+      return null;
+    }
+    if (store.get(id)?.runStatus === "stopping") {
+      try {
+        run.interrupt();
+      } catch {
+        // The run is already stopping; do not register or consume it.
+      }
+      if (run.exited) {
+        try {
+          await run.exited;
+        } catch {
+          // Process termination was still observed even if its exit promise rejected.
+        }
+        store.recordInterrupted(id);
+      }
+      return null;
+    }
+    store.recordRunPid(id, run.pid ?? null);
+    startRunTimeout(id);
+    return { run, fallback };
   };
 
   const readResourceSnapshot = async () => {
@@ -721,7 +787,27 @@ export function createApp({
           );
         }
         let workspacePath: string | null = null;
-        if (workOrder.workspace.kind === "directory") {
+        const currentPlanHasBaseline = workOrder.checkpoints.some(
+          (checkpoint) =>
+            checkpoint.kind === "baseline" &&
+            checkpoint.planVersion === workOrder.plan!.version,
+        );
+        const reusingWorkspace = Boolean(
+          workOrder.worktreePath &&
+            (workOrder.workspace.kind === "git"
+              ? currentPlanHasBaseline
+              : workOrder.plan.stages.some((stage) => stage.status === "completed")),
+        );
+        if (reusingWorkspace) {
+          const resolved = resolveExecutionWorkspace(
+            store,
+            id,
+            workOrder.workspace.kind,
+            workOrder.worktreePath!,
+          );
+          if ("error" in resolved) return workspaceErrorResponse(resolved.error);
+          workspacePath = resolved.path;
+        } else if (workOrder.workspace.kind === "directory") {
           const resolved = resolveExecutionWorkspace(
             store,
             id,
@@ -745,7 +831,7 @@ export function createApp({
         startingWorkOrderIds.add(id);
         try {
           let delegatedWorktree: DelegatedWorktree | null = null;
-          if (workOrder.workspace.kind === "git") {
+          if (workOrder.workspace.kind === "git" && !reusingWorkspace) {
             try {
               delegatedWorktree = await worktreeManager!.prepare(workOrder);
               workspacePath = delegatedWorktree.path;
@@ -770,14 +856,16 @@ export function createApp({
           }
           startingWorkspacePaths.set(id, workspacePath!);
 
-          if (workOrder.workspace.kind === "git") {
+          if (workOrder.workspace.kind === "git" && !reusingWorkspace) {
             store.saveWorktree(id, delegatedWorktree!);
-          } else {
+          } else if (workOrder.workspace.kind === "directory" && !reusingWorkspace) {
             store.saveDirectWorkspace(id, workspacePath!);
           }
           let startedWorkOrder;
           try {
-            startedWorkOrder = store.markStarted(id);
+            startedWorkOrder = reusingWorkspace
+              ? store.markNextStageStarted(id)
+              : store.markStarted(id);
           } catch {
             return Response.json(
               {
@@ -787,7 +875,7 @@ export function createApp({
               { status: 500 },
             );
           }
-          if (workOrder.workspace.kind === "git" && checkpointManager) {
+          if (workOrder.workspace.kind === "git" && checkpointManager && !reusingWorkspace) {
             const checkpointId = crypto.randomUUID();
             try {
               const treeHash = await checkpointManager.capture(
@@ -814,11 +902,35 @@ export function createApp({
             }
           }
           let run;
+          let fallback: NextStageRun["fallback"];
           try {
-            run = await codexRunner.start({
-              workOrder: codexRunWorkOrder(startedWorkOrder),
-              workspacePath: workspacePath!,
-            });
+            if (reusingWorkspace && startedWorkOrder.sessionId) {
+              run = await codexRunner.resume({
+                workOrder: codexRunWorkOrder(startedWorkOrder),
+                workspacePath: workspacePath!,
+                sessionId: startedWorkOrder.sessionId,
+              });
+              fallback = async () => {
+                if (store.get(id)?.runStatus === "stopping") return null;
+                store.recordProgress(
+                  id,
+                  "保存的 Codex 会话不可用，已使用当前现场启动新的执行",
+                );
+                return codexRunner.start({
+                  workOrder: codexRunWorkOrder(store.get(id)!),
+                  workspacePath: workspacePath!,
+                  continuation: await continuationContext(store, id, workspacePath!),
+                });
+              };
+            } else {
+              run = await codexRunner.start({
+                workOrder: codexRunWorkOrder(startedWorkOrder),
+                workspacePath: workspacePath!,
+                continuation: reusingWorkspace
+                  ? await continuationContext(store, id, workspacePath!)
+                  : undefined,
+              });
+            }
           } catch (error) {
             const message = safeCodexStartError(error);
             store.recordStartFailure(id, message, "Codex 启动失败，请处理后重试");
@@ -839,6 +951,8 @@ export function createApp({
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             checkpointManager,
+            startNextStage: () => startNextCodexStage(id, workspacePath!),
+            fallback,
             afterRunSettled: () => {
               if (autoRunRequested) {
                 store.recordAutoRunStopped(id, startedWorkOrder.runNumber);
@@ -983,7 +1097,7 @@ export function createApp({
           try {
             run = workOrder.sessionId
               ? await codexRunner.resume({
-                  workOrder: continued,
+                  workOrder: codexRunWorkOrder(continued),
                   workspacePath,
                   sessionId: workOrder.sessionId,
                 })
@@ -1012,6 +1126,7 @@ export function createApp({
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             checkpointManager,
+            startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
             afterRunSettled: scheduleAutoRunCheck,
             fallback:
               workOrder.sessionId && codexRunner
@@ -1173,6 +1288,7 @@ export function createApp({
           void consumeRunEvents(store, id, run, activeRuns, {
             resultProcessor,
             checkpointManager,
+            startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             afterRunSettled: scheduleAutoRunCheck,
@@ -1299,6 +1415,7 @@ export function createApp({
           );
         }
         try {
+          await saveManuallyConfirmedStageCheckpoint(store, id, checkpointManager);
           const workOrder = store.confirmCurrentCodexResults(id);
           scheduleAutoRunCheck();
           return Response.json({ workOrder });
@@ -1731,6 +1848,7 @@ async function consumeRunEvents(
     clearRunTimeout?: () => void;
     finishReason?: () => string | undefined;
     checkpointManager?: CheckpointManager;
+    startNextStage?: () => Promise<NextStageRun | null>;
     afterRunSettled?: () => void;
   } = {},
 ): Promise<void> {
@@ -1740,9 +1858,6 @@ async function consumeRunEvents(
       if (event.type === "session") {
         store.recordSession(workOrderId, event.sessionId);
       } else if (event.type === "progress") {
-        for (const signal of stageProgressSignals(event.message)) {
-          store.recordStageProgress(workOrderId, signal.stageId, signal.phase);
-        }
         const visibleMessage = event.message.replace(stageProgressPattern, "").trim();
         if (visibleMessage) store.recordProgress(workOrderId, visibleMessage);
       } else {
@@ -1792,14 +1907,17 @@ async function consumeRunEvents(
             clearRunTimeout: options.clearRunTimeout,
             finishReason: options.finishReason,
             afterRunSettled: options.afterRunSettled,
+            startNextStage: options.startNextStage,
           });
           return;
         } else if (event.exitCode === 0 && options.resultProcessor) {
           options.clearRunTimeout?.();
           const verifying = store.beginResultProcessing(workOrderId, event.message);
           try {
-            const result = await options.resultProcessor.process(
-              codexRunWorkOrder(verifying),
+            const scopedWorkOrder = codexRunWorkOrder(verifying);
+            const result = currentStageResult(
+              scopedWorkOrder,
+              await options.resultProcessor.process(scopedWorkOrder),
             );
             await saveVerifiedBoundaryCheckpoint(
               store,
@@ -1810,7 +1928,18 @@ async function consumeRunEvents(
             if (result.verifications.some((verification) => verification.status === "failed")) {
               store.recordVerificationFailure(workOrderId, result);
             } else {
-              store.completeReview(workOrderId, result);
+              const reviewed = store.completeReview(workOrderId, result);
+              if (reviewed.status === "ready" && options.startNextStage) {
+                const next = await options.startNextStage();
+                if (next) {
+                  activeRuns.set(workOrderId, next.run);
+                  void consumeRunEvents(store, workOrderId, next.run, activeRuns, {
+                    ...options,
+                    fallback: next.fallback,
+                  });
+                  return;
+                }
+              }
             }
           } catch {
             store.recordResultProcessingFailure(workOrderId);
@@ -1845,6 +1974,28 @@ async function consumeRunEvents(
     }
     if (settled) options.afterRunSettled?.();
   }
+}
+
+function currentStageResult(
+  workOrder: WorkOrder,
+  result: WorkOrderResult,
+): WorkOrderResult {
+  const stage = workOrder.plan?.stages[0];
+  if (!stage) return { ...result, verifications: [] };
+  const verification = result.verifications.find((candidate) => candidate.stageId === stage.id);
+  return {
+    ...result,
+    verifications: verification
+      ? [verification]
+      : [{
+          stageId: stage.id,
+          stageOutcome: stage.outcome,
+          command: null,
+          status: "not_configured",
+          exitCode: null,
+          output: "未配置自动验证命令",
+        }],
+  };
 }
 
 async function saveVerifiedBoundaryCheckpoint(
@@ -1885,6 +2036,47 @@ async function saveVerifiedBoundaryCheckpoint(
     planVersion: result.planVersion,
     stageId: finalStage.id,
     stageOutcome: finalStage.outcome,
+    runNumber: workOrder.runNumber,
+    treeHash,
+  });
+}
+
+async function saveManuallyConfirmedStageCheckpoint(
+  store: WorkOrderStore,
+  workOrderId: string,
+  checkpointManager?: CheckpointManager,
+): Promise<void> {
+  const workOrder = store.get(workOrderId);
+  if (
+    !checkpointManager ||
+    !workOrder?.plan ||
+    !workOrder.result ||
+    workOrder.workspace?.kind !== "git" ||
+    !workOrder.worktreePath
+  ) {
+    return;
+  }
+  const verificationByStage = new Map(
+    workOrder.result.verifications.map((verification) => [verification.stageId, verification]),
+  );
+  const stage = workOrder.plan.stages.find(
+    (candidate) =>
+      candidate.executionMethod === "codex" &&
+      candidate.status === "response" &&
+      verificationByStage.get(candidate.id)?.status === "not_configured",
+  );
+  if (!stage) return;
+  const checkpointId = crypto.randomUUID();
+  const treeHash = await checkpointManager.capture(
+    workOrder.worktreePath,
+    checkpointReference("checkpoints", workOrderId, checkpointId),
+  );
+  store.saveCheckpoint(workOrderId, {
+    id: checkpointId,
+    kind: "stage",
+    planVersion: workOrder.plan.version,
+    stageId: stage.id,
+    stageOutcome: stage.outcome,
     runNumber: workOrder.runNumber,
     treeHash,
   });
@@ -2136,45 +2328,35 @@ function nextRunnableStages(workOrder: WorkOrder): PlanStage[] {
       .filter((stage) => stage.status === "completed")
       .map((stage) => stage.id),
   );
-  return workOrder.plan.stages.filter(
+  const next = workOrder.plan.stages.find(
     (stage) =>
       (stage.executionMethod === "external"
         ? stage.status === "response"
         : stage.status === "planning" || stage.status === "running") &&
       stage.dependsOn.every((dependencyId) => completed.has(dependencyId)),
   );
+  return next ? [next] : [];
 }
 
 function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
   if (!workOrder.plan) return workOrder;
-  const running = workOrder.plan.stages.filter(
+  const running = workOrder.plan.stages.find(
     (stage) =>
       stage.executionMethod === "codex" &&
       (stage.status === "running" ||
-        (stage.status === "completed" && stage.statusReason === "Codex 已完成，等待验证") ||
-        (stage.status === "queued" &&
-          ["等待 Codex 推进", "等待当前执行的前置节点"].includes(stage.statusReason))),
+        stage.status === "response" ||
+        (stage.status === "completed" && stage.statusReason === "Codex 已完成，等待验证")),
   );
-  const stages = running.length
-    ? running
-    : nextRunnableStages(workOrder).filter((stage) => stage.executionMethod === "codex");
+  const next = running ?? nextRunnableStages(workOrder).find(
+    (stage) => stage.executionMethod === "codex",
+  );
   return {
     ...workOrder,
-    plan: { ...workOrder.plan, stages },
+    plan: { ...workOrder.plan, stages: next ? [next] : [] },
   };
 }
 
 const stageProgressPattern = /`?TEAMLINE_STAGE_(START|COMPLETE):([^\s`]+)`?/g;
-
-function stageProgressSignals(message: string): Array<{
-  stageId: string;
-  phase: "running" | "completed";
-}> {
-  return [...message.matchAll(stageProgressPattern)].map((match) => ({
-    stageId: match[2]!,
-    phase: match[1] === "START" ? "running" : "completed",
-  }));
-}
 
 function safeCodexStartError(error: unknown): string {
   if (error instanceof Error && error.message.includes("找不到 Codex")) {

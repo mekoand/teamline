@@ -245,11 +245,11 @@ describe("result review persistence", () => {
     expect(store.hasActiveRun()).toBe(true);
 
     finishProcessing(resultFixture(store.get(planned.id)!, "not_configured"));
-    await waitFor(() => store.get(planned.id)?.status === "review");
+    await waitFor(() => store.get(planned.id)?.status === "interrupted");
     expect(store.get(planned.id)).toMatchObject({
-      status: "review",
+      status: "interrupted",
       runStatus: "completed",
-      currentSummary: "等待人工验收",
+      currentSummary: "请确认当前 AI 节点结果后继续",
       result: {
         verifications: [{ status: "not_configured", output: "未配置自动验证命令" }],
       },
@@ -317,10 +317,10 @@ describe("result review persistence", () => {
 
   test("only review work orders can be delivered", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const workOrder = resultWorkOrder(store, "/tmp/delegated", [undefined]);
+    const workOrder = resultWorkOrder(store, "/tmp/delegated", ["bun test"]);
     store.markStarted(workOrder.id);
     const verifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
-    store.completeReview(workOrder.id, resultFixture(verifying, "not_configured"));
+    store.completeReview(workOrder.id, resultFixture(verifying));
     const app = createApp({ store });
 
     const deliveredResponse = await app.fetch(
@@ -337,7 +337,7 @@ describe("result review persistence", () => {
         stages: [
           {
             status: "completed",
-            statusReason: "已由你确认完成",
+            statusReason: "自动验证通过",
           },
         ],
       },
@@ -397,10 +397,10 @@ describe("result review persistence", () => {
       );
       chmodSync(executable, 0o755);
       const store = new WorkOrderStore(new Database(":memory:"));
-      const planned = resultWorkOrder(store, directory, [undefined]);
+      const planned = resultWorkOrder(store, directory, ["bun test"]);
       store.markStarted(planned.id);
       const verifying = store.beginResultProcessing(planned.id, "Codex 已正常结束");
-      store.completeReview(planned.id, resultFixture(verifying, "not_configured"));
+      store.completeReview(planned.id, resultFixture(verifying));
       const revised = store.revise(planned.id, "补充移动端空状态");
 
       const run = await new CodexExecutionRunner(executable).start({
@@ -423,13 +423,13 @@ describe("result review persistence", () => {
     try {
       const firstDatabase = new Database(databasePath, { create: true });
       const firstStore = new WorkOrderStore(firstDatabase);
-      const workOrder = resultWorkOrder(firstStore, "/tmp/delegated", [undefined]);
+      const workOrder = resultWorkOrder(firstStore, "/tmp/delegated", ["bun test"]);
       firstStore.markStarted(workOrder.id);
       const firstVerifying = firstStore.beginResultProcessing(
         workOrder.id,
         "Codex 已正常结束",
       );
-      const oldResult = resultFixture(firstVerifying, "not_configured");
+      const oldResult = resultFixture(firstVerifying);
       firstStore.completeReview(workOrder.id, oldResult);
       firstStore.revise(workOrder.id, "继续完善");
       firstStore.markStarted(workOrder.id);
@@ -452,10 +452,10 @@ describe("result review persistence", () => {
 
   test("result processing exceptions interrupt the work order without replacing an old result", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const workOrder = resultWorkOrder(store, "/tmp/delegated", [undefined]);
+    const workOrder = resultWorkOrder(store, "/tmp/delegated", ["bun test"]);
     store.markStarted(workOrder.id);
     const firstVerifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
-    const oldResult = resultFixture(firstVerifying, "not_configured");
+    const oldResult = resultFixture(firstVerifying);
     store.completeReview(workOrder.id, oldResult);
     store.revise(workOrder.id, "继续完善");
     const app = createApp({
@@ -509,10 +509,10 @@ describe("result review persistence", () => {
     try {
       const firstDatabase = new Database(databasePath, { create: true });
       const firstStore = new WorkOrderStore(firstDatabase);
-      const workOrder = resultWorkOrder(firstStore, "/tmp/delegated", [undefined]);
+      const workOrder = resultWorkOrder(firstStore, "/tmp/delegated", ["bun test"]);
       firstStore.markStarted(workOrder.id);
       const verifying = firstStore.beginResultProcessing(workOrder.id, "Codex 已正常结束");
-      const result = resultFixture(verifying, "not_configured");
+      const result = resultFixture(verifying);
       firstStore.completeReview(workOrder.id, result);
       firstStore.confirmDelivered(workOrder.id);
       firstDatabase.close();

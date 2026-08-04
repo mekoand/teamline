@@ -162,14 +162,17 @@ describe("stage checkpoints and recovery", () => {
       const firstDatabase = new Database(databasePath, { create: true });
       const firstStore = new WorkOrderStore(firstDatabase);
       let createdId = "";
+      let starts = 0;
       const firstRunner: CodexRunner = {
         async start() {
-          expect(firstStore.get(createdId)?.checkpoints).toMatchObject([
-            { kind: "baseline", runNumber: 1 },
-          ]);
+          starts += 1;
+          expect(firstStore.get(createdId)?.checkpoints[0]).toMatchObject({
+            kind: "baseline",
+            runNumber: 1,
+          });
           writeFileSync(
             join(repository, "README.md"),
-            "first stage complete\nsecond stage residue\n",
+            starts === 1 ? "first stage complete\n" : "first stage complete\nsecond stage residue\n",
           );
           return {
             interrupt() {},
@@ -197,27 +200,19 @@ describe("stage checkpoints and recovery", () => {
         },
         resultProcessor: {
           async process(workOrder) {
+            const stage = workOrder.plan!.stages[0]!;
+            const passed = stage.outcome === "完成第一阶段";
             return {
               planVersion: workOrder.plan!.version,
               git: { diffStat: "1 file changed", statusShort: " M README.md" },
-              verifications: [
-                {
-                  stageId: workOrder.plan!.stages[0]!.id,
-                  stageOutcome: workOrder.plan!.stages[0]!.outcome,
-                  command: "check first",
-                  status: "passed" as const,
-                  exitCode: 0,
-                  output: "passed",
-                },
-                {
-                  stageId: workOrder.plan!.stages[1]!.id,
-                  stageOutcome: workOrder.plan!.stages[1]!.outcome,
-                  command: "check second",
-                  status: "failed" as const,
-                  exitCode: 1,
-                  output: "failed",
-                },
-              ],
+              verifications: [{
+                stageId: stage.id,
+                stageOutcome: stage.outcome,
+                command: passed ? "check first" : "check second",
+                status: passed ? "passed" as const : "failed" as const,
+                exitCode: passed ? 0 : 1,
+                output: passed ? "passed" : "failed",
+              }],
               completedAt: new Date().toISOString(),
             };
           },
@@ -238,9 +233,12 @@ describe("stage checkpoints and recovery", () => {
       expect(started.status).toBe(200);
       await waitFor(() => firstStore.get(created.id)?.status === "interrupted");
       const interrupted = firstStore.get(created.id)!;
-      expect(interrupted.checkpoints).toMatchObject([{ kind: "baseline", runNumber: 1 }]);
+      expect(interrupted.checkpoints).toMatchObject([
+        { kind: "baseline", runNumber: 1 },
+        { kind: "stage", stageOutcome: "完成第一阶段", runNumber: 1 },
+      ]);
       expect(interrupted.plan!.stages).toMatchObject([
-        { status: "completed", statusReason: "自动验证通过" },
+        { status: "completed", statusReason: "验证通过，检查点已保存" },
         { status: "response", statusReason: "自动验证未通过" },
       ]);
       const checkpointHash = interrupted.checkpoints.at(-1)!.treeHash;
@@ -258,9 +256,9 @@ describe("stage checkpoints and recovery", () => {
         checkpointManager: manager,
         codexRunner: {
           async start(input) {
-            expect(readFileSync(join(repository, "README.md"), "utf8")).toBe("baseline\n");
+            expect(readFileSync(join(repository, "README.md"), "utf8")).toBe("first stage complete\n");
             expect(input.continuation?.reexecuteStage).toMatchObject({
-              outcome: "完成第一阶段",
+              outcome: "完成第二阶段",
             });
             return {
               interrupt() {
@@ -294,13 +292,13 @@ describe("stage checkpoints and recovery", () => {
       expect((await response.json()).workOrder).toMatchObject({
         status: "running",
         runStatus: "running",
-        runNumber: 2,
+        runNumber: 3,
         sessionId: null,
       });
       expect(reopenedStore.get(created.id)?.checkpoints.at(-1)?.treeHash).toBe(checkpointHash);
       expect(reopenedStore.listRunEvents(created.id).at(-1)).toMatchObject({
-        runNumber: 2,
-        message: "已恢复到执行起始位置，开始重新执行“完成第一阶段”",
+        runNumber: 3,
+        message: "已恢复到“完成第一阶段”检查点，开始重新执行“完成第二阶段”",
       });
       releaseRun();
       await waitFor(() => reopenedStore.get(created.id)?.runStatus === "failed");

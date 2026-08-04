@@ -350,11 +350,12 @@ describe("interrupt and continue API", () => {
 
       const invocation = readFileSync(invocationLog, "utf8");
       expect(invocation).toContain(
-        "<exec>\n<--skip-git-repo-check>\n<resume>\n<session-missing>\n<请继续推进已确认的工作目标：为设置页面增加深色模式\n继续按节点执行；开始和完成节点时分别单独输出 TEAMLINE_STAGE_START:<节点 ID> 和 TEAMLINE_STAGE_COMPLETE:<节点 ID>。>\n<--json>",
+        "<exec>\n<--skip-git-repo-check>\n<resume>\n<session-missing>",
       );
+      expect(invocation).toContain("只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出");
       expect(invocation.match(/<exec>/g)).toHaveLength(2);
       expect(invocation).toContain("工作目标：\n为设置页面增加深色模式");
-      expect(invocation).toContain("已确认计划：");
+      expect(invocation).toContain("当前 AI 节点：");
       expect(invocation).toContain("第一轮完成了主题变量整理");
       expect(invocation).toContain(" M README.md");
       expect(invocation).not.toContain("secret-token");
