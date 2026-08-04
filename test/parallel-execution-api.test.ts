@@ -107,9 +107,9 @@ describe("parallel work order execution", () => {
         },
       },
     });
-    const first = readyWorkOrder(store, "第一项委托");
-    const second = readyWorkOrder(store, "第二项委托");
-    const third = readyWorkOrder(store, "第三项委托");
+    const first = readyWorkOrder(store, "第一个目标");
+    const second = readyWorkOrder(store, "第二个目标");
+    const third = readyWorkOrder(store, "第三个目标");
 
     const firstResponse = await start(app, first.id);
     const secondResponse = await start(app, second.id);
@@ -122,7 +122,7 @@ describe("parallel work order execution", () => {
     expect(thirdResponse.status).toBe(409);
     expect(await thirdResponse.json()).toEqual({
       code: "CONCURRENCY_LIMIT_REACHED",
-      error: "已达到本机最大并发数（2），请等待一项委托结束或调整设置",
+      error: "已达到本机最大并发数（2），请等待一个目标结束或调整设置",
     });
     expect(starts).toBe(2);
 
@@ -229,7 +229,7 @@ describe("parallel work order execution", () => {
       expect(conflict.status).toBe(409);
       expect(await conflict.json()).toEqual({
         code: "WORKSPACE_IN_USE",
-        error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+        error: "这个工作区已由另一个活动目标使用，请选择其他工作区",
       });
       expect(store.get(first.id)?.runStatus).toBe("running");
       expect(store.get(second.id)?.runStatus).toBeNull();
@@ -296,8 +296,8 @@ describe("parallel work order execution", () => {
     try {
       initializeGitRepository(repository);
       const store = new WorkOrderStore(new Database(":memory:"));
-      const first = store.create({ repositoryPath: repository, goal: "Git 委托一" });
-      const second = store.create({ repositoryPath: repository, goal: "Git 委托二" });
+      const first = store.create({ repositoryPath: repository, goal: "Git 目标一" });
+      const second = store.create({ repositoryPath: repository, goal: "Git 目标二" });
       const manager = new GitWorktreeManager(join(directory, "delegated"));
 
       const [firstWorktree, secondWorktree] = await Promise.all([

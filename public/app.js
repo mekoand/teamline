@@ -1,8 +1,9 @@
 const visibleStatusLabels = {
   planning: "规划中",
   running: "运行中",
-  queued: "排队中",
+  queued: "待运行",
   response: "需响应",
+  review: "待验收",
   completed: "已完成",
 };
 
@@ -76,7 +77,7 @@ function bindShellEvents() {
 
   document.querySelector("#open-create").addEventListener("click", () => {
     createDialog.showModal();
-    createDialog.querySelector('[name="goal"]').focus();
+    createDialog.querySelector('[name="name"]').focus();
   });
   document.querySelector("#open-resources").addEventListener("click", () => {
     history.pushState({}, "", "/resources");
@@ -187,20 +188,20 @@ function renderRestorePreview() {
           ? `<ul class="restore-attention-list">${attention.map((item) => `<li><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.reason)}</span><code>${escapeHtml(shortPath(item.location))}</code></li>`).join("")}</ul>`
           : '<p class="muted">没有发现缺失的位置引用。</p>'}
         ${workOrder.conflict
-          ? `<label class="restore-conflict-choice"><span>已有同一委托</span><select data-restore-resolution="${escapeHtml(workOrder.sourceId)}"><option value="">请选择</option><option value="keep_existing">保留现有，不导入</option><option value="import_copy">另存为副本</option></select></label>`
+          ? `<label class="restore-conflict-choice"><span>已有同一目标</span><select data-restore-resolution="${escapeHtml(workOrder.sourceId)}"><option value="">请选择</option><option value="keep_existing">保留现有，不导入</option><option value="import_copy">另存为副本</option></select></label>`
           : ""}
       </article>`;
   }).join("");
   document.querySelector("#restore-preview").innerHTML = `
     <div class="restore-summary">
-      <strong>将恢复 ${preview.summary.total} 项委托</strong>
+      <strong>将恢复 ${preview.summary.total} 个目标</strong>
       <span>${preview.summary.conflicts} 项冲突 · ${preview.summary.needsAttention} 项恢复后需处理</span>
     </div>
     ${preview.settingsConflict
       ? `<label class="restore-conflict-choice settings-choice"><span>本机设置不同</span><select id="restore-settings-resolution"><option value="">请选择</option><option value="keep_existing">保留现有设置</option><option value="use_imported">使用导入设置</option></select></label>`
       : ""}
-    <div class="restore-order-list">${rows || '<p class="muted">文件中没有委托。</p>'}</div>
-    <p class="restore-safety-note">确认后也不会覆盖已有委托；缺失位置会保留并标为需处理。</p>`;
+    <div class="restore-order-list">${rows || '<p class="muted">文件中没有目标。</p>'}</div>
+    <p class="restore-safety-note">确认后也不会覆盖已有目标；缺失位置会保留并标为需处理。</p>`;
 }
 
 async function confirmStateRestore() {
@@ -242,7 +243,7 @@ async function refreshConsole({
 } = {}) {
   clearTimeout(state.refreshTimer);
   if (!polling && state.workOrders.length === 0) {
-    workspaceElement.innerHTML = '<div class="loading-state">正在读取本地委托…</div>';
+    workspaceElement.innerHTML = '<div class="loading-state">正在读取本地目标…</div>';
     contextElement.innerHTML = '<div class="loading-state">正在准备详情…</div>';
   }
 
@@ -533,15 +534,15 @@ function renderConsole(feedback = "") {
     workspaceElement.innerHTML = `
       <section class="empty-console">
         <span class="empty-symbol">↗</span>
-        <h2>新建第一项委托</h2>
+        <h2>新建第一个目标</h2>
         <p>写下目标，生成计划，再确认并开始。</p>
-        <button class="primary-button" id="empty-create" type="button">新建委托</button>
+        <button class="primary-button" id="empty-create" type="button">新建目标</button>
       </section>`;
     contextElement.innerHTML = `
       <section class="context-empty">
         <p class="overline">详情</p>
         <h2>等待选择</h2>
-        <p>新建委托后，这里显示当前节点和下一步操作。</p>
+        <p>新建目标后，这里显示当前节点和下一步操作。</p>
       </section>`;
     document.querySelector("#empty-create")?.addEventListener("click", () => createDialog.showModal());
     return;
@@ -555,15 +556,16 @@ function renderConsole(feedback = "") {
 function renderWorkOrderList() {
   countElement.textContent = String(state.workOrders.length);
   if (state.workOrders.length === 0) {
-    listElement.innerHTML = '<p class="sidebar-empty">暂无委托</p>';
+    listElement.innerHTML = '<p class="sidebar-empty">暂无目标</p>';
     return;
   }
 
   const groups = [
     ["response", "需响应"],
+    ["review", "待验收"],
     ["running", "运行中"],
     ["planning", "规划中"],
-    ["queued", "排队中"],
+    ["queued", "待运行"],
     ["completed", "已完成"],
   ];
   listElement.innerHTML = groups
@@ -641,12 +643,12 @@ function renderResourceWorkspace() {
       </section>
       <section class="resource-orders-panel">
         <div class="section-heading compact">
-          <div><p class="overline">安排</p><h2>委托资源</h2></div>
-          <span class="subtle-label">${resources.workOrders.length} 项委托</span>
+          <div><p class="overline">安排</p><h2>目标资源</h2></div>
+          <span class="subtle-label">${resources.workOrders.length} 个目标</span>
         </div>
         ${resources.workOrders.length
           ? `<div class="resource-order-list">${resources.workOrders.map(renderResourceOrder).join("")}</div>`
-          : '<p class="muted">新建委托后，可在这里安排优先级、执行节奏和自动运行。</p>'}
+          : '<p class="muted">新建目标后，可在这里安排优先级、执行节奏和自动运行。</p>'}
       </section>
     </section>`;
 }
@@ -747,7 +749,7 @@ async function saveResourcePlan(id) {
 
 function renderResourceContext() {
   if (state.resourceError) {
-    return `<section class="context-empty"><p class="overline">资源详情</p><h2>稍后重试</h2><p>委托不受影响，可以继续处理。</p></section>`;
+    return `<section class="context-empty"><p class="overline">资源详情</p><h2>稍后重试</h2><p>目标不受影响，可以继续处理。</p></section>`;
   }
   const resources = state.resources;
   if (!resources) return '<div class="loading-state">正在准备资源详情…</div>';
@@ -763,12 +765,12 @@ function renderResourceContext() {
         <div><dt>优先推进</dt><dd>${highPriorityCount} 项</dd></div>
         <div><dt>自动运行</dt><dd>${autoRunCount} 项</dd></div>
       </dl>
-      <p class="context-summary resource-next-step">在“委托资源”中调整优先级、执行节奏和自动运行。</p>
+      <p class="context-summary resource-next-step">在“目标资源”中调整优先级、执行节奏和自动运行。</p>
       <details class="resource-details">
         <summary>数据来源与口径</summary>
         <p>Codex 额度来自本地接口，采集于 ${formatDate(resources.codex.observedAt)}；读取失败时显示“不可用”。</p>
         <p>${escapeHtml(api?.message || "OpenAI API 用量为可选连接。")}</p>
-        <p>账户聚合用量不会自动归入具体委托。</p>
+        <p>账户聚合用量不会自动归入具体目标。</p>
       </details>
     </section>`;
 }
@@ -908,8 +910,8 @@ function renderConversationPanel(workOrder) {
   return `
     <section class="conversation-panel" aria-labelledby="conversation-heading">
       <div class="section-heading compact conversation-heading">
-        <div><p class="overline">对话</p><h2 id="conversation-heading">${pending ? "确认关键信息" : "补充委托"}</h2></div>
-        <span class="subtle-label">${pending ? "待回答" : stage ? "当前节点" : "委托"}</span>
+        <div><p class="overline">对话</p><h2 id="conversation-heading">${pending ? "确认关键信息" : "补充目标"}</h2></div>
+        <span class="subtle-label">${pending ? "待回答" : stage ? "当前节点" : "目标"}</span>
       </div>
       <div class="conversation-thread" aria-live="polite">
         ${messages.length
@@ -923,13 +925,13 @@ function renderConversationPanel(workOrder) {
       </div>
       ${editable ? `
         <form id="conversation-form" class="conversation-form">
-          <label><span>${pending ? "你的回答" : `补充${stage ? `“${escapeHtml(stage.outcome)}”` : "委托"}`}</span><textarea name="message" rows="3" required placeholder="${pending ? "直接回答上面的问题" : "写下需要补充或调整的内容"}"></textarea></label>
+          <label><span>${pending ? "你的回答" : `补充${stage ? `“${escapeHtml(stage.outcome)}”` : "目标"}`}</span><textarea name="message" rows="3" required placeholder="${pending ? "直接回答上面的问题" : "写下需要补充或调整的内容"}"></textarea></label>
           <div class="conversation-actions">
             ${pending
               ? '<button class="primary-button" type="submit" data-conversation-mode="reply">提交回答</button>'
               : stage
                 ? '<button class="primary-button" type="submit" data-conversation-mode="supplement">补充当前节点</button><button class="secondary-button" type="submit" data-conversation-mode="replan">更新目标或计划</button>'
-                : '<button class="secondary-button" type="submit" data-conversation-mode="replan">更新委托</button>'}
+                : '<button class="secondary-button" type="submit" data-conversation-mode="replan">更新目标</button>'}
           </div>
           <p class="inline-feedback" id="conversation-feedback" role="status"></p>
         </form>` : ""}
@@ -1043,7 +1045,7 @@ function renderRunPanel(workOrder) {
       <dl class="fact-grid">
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
         <div><dt>本轮上限</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>
-        <div><dt>会话</dt><dd>${escapeHtml(workOrder.sessionId ?? "等待 Codex 返回")}</dd></div>
+        <div><dt>当前执行会话</dt><dd>${escapeHtml(workOrder.currentSessionId ?? workOrder.sessionId ?? "等待 Codex 返回")}</dd></div>
         <div><dt>${workOrder.workspace?.kind === "directory" ? "工作区类型" : "分支"}</dt><dd>${escapeHtml(workOrder.workspace?.kind === "directory" ? "普通文件夹" : workOrder.executionBranch ?? "正在准备")}</dd></div>
       </dl>
       <div class="event-list">
@@ -1099,7 +1101,7 @@ function renderContext(workOrder) {
   return `
     <section class="context-content">
       <div class="context-heading">
-        <div><p class="overline">${stage ? "当前节点" : "详情"}</p><h2>${stage ? `节点 ${selectedIndex + 1}` : "委托信息"}</h2></div>
+        <div><p class="overline">${stage ? "当前节点" : "详情"}</p><h2>${stage ? `节点 ${selectedIndex + 1}` : "目标信息"}</h2></div>
         <span class="status-dot ${stage?.status ?? presentation.status}" title="${escapeHtml(stage?.statusReason ?? presentation.reason)}"></span>
       </div>
 
@@ -1194,10 +1196,16 @@ function renderContextTabContent(workOrder, stage) {
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
       <div class="context-section">
-        <p class="overline">委托信息</p>
+        <p class="overline">目标信息</p>
         <dl class="context-list">
-          <div><dt>目标</dt><dd>${escapeHtml(workOrder.goal)}</dd></div>
+          <div><dt>目标说明</dt><dd>${escapeHtml(workOrder.description ?? workOrder.goal)}</dd></div>
           <div><dt>完成要求</dt><dd>${escapeHtml(workOrder.acceptance || "未单独填写")}</dd></div>
+          <div><dt>来源会话</dt><dd>${escapeHtml(
+            (workOrder.sourceSessions ?? (workOrder.importSource ? [workOrder.importSource] : []))
+              .map((source) => source.id)
+              .join("、") || "无",
+          )}</dd></div>
+          <div><dt>当前执行会话</dt><dd>${escapeHtml(workOrder.currentSessionId ?? workOrder.sessionId ?? "未建立")}</dd></div>
         </dl>
       </div>
     </div>`;
@@ -1331,16 +1339,16 @@ function renderContextAction(workOrder) {
         </label>
         ${workOrder.workspace
           ? `<p class="workspace-choice"><strong>${workOrder.workspace.kind === "git" ? "Git 仓库" : "普通文件夹"}</strong><code>${escapeHtml(shortPath(workOrder.workspace.path))}</code></p>
-             <button class="primary-button full-button" id="start-work-order" type="button" ${queued ? "disabled" : ""}>${queued ? "等待当前委托结束" : "确认计划并启动"}</button>`
+             <button class="primary-button full-button" id="start-work-order" type="button" ${queued ? "disabled" : ""}>${queued ? "等待当前目标结束" : "确认计划并启动"}</button>`
           : `<form id="workspace-form">
                <label><span>执行前选择本地文件夹</span><input name="workspacePath" value="${escapeHtml(suggestedPath)}" placeholder="/Users/you/Projects/workspace" autocomplete="off" required /></label>
-               <p>Git 仓库会使用独立委托工作区；普通文件夹会直接使用，不提供 Git 隔离、版本记录或回滚。</p>
-               <button class="primary-button full-button" id="select-workspace-and-start" type="submit" ${queued ? "disabled" : ""}>${queued ? "等待当前委托结束" : "选择文件夹并启动"}</button>
+               <p>Git 仓库会使用独立执行工作区；普通文件夹会直接使用，不提供 Git 隔离、版本记录或回滚。</p>
+               <button class="primary-button full-button" id="select-workspace-and-start" type="submit" ${queued ? "disabled" : ""}>${queued ? "等待当前目标结束" : "选择文件夹并启动"}</button>
              </form>`}
       </section>`;
   }
   if (workOrder.runStatus === "running") {
-    return `<section class="context-action"><p>Codex 正在委托工作区内执行。</p><button class="secondary-button full-button" id="interrupt-work-order" type="button">中断运行</button></section>`;
+    return `<section class="context-action"><p>Codex 正在所选工作区中运行。</p><button class="secondary-button full-button" id="interrupt-work-order" type="button">中断运行</button></section>`;
   }
   if (workOrder.runStatus === "stopping" || workOrder.runStatus === "verifying") {
     return `<section class="context-action"><p>${escapeHtml(workOrder.currentSummary)}</p><button class="secondary-button full-button" type="button" disabled>处理中…</button></section>`;
@@ -1369,7 +1377,7 @@ function renderContextAction(workOrder) {
       </section>`;
   }
   if (workOrder.status === "delivered") {
-    return '<section class="context-action completed-action"><strong>这项委托已经确认完成。</strong><p>计划、运行记录和验收结果仍保存在本机。</p></section>';
+    return '<section class="context-action completed-action"><strong>这个目标已经确认完成。</strong><p>计划、运行记录和验收结果仍保存在本机。</p></section>';
   }
   return "";
 }
@@ -1561,9 +1569,9 @@ function bindRenderedEvents() {
     "正在确认当前 AI 节点结果。",
   );
 
-  bindAction("#start-work-order", "正在准备…", "确认计划并启动", "start", "Teamline 正在创建委托工作区并启动 Codex。");
+  bindAction("#start-work-order", "正在准备…", "确认计划并启动", "start", "Teamline 正在创建执行工作区并启动 Codex。");
   bindAction("#interrupt-work-order", "正在停止…", "中断运行", "interrupt", "正在请求 Codex 停止。");
-  bindAction("#continue-work-order", "正在继续…", "继续当前现场", "continue", "正在从现有进度继续委托。");
+  bindAction("#continue-work-order", "正在继续…", "继续当前现场", "continue", "正在从现有进度继续推进目标。");
   bindAction("#reexecute-work-order", "正在恢复…", "从最近节点重新执行", "reexecute", "正在恢复最近完整位置并启动新的运行。");
   bindAction("#deliver-work-order", "正在确认…", "确认完成", "deliver", "");
 
@@ -1644,20 +1652,21 @@ async function createWorkOrder(event) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        goal: data.get("goal"),
+        name: data.get("name"),
+        description: data.get("description"),
         acceptance: data.get("acceptance"),
         materials: readMaterials(),
       }),
     });
     closeCreateDialog();
-    history.pushState({}, "", `/work-orders/${encodeURIComponent(workOrder.id)}`);
+    history.pushState({}, "", `/goals/${encodeURIComponent(workOrder.id)}`);
     state.selected = workOrder;
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
     await refreshConsole();
   } catch (error) {
-    formError.textContent = messageFrom(error, "创建委托失败");
-    resetBusy(createButton, "创建委托");
+    formError.textContent = messageFrom(error, "创建目标失败");
+    resetBusy(createButton, "创建目标");
   }
 }
 
@@ -1721,8 +1730,8 @@ function renderSessionCandidates() {
           </span>
           <em>${stateLabel}</em>
         </label>
-        ${!disabled ? `<label class="session-goal"><span>委托目标</span><input data-session-goal="${escapeHtml(session.id)}" value="${escapeHtml(session.title)}" autocomplete="off" /></label>` : ""}
-        ${session.suggestion ? `<p class="session-suggestion">可能与现有委托“${escapeHtml(session.suggestion.title)}”相关；本次仍会默认创建新委托。</p>` : ""}
+        ${!disabled ? `<label class="session-goal"><span>目标</span><input data-session-goal="${escapeHtml(session.id)}" value="${escapeHtml(session.title)}" autocomplete="off" /></label>` : ""}
+        ${session.suggestion ? `<p class="session-suggestion">可能与现有目标“${escapeHtml(session.suggestion.title)}”相关；本次仍会默认创建新目标。</p>` : ""}
         ${session.message ? `<p class="session-warning">${escapeHtml(session.message)}</p>` : ""}
       </article>`;
   }).join("");
@@ -1751,7 +1760,7 @@ async function importSelectedSessions(event) {
     const workOrder = result.imported[0] ?? result.existing[0];
     closeSessionImport();
     if (workOrder) {
-      history.pushState({}, "", `/work-orders/${encodeURIComponent(workOrder.id)}`);
+      history.pushState({}, "", `/goals/${encodeURIComponent(workOrder.id)}`);
       state.selected = workOrder;
       state.selectedStageIndex = 0;
       state.followCurrentStage = true;
@@ -1770,7 +1779,7 @@ async function selectWorkOrder(id) {
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
     state.contextTab = "details";
-    history.pushState({}, "", `/work-orders/${encodeURIComponent(id)}`);
+    history.pushState({}, "", `/goals/${encodeURIComponent(id)}`);
   }
   try {
     await requestJson("/api/notifications/read", {
@@ -1792,7 +1801,7 @@ function closeCreateDialog() {
   createForm.reset();
   document.querySelector("#material-list").innerHTML = "";
   formError.textContent = "";
-  resetBusy(createButton, "创建委托");
+  resetBusy(createButton, "创建目标");
 }
 
 function addMaterialRow(kind = "file", value = "") {
@@ -1895,7 +1904,14 @@ function readPlanStages() {
 }
 
 function selectedIdFromPath() {
-  const match = window.location.pathname.match(/^\/work-orders\/([^/]+)$/);
+  const match = window.location.pathname.match(/^\/(?:goals|work-orders)\/([^/]+)$/);
+  if (match && window.location.pathname.startsWith("/work-orders/")) {
+    history.replaceState(
+      {},
+      "",
+      `/goals/${match[1]}${window.location.search}`,
+    );
+  }
   return match ? decodeURIComponent(match[1]) : null;
 }
 
@@ -2071,10 +2087,10 @@ function workspaceLabel(workspace) {
   if (workspace?.kind === "external") return "成果保留原位置";
   if (!workspace?.path) return "启动前选择";
   return {
-    git: "Git 委托工作区",
+    git: "Git 执行工作区",
     directory: "本地文件夹",
     external: "外部工作空间",
-  }[workspace?.kind] ?? "Git 委托工作区";
+  }[workspace?.kind] ?? "Git 执行工作区";
 }
 
 function resolvedWorkspacePath(workOrder, stage) {

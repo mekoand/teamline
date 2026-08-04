@@ -144,6 +144,39 @@ describe("Codex session import API", () => {
     expect(store.list()).toHaveLength(1);
   });
 
+  test("recognizes a session imported as the second source of a goal", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const goal = store.create({
+      name: "合并历史上下文",
+      description: "从多个会话整理目标",
+      sourceSessions: [
+        {
+          kind: "codex_session",
+          id: "session-a",
+          lastActiveAt: "2026-08-03T02:00:00.000Z",
+          version: 1,
+        },
+        {
+          kind: "codex_session",
+          id: "session-b",
+          lastActiveAt: "2026-08-03T01:00:00.000Z",
+          version: 1,
+        },
+      ],
+    });
+    const app = createApp({ store, codexSessionProvider: provider(discovery) });
+
+    const response = await app.fetch(
+      new Request("http://teamline.local/api/codex-sessions?q=session-b"),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.sessions).toEqual([
+      expect.objectContaining({ id: "session-b", importedWorkOrderId: goal.id }),
+    ]);
+  });
+
   test("does not mistake a manually added file material for an imported session", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const manual = store.create({

@@ -132,14 +132,14 @@ describe("personal console", () => {
     const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
 
     expect(script).toContain("额度状态");
-    expect(script).toContain("委托资源");
+    expect(script).toContain("目标资源");
     expect(script).toContain('<details class="resource-details">');
     expect(script).toContain("数据来源与口径");
     expect(script).not.toContain("可靠性优先");
     expect(script).not.toContain("不推测某个节点正在运行");
   });
 
-  test("restores persisted work and exposes the five user-facing states", async () => {
+  test("restores persisted work and exposes the six user-facing states", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-console-"));
     const databasePath = join(directory, "teamline.db");
     try {
@@ -232,7 +232,7 @@ describe("personal console", () => {
         正在验证: "running",
         执行已中断: "response",
         排队的委托: "queued",
-        等待验收: "response",
+        等待验收: "review",
         已经完成: "completed",
       });
       expect(workOrders.find((workOrder) => workOrder.title === "等待验收").statusReason).toBe(

@@ -89,7 +89,7 @@ describe("work-order clarification and conversation", () => {
           message: "Ask Matt 已决定先支持链接导入。",
           questions: [],
           goal: "支持从链接导入资料",
-          acceptance: "链接可被保存并进入当前委托",
+          acceptance: "链接可被保存并进入当前目标",
           materials: [{ kind: "link", value: "https://example.test/source" }],
           resourcePlan: {
             priority: "high",
@@ -100,7 +100,7 @@ describe("work-order clarification and conversation", () => {
             {
               id: "link-import",
               outcome: "链接资料可导入",
-              scope: "导入接口与委托素材",
+              scope: "导入接口与目标素材",
               verification: "运行导入测试",
             },
           ],
@@ -257,7 +257,7 @@ describe("work-order clarification and conversation", () => {
               questions: [
                 {
                   id: "pace",
-                  prompt: "这项委托需要优先推进，还是保持正常节奏？",
+                  prompt: "这个目标需要优先推进，还是保持正常节奏？",
                   reason: "回答只调整软运行偏好",
                   target: "resources",
                 },

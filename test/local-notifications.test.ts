@@ -19,6 +19,33 @@ function externalWorkOrder(store: WorkOrderStore) {
 }
 
 describe("local work-order notifications", () => {
+  test("labels a goal awaiting acceptance as review instead of response", async () => {
+    const database = new Database(":memory:");
+    const store = new WorkOrderStore(database);
+    const goal = store.create({ goal: "验收已经完成的结果" });
+    store.database
+      .query("UPDATE work_orders SET status = 'review' WHERE id = ?")
+      .run(goal.id);
+    const response = await createApp({ store }).fetch(
+      new Request("http://teamline.local/api/notifications"),
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).notifications).toEqual([
+      expect.objectContaining({
+        kind: "review",
+        workOrderId: goal.id,
+        title: "目标等待验收",
+      }),
+    ]);
+
+    database.exec("UPDATE local_notifications SET notification_kind = 'response'");
+    const reopenedStore = new WorkOrderStore(database);
+    expect(reopenedStore.listNotifications()).toEqual([
+      expect.objectContaining({ kind: "review", workOrderId: goal.id }),
+    ]);
+  });
+
   test("keeps response and completed notices unread without duplicating after restart", () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-notifications-"));
     const databasePath = join(directory, "teamline.db");
@@ -36,7 +63,7 @@ describe("local work-order notifications", () => {
           workOrderId: workOrder.id,
           stageId,
           readAt: null,
-          targetUrl: `/work-orders/${workOrder.id}?stage=${stageId}`,
+          targetUrl: `/goals/${workOrder.id}?stage=${stageId}`,
         }),
       ]);
 

@@ -102,7 +102,7 @@ describe("Teamline CLI", () => {
     expect(cli.stdout.join("\n")).toContain("验收：相关测试通过");
 
     expect(await runCli(["open", created.id.slice(0, 8)], cli.dependencies)).toBe(0);
-    expect(cli.opened).toEqual([`${baseUrl}work-orders/${created.id}`]);
+    expect(cli.opened).toEqual([`${baseUrl}goals/${created.id}`]);
     expect(cli.stderr).toEqual([]);
   });
 
@@ -261,7 +261,7 @@ describe("Teamline CLI", () => {
   test("reports usage and local-service failures without mutating local state", async () => {
     const cli = cliCapture("http://127.0.0.1:4310/", process.cwd());
     expect(await runCli(["create"], cli.dependencies)).toBe(2);
-    expect(cli.stderr.at(-1)).toContain("请提供委托目标");
+    expect(cli.stderr.at(-1)).toContain("请提供目标");
 
     cli.stderr.length = 0;
     expect(

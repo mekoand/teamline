@@ -210,7 +210,7 @@ describe("material work orders API", () => {
     try {
       const database = new Database(databasePath, { create: true });
       const store = new WorkOrderStore(database);
-      const created = store.create({ goal: "待回填的旧委托" });
+      const created = store.create({ goal: "待回填的旧目标" });
       database
         .query("UPDATE work_orders SET repository_path = ?, workspace_kind = NULL WHERE id = ?")
         .run("/tmp/legacy-repository", created.id);
@@ -556,7 +556,7 @@ describe("material work orders API", () => {
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual({
         code: "WORKSPACE_IN_USE",
-        error: "这个文件夹正在被另一项委托使用，请等待其结束或选择其他文件夹",
+        error: "这个文件夹正在被另一个目标使用，请等待其结束或选择其他文件夹",
       });
     } finally {
       rmSync(fixture, { recursive: true, force: true });

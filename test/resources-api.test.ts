@@ -132,7 +132,7 @@ describe("resource API", () => {
     store.saveMaxConcurrency(1);
     const running = store.create({
       repositoryPath: "/tmp/teamline-running",
-      goal: "正在运行的委托",
+      goal: "正在运行的目标",
     });
     store.savePlan(running.id, [
       { outcome: "完成运行", scope: "src", verification: "人工检查" },
@@ -140,7 +140,7 @@ describe("resource API", () => {
     store.markStarted(running.id);
     const ready = store.create({
       repositoryPath: "/tmp/teamline-ready",
-      goal: "等待运行的委托",
+      goal: "等待运行的目标",
     });
     store.savePlan(ready.id, [
       { outcome: "完成等待项", scope: "src", verification: "人工检查" },
@@ -310,7 +310,7 @@ describe("resource API", () => {
     });
     expect(result.workOrders[0].usage).toEqual({
       status: "unavailable",
-      message: "当前没有可归因到这项委托的用量",
+      message: "当前没有可归因到这个目标的用量",
     });
   });
 
@@ -411,7 +411,7 @@ describe("resource API", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const workOrder = store.create({
       repositoryPath: "/tmp/teamline",
-      goal: "运行中的委托",
+      goal: "运行中的目标",
     });
     store.savePlan(workOrder.id, [
       { outcome: "完成", scope: "src", verification: "人工检查" },
@@ -762,7 +762,7 @@ describe("resource API", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const workOrder = store.create({
       repositoryPath: "/tmp/teamline",
-      goal: "检查过期委托用量",
+      goal: "检查过期目标用量",
     });
     const observedAt = "2026-08-03T04:10:01.000Z";
     const app = createApp({
@@ -816,7 +816,7 @@ describe("resource API", () => {
     expect(result.workOrders[0].usage).toEqual({
       status: "stale",
       observedAt: "2026-08-03T04:00:00.000Z",
-      message: "委托用量已过期，需要重新读取后才能显示精确值",
+      message: "目标用量已过期，需要重新读取后才能显示精确值",
     });
     expect(result.workOrders[0].usage).not.toHaveProperty("amount");
   });
@@ -825,7 +825,7 @@ describe("resource API", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const workOrder = store.create({
       repositoryPath: "/tmp/teamline",
-      goal: "检查无效委托用量",
+      goal: "检查无效目标用量",
     });
     const snapshotObservedAt = "2026-08-03T04:10:00.000Z";
     let usage: {

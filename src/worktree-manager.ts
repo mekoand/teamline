@@ -32,7 +32,7 @@ export class GitWorktreeManager implements WorktreeManager {
       if (registered) {
         assertExpectedWorktree(workOrder, branch, registered);
         if (existsSync(path)) {
-          throw new Error("拒绝清理仍然存在的委托 worktree");
+          throw new Error("拒绝清理仍然存在的执行 worktree");
         }
         await runGit(workOrder.repositoryPath, "worktree", "remove", path);
         reattachingMissingWorktree = true;
@@ -46,7 +46,7 @@ export class GitWorktreeManager implements WorktreeManager {
       );
       if (existingBranchHead) {
         if (workOrder.baseCommit && existingBranchHead !== workOrder.baseCommit) {
-          throw new Error("委托分支基线已经变化");
+          throw new Error("目标分支基线已经变化");
         }
         await runGit(
           workOrder.repositoryPath,
@@ -100,10 +100,10 @@ async function inspectExistingWorktree(
   );
   const worktreeCommonPath = realpathSync(resolve(path, worktreeCommonDirectory));
   if (sourceCommonPath !== worktreeCommonPath || actualBranch !== branch) {
-    throw new Error("委托 worktree 与仓库或分支不一致");
+    throw new Error("执行 worktree 与仓库或分支不一致");
   }
   if (workOrder.baseCommit && head !== workOrder.baseCommit) {
-    throw new Error("委托 worktree 基线与记录不一致");
+    throw new Error("执行 worktree 基线与记录不一致");
   }
   return {
     path,
@@ -178,10 +178,10 @@ function assertExpectedWorktree(
   registered: RegisteredWorktree,
 ): void {
   if (registered.branch !== branch) {
-    throw new Error("委托 worktree 分支与记录不一致");
+    throw new Error("执行 worktree 分支与记录不一致");
   }
   if (workOrder.baseCommit && registered.head !== workOrder.baseCommit) {
-    throw new Error("委托 worktree 基线与记录不一致");
+    throw new Error("执行 worktree 基线与记录不一致");
   }
 }
 

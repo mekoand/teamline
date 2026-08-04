@@ -22,18 +22,19 @@ const help = `Teamline CLI
 用法：
   teamline create <目标> [--acceptance <验收标准>]
   teamline list
-  teamline show <委托 ID 或唯一前缀>
-  teamline interrupt <委托 ID 或唯一前缀>
-  teamline continue <委托 ID 或唯一前缀>
-  teamline open <委托 ID 或唯一前缀>
+  teamline show <目标 ID 或唯一前缀>
+  teamline interrupt <目标 ID 或唯一前缀>
+  teamline continue <目标 ID 或唯一前缀>
+  teamline open <目标 ID 或唯一前缀>
 
-CLI 只负责日常入口；计划编辑、执行地图和资源安排请在网页中完成。`;
+CLI 只负责日常入口；计划编辑、执行图和资源安排请在网页中完成。`;
 
 const statusLabels: Record<UserVisibleStatus, string> = {
   planning: "待规划",
   running: "进行中",
-  queued: "排队中",
+  queued: "待运行",
   response: "需响应",
+  review: "待验收",
   completed: "已完成",
 };
 
@@ -117,7 +118,7 @@ async function createCommand(
 async function listCommand(baseUrl: URL, dependencies: CliDependencies): Promise<void> {
   const workOrders = await consoleWorkOrders(baseUrl, dependencies);
   if (workOrders.length === 0) {
-    dependencies.stdout("还没有工作委托。");
+    dependencies.stdout("还没有目标。");
     return;
   }
 
@@ -158,7 +159,7 @@ async function workOrderCommand(
     { method: "POST" },
   );
   const updated = response.workOrder as WorkOrder | undefined;
-  if (!updated?.id) throw new CliRequestError("本地服务返回了无法识别的委托状态");
+  if (!updated?.id) throw new CliRequestError("本地服务返回了无法识别的目标状态");
   dependencies.stdout(
     command === "interrupt"
       ? `正在中断：${updated.title}`
@@ -189,7 +190,7 @@ async function consoleWorkOrders(
 ): Promise<ConsoleWorkOrder[]> {
   const response = await requestJson(baseUrl, "/api/console", dependencies);
   if (!Array.isArray(response.workOrders)) {
-    throw new CliRequestError("本地服务返回了无法识别的委托列表");
+    throw new CliRequestError("本地服务返回了无法识别的目标列表");
   }
   return response.workOrders as ConsoleWorkOrder[];
 }
@@ -252,7 +253,7 @@ function parseCreateArguments(args: string[]): { goal: string; acceptance?: stri
   }
   const goal = goalParts.join(" ").trim();
   if (!goal) {
-    throw new CliUsageError("请提供委托目标：teamline create <目标> [--acceptance <验收标准>]");
+    throw new CliUsageError("请提供目标：teamline create <目标> [--acceptance <验收标准>]");
   }
   return { goal, ...(acceptance ? { acceptance } : {}) };
 }
@@ -266,9 +267,9 @@ function resolveWorkOrder(
   const matches = workOrders.filter((workOrder) => workOrder.id.startsWith(reference));
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
-    throw new CliUsageError(`委托 ID 前缀“${reference}”不唯一，请多输入几位`);
+    throw new CliUsageError(`目标 ID 前缀“${reference}”不唯一，请多输入几位`);
   }
-  throw new CliUsageError(`找不到委托：${reference}`);
+  throw new CliUsageError(`找不到目标：${reference}`);
 }
 
 function currentNode(workOrder: WorkOrder): string {
@@ -290,7 +291,7 @@ function shortId(id: string): string {
 }
 
 function workOrderUrl(baseUrl: URL, id: string): string {
-  return new URL(`/work-orders/${encodeURIComponent(id)}`, baseUrl).toString();
+  return new URL(`/goals/${encodeURIComponent(id)}`, baseUrl).toString();
 }
 
 function localBaseUrl(env: Record<string, string | undefined>): URL {
@@ -318,7 +319,7 @@ function localBaseUrl(env: Record<string, string | undefined>): URL {
 
 function requireReference(args: string[], command: string): string {
   if (args.length !== 1 || !args[0]) {
-    throw new CliUsageError(`用法：teamline ${command} <委托 ID 或唯一前缀>`);
+    throw new CliUsageError(`用法：teamline ${command} <目标 ID 或唯一前缀>`);
   }
   return args[0];
 }

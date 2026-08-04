@@ -27,7 +27,7 @@
         </div>
         <div class="topbar-status" aria-label="本地服务状态">
           <span class="local-status"><i></i> 本地运行</span>
-          <label class="concurrency-control" title="同时运行的委托上限">
+          <label class="concurrency-control" title="同时运行的目标上限">
             <span>最大并发</span>
             <input id="max-concurrency" type="number" min="1" step="1" value="2" inputmode="numeric" aria-label="本机最大并发数" />
           </label>
@@ -41,9 +41,9 @@
         </div>
       </header>
 
-      <aside class="order-sidebar" aria-label="委托列表">
+      <aside class="order-sidebar" aria-label="目标列表">
         <div class="sidebar-heading">
-          <h1>委托</h1>
+          <h1>目标</h1>
           <span id="work-order-count" class="count">0</span>
         </div>
         <button class="sidebar-nav" id="open-resources" type="button">
@@ -52,12 +52,12 @@
         <button class="sidebar-nav" id="open-local-state" type="button">
           <span>本地数据</span><small>导出与恢复</small>
         </button>
-        <button class="primary-button full-button" id="open-create" type="button">＋ 新建委托</button>
+        <button class="primary-button full-button" id="open-create" type="button">＋ 新建目标</button>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
       </aside>
 
       <main id="work-order-workspace" class="work-order-workspace" aria-live="polite">
-        <div class="loading-state">正在读取本地委托…</div>
+        <div class="loading-state">正在读取本地目标…</div>
       </main>
 
       <aside id="context-panel" class="context-panel" aria-label="详情">
@@ -69,15 +69,19 @@
       <form id="create-form">
         <div class="dialog-heading">
           <div>
-            <p class="overline">委托</p>
-            <h2>新建委托</h2>
+            <p class="overline">目标</p>
+            <h2>新建目标</h2>
           </div>
           <button type="button" class="icon-button" id="close-create" aria-label="关闭">×</button>
         </div>
 
         <label>
-          <span>想完成什么</span>
-          <textarea name="goal" rows="5" placeholder="例如：整理竞品结论，或为设置页面增加深色模式" required></textarea>
+          <span>目标名称</span>
+          <input name="name" placeholder="例如：完成设置页面深色模式" required />
+        </label>
+        <label>
+          <span>想得到什么结果</span>
+          <textarea name="description" rows="5" placeholder="说明预期结果和重要边界" required></textarea>
         </label>
         <label>
           <span>完成要求 <em>可选</em></span>
@@ -103,7 +107,7 @@
         <p class="form-error" id="form-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" class="secondary-button" id="cancel-create">取消</button>
-          <button type="submit" class="primary-button" id="submit-create">创建委托</button>
+          <button type="submit" class="primary-button" id="submit-create">创建目标</button>
         </div>
       </form>
     </dialog>
@@ -148,7 +152,7 @@
           </div>
           <button type="button" class="icon-button" id="close-session-import" aria-label="关闭">×</button>
         </div>
-        <p class="dialog-description">只读取标题、文件夹和活动时间。导入后创建待确认的委托，不会启动原会话。</p>
+        <p class="dialog-description">只读取标题、文件夹和活动时间。导入后创建待确认的目标，不会启动原会话。</p>
         <label class="session-search">
           <span>搜索会话</span>
           <input id="session-search" type="search" placeholder="标题或文件夹" autocomplete="off" />
@@ -174,7 +178,7 @@
         <button type="button" class="icon-button" id="close-local-state" aria-label="关闭">×</button>
       </div>
       <p class="dialog-description">
-        只保存 Teamline 的委托状态与位置引用，不复制仓库、文件或外部文档，也不保存凭据。
+        只保存 Teamline 的目标状态与位置引用，不复制仓库、文件或外部文档，也不保存凭据。
       </p>
       <section class="local-state-export">
         <div>

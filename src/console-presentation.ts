@@ -5,6 +5,7 @@ export type UserVisibleStatus =
   | "running"
   | "queued"
   | "response"
+  | "review"
   | "completed";
 
 export type ConsoleWorkOrder = WorkOrder & {
@@ -36,7 +37,7 @@ function presentStatus(
     return { userStatus: "completed", statusReason: "已确认交付" };
   }
   if (workOrder.status === "review") {
-    return { userStatus: "response", statusReason: "待验收" };
+    return { userStatus: "review", statusReason: "待验收" };
   }
   if (workOrder.status === "interrupted") {
     return {

@@ -10,7 +10,7 @@ import { WorkOrderStore } from "../src/work-order-store";
 const repositoryPath = resolve(import.meta.dir, "..");
 
 function readyWorkOrder(store: WorkOrderStore) {
-  const created = store.create({ repositoryPath, goal: "完成一项测试委托" });
+  const created = store.create({ repositoryPath, goal: "完成一项测试目标" });
   return store.savePlan(created.id, [
     {
       outcome: "完成实现",
@@ -143,10 +143,10 @@ describe("run timeout", () => {
     expect(interrupts).toBe(1);
     expect(store.get(ready.id)).toMatchObject({
       status: "interrupted",
-      currentSummary: "已达到本轮最长运行时间（30 分钟），Codex 已停止；可以继续委托",
+      currentSummary: "已达到本轮最长运行时间（30 分钟），Codex 已停止；可以继续推进目标",
     });
     expect(store.listRunEvents(ready.id).at(-1)?.message).toBe(
-      "已达到本轮最长运行时间（30 分钟），Codex 已停止；可以继续委托",
+      "已达到本轮最长运行时间（30 分钟），Codex 已停止；可以继续推进目标",
     );
   });
 

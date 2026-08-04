@@ -50,7 +50,7 @@ function presentWorkOrderUsage(
   if (!usage) {
     return {
       status: "unavailable" as const,
-      message: "当前没有可归因到这项委托的用量",
+      message: "当前没有可归因到这个目标的用量",
     };
   }
   const usageObservedAt = Date.parse(usage.observedAt);
@@ -58,7 +58,7 @@ function presentWorkOrderUsage(
   if (!Number.isFinite(usageObservedAt) || !Number.isFinite(snapshotTime)) {
     return {
       status: "unavailable" as const,
-      message: "委托用量缺少有效采集时间，无法显示精确值",
+      message: "目标用量缺少有效采集时间，无法显示精确值",
     };
   }
   if (
@@ -71,7 +71,7 @@ function presentWorkOrderUsage(
     return {
       status: "unavailable" as const,
       observedAt: usage.observedAt,
-      message: "委托用量数据无效，无法显示精确值",
+      message: "目标用量数据无效，无法显示精确值",
     };
   }
   const age = snapshotTime - usageObservedAt;
@@ -84,8 +84,8 @@ function presentWorkOrderUsage(
       observedAt: usage.observedAt,
       message:
         age < 0
-          ? "委托用量采集时间异常，需要重新读取后才能显示精确值"
-          : "委托用量已过期，需要重新读取后才能显示精确值",
+          ? "目标用量采集时间异常，需要重新读取后才能显示精确值"
+          : "目标用量已过期，需要重新读取后才能显示精确值",
     };
   }
   return {
@@ -106,12 +106,13 @@ function recommendation(
   }
   if (workOrder.userStatus === "queued") return "等待当前运行结束";
   if (workOrder.userStatus === "response") {
-    return "先处理这项委托需要的响应";
+    return "先处理这个目标需要的响应";
   }
+  if (workOrder.userStatus === "review") return "先验收这个目标";
   if (workOrder.status === "ready") {
     if (workOrder.resourcePlan.runWhenQuotaAvailable) {
       return workOrder.resourcePlan.autoRunReason
-        ? `排队中 · ${workOrder.resourcePlan.autoRunReason}`
+        ? `待运行 · ${workOrder.resourcePlan.autoRunReason}`
         : "额度满足时可自动启动一轮";
     }
     if (codex.status !== "available") {

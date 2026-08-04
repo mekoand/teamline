@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { createProject, type Project } from "./project";
 import {
   createWorkOrder,
   type CreateWorkOrderInput,
@@ -26,9 +27,11 @@ import {
 type WorkOrderRow = {
   id: string;
   title: string;
+  project_id: string | null;
   repository_path: string;
   workspace_kind: "git" | "directory" | null;
   materials_json: string | null;
+  source_sessions_json: string | null;
   import_source_json: string | null;
   resource_plan_json: string | null;
   goal: string;
@@ -52,6 +55,13 @@ type WorkOrderRow = {
   runtime_updated_at: string | null;
   max_run_minutes: number;
   last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProjectRow = {
+  id: string;
+  name: string;
   created_at: string;
   updated_at: string;
 };
@@ -89,6 +99,7 @@ type ConversationRow = {
 
 export type LocalNotificationKind =
   | "response"
+  | "review"
   | "completed"
   | "auto_run_started"
   | "auto_run_stopped";
@@ -132,6 +143,14 @@ export class WorkOrderStore {
   constructor(database: Database) {
     this.database = database;
     this.database.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_orders (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -152,6 +171,7 @@ export class WorkOrderStore {
     this.addImportSourceColumnToExistingDatabase();
     this.addResourcePlanColumnToExistingDatabase();
     this.addClarificationColumnToExistingDatabase();
+    this.addV2DomainColumnsToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
@@ -231,7 +251,33 @@ export class WorkOrderStore {
       );
       CREATE INDEX IF NOT EXISTS local_notifications_recent
       ON local_notifications(created_at DESC, id DESC);
+      UPDATE local_notifications
+      SET notification_kind = 'review'
+      WHERE notification_kind = 'response' AND dedupe_key LIKE 'response:%:review:%';
     `);
+  }
+
+  listProjects(): Project[] {
+    return this.database
+      .query<ProjectRow, []>("SELECT * FROM projects ORDER BY created_at DESC")
+      .all()
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+  }
+
+  createProject(name: string): Project {
+    const project = createProject(name);
+    this.database
+      .query(`
+        INSERT INTO projects (id, name, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+      `)
+      .run(project.id, project.name, project.createdAt, project.updatedAt);
+    return project;
   }
 
   list(): WorkOrder[] {
@@ -294,7 +340,7 @@ export class WorkOrderStore {
     checkpoint: Omit<WorkOrderCheckpoint, "sequence" | "createdAt">,
   ): WorkOrderCheckpoint {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这项委托");
+    if (!workOrder) throw new Error("找不到这个目标");
     if (checkpoint.planVersion !== workOrder.plan?.version) {
       throw new Error("检查点与当前计划版本不一致");
     }
@@ -574,7 +620,7 @@ export class WorkOrderStore {
     },
   ): WorkOrder {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这项委托");
+    if (!workOrder) throw new Error("找不到这个目标");
     if (!workOrderPriorities.includes(input.priority)) {
       throw new Error("请选择有效的优先级");
     }
@@ -605,7 +651,7 @@ export class WorkOrderStore {
 
   saveAutoRunReason(id: string, reason: string | null): WorkOrder {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这项委托");
+    if (!workOrder) throw new Error("找不到这个目标");
     const resourcePlan = { ...workOrder.resourcePlan, autoRunReason: reason };
     const now = new Date().toISOString();
     this.database
@@ -629,19 +675,33 @@ export class WorkOrderStore {
 
   create(input: CreateWorkOrderInput): WorkOrder {
     const workOrder = createWorkOrder(input);
+    if (workOrder.projectId && !this.getProject(workOrder.projectId)) {
+      throw new Error("找不到所选项目");
+    }
+    const occupiedSource = workOrder.sourceSessions.find((source) =>
+      this.list().some((existing) =>
+        existing.sourceSessions.some((candidate) => candidate.id === source.id),
+      ),
+    );
+    if (occupiedSource) {
+      throw new Error(`来源会话 ${occupiedSource.id} 已属于另一个目标`);
+    }
     this.database
       .query(`
         INSERT INTO work_orders (
-          id, title, repository_path, workspace_kind, materials_json, import_source_json,
+          id, title, project_id, repository_path, workspace_kind, materials_json,
+          source_sessions_json, import_source_json,
           goal, acceptance, status, current_summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
         workOrder.title,
+        workOrder.projectId,
         workOrder.repositoryPath,
         workOrder.workspace?.kind ?? null,
         JSON.stringify(workOrder.materials),
+        JSON.stringify(workOrder.sourceSessions),
         workOrder.importSource ? JSON.stringify(workOrder.importSource) : null,
         workOrder.goal,
         workOrder.acceptance,
@@ -654,6 +714,20 @@ export class WorkOrderStore {
     return workOrder;
   }
 
+  getProject(id: string): Project | null {
+    const row = this.database
+      .query<ProjectRow, [string]>("SELECT * FROM projects WHERE id = ?")
+      .get(id);
+    return row
+      ? {
+          id: row.id,
+          name: row.name,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
   saveClarification(
     id: string,
     questions: ClarificationQuestion[],
@@ -661,9 +735,9 @@ export class WorkOrderStore {
     pendingReply?: string,
   ): WorkOrder {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这项委托");
+    if (!workOrder) throw new Error("找不到这个目标");
     if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
-      throw new PlanLockedError("委托开始执行后不能直接修改计划");
+      throw new PlanLockedError("目标开始执行后不能直接修改计划");
     }
     const normalized = normalizeClarificationQuestions(questions);
     if (normalized.length === 0) throw new Error("澄清问题不能为空");
@@ -713,7 +787,7 @@ export class WorkOrderStore {
   addStageSupplement(id: string, stageId: string, content: string): WorkOrder {
     const workOrder = this.get(id);
     const note = content.trim();
-    if (!workOrder?.plan) throw new Error("请先生成委托计划");
+    if (!workOrder?.plan) throw new Error("请先生成执行计划");
     if (!note) throw new Error("请填写补充内容");
     if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
       throw new PlanLockedError("当前状态不能补充节点上下文");
@@ -772,7 +846,7 @@ export class WorkOrderStore {
     pendingReply?: string,
   ): WorkOrder {
     const current = this.get(id);
-    if (!current) throw new Error("找不到这项委托");
+    if (!current) throw new Error("找不到这个目标");
     const clarificationTargets = new Set(
       current.pendingClarification?.questions.map((question) => question.target) ?? [],
     );
@@ -852,7 +926,7 @@ export class WorkOrderStore {
             ? current.currentSummary
             : canUpdateResources
               ? "资源偏好已更新"
-              : "委托上下文已更新",
+              : "目标上下文已更新",
           now,
           id,
         );
@@ -867,7 +941,7 @@ export class WorkOrderStore {
             ? publicPlanningText(generated.message?.trim() || "计划已更新，请重新确认后再启动。")
             : canUpdateResources
               ? "资源偏好已更新，不改变计划版本。"
-              : "委托上下文已更新，不改变计划版本。",
+              : "目标上下文已更新，不改变计划版本。",
           stageId: null,
           decisionTarget: structuralChange
             ? "plan"
@@ -890,13 +964,13 @@ export class WorkOrderStore {
   ): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder) {
-      throw new Error("找不到这项委托");
+      throw new Error("找不到这个目标");
     }
     if (
       workOrder.runStatus !== null ||
       !["draft", "ready"].includes(workOrder.status)
     ) {
-      throw new PlanLockedError("委托开始执行后不能直接修改计划");
+      throw new PlanLockedError("目标开始执行后不能直接修改计划");
     }
 
     if (
@@ -939,7 +1013,7 @@ export class WorkOrderStore {
         (workspace.kind !== expectedWorkspace.kind ||
           workspace.path !== expectedWorkspace.path)
       ) {
-        throw new Error("计划节点必须使用当前委托选择的执行工作空间");
+        throw new Error("计划节点必须使用当前目标选择的执行工作空间");
       }
       return {
         id: stageIds[index]!,
@@ -1011,7 +1085,7 @@ export class WorkOrderStore {
     },
   ): WorkOrder {
     const workOrder = this.get(id);
-    if (!workOrder?.plan) throw new Error("找不到可更新的委托计划");
+    if (!workOrder?.plan) throw new Error("找不到可更新的执行计划");
     if (workOrder.runStatus !== null || workOrder.status !== "ready") {
       throw new PlanLockedError("当前状态不能标记外部节点完成");
     }
@@ -1131,9 +1205,9 @@ export class WorkOrderStore {
     workspace: { kind: "git" | "directory"; path: string },
   ): WorkOrder {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这项委托");
+    if (!workOrder) throw new Error("找不到这个目标");
     if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
-      throw new PlanLockedError("委托开始执行后不能更换工作空间");
+      throw new PlanLockedError("目标开始执行后不能更换工作空间");
     }
     const now = new Date().toISOString();
     const plan = workOrder.plan
@@ -1179,7 +1253,7 @@ export class WorkOrderStore {
 
   markStarted(id: string): WorkOrder {
     const workOrder = this.get(id);
-    if (!workOrder?.plan) throw new Error("找不到可执行的委托计划");
+    if (!workOrder?.plan) throw new Error("找不到可执行的目标计划");
     const runnableStageIds = codexStageIdsForNextRun(workOrder.plan);
     if (runnableStageIds.size === 0) throw new Error("当前没有可以启动的 Codex 节点");
     const stageById = new Map(workOrder.plan.stages.map((stage) => [stage.id, stage]));
@@ -1393,7 +1467,7 @@ export class WorkOrderStore {
       .query<WorkOrderRow, [string]>("SELECT * FROM work_orders WHERE id = ?")
       .get(id);
     if (!row || row.run_status !== "running") {
-      throw new Error("这项委托当前不能整理结果");
+      throw new Error("这个目标当前不能整理结果");
     }
 
     const now = new Date();
@@ -1552,7 +1626,7 @@ export class WorkOrderStore {
 
   recordResultProcessingFailure(id: string): WorkOrder {
     const now = new Date().toISOString();
-    const error = "无法整理代码变化或验证结果，请检查委托工作区后继续处理";
+    const error = "无法整理代码变化或验证结果，请检查执行工作区后继续处理";
     this.database
       .query(`
         UPDATE work_orders
@@ -1567,7 +1641,7 @@ export class WorkOrderStore {
   confirmDelivered(id: string): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder || workOrder.status !== "review") {
-      throw new Error("只有待验收的委托可以确认交付");
+      throw new Error("只有待验收的目标可以确认完成");
     }
     const plan = workOrder.plan
       ? advancePlanWithCompletedStages(
@@ -1591,7 +1665,7 @@ export class WorkOrderStore {
     const workOrder = this.get(id);
     const note = revisionNote.trim();
     if (!workOrder || workOrder.status !== "review" || !workOrder.plan) {
-      throw new Error("只有待验收的委托可以补充要求");
+      throw new Error("只有待验收的目标可以补充要求");
     }
     if (!note) {
       throw new Error("请填写补充要求");
@@ -1877,6 +1951,51 @@ export class WorkOrderStore {
     }
   }
 
+  private addV2DomainColumnsToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("project_id")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN project_id TEXT");
+    }
+    if (!columns.has("source_sessions_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN source_sessions_json TEXT");
+    }
+    const rows = this.database
+      .query<{
+        id: string;
+        source_sessions_json: string | null;
+        import_source_json: string | null;
+      }, []>(`
+        SELECT id, source_sessions_json, import_source_json
+        FROM work_orders
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all();
+    const claimedSourceIds = new Set<string>();
+    const update = this.database.query(`
+      UPDATE work_orders SET source_sessions_json = ? WHERE id = ?
+    `);
+    this.database.transaction(() => {
+      for (const row of rows) {
+        const legacySource = normalizeImportSource(row.import_source_json);
+        const candidates = normalizeSourceSessions(
+          row.source_sessions_json,
+          legacySource,
+        );
+        const owned = candidates.filter((source) => {
+          if (claimedSourceIds.has(source.id)) return false;
+          claimedSourceIds.add(source.id);
+          return true;
+        });
+        update.run(JSON.stringify(owned), row.id);
+      }
+    })();
+  }
+
   private migrateDeliveredStatus(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -1914,7 +2033,7 @@ function stateNotification(workOrder: WorkOrder): {
       kind: "completed",
       workOrderId: workOrder.id,
       stageId: stage?.id ?? null,
-      title: "委托已完成",
+      title: "目标已完成",
       body: workOrder.title,
     };
   }
@@ -1928,7 +2047,7 @@ function stateNotification(workOrder: WorkOrder): {
       kind: "response",
       workOrderId: workOrder.id,
       stageId: externalStage.id,
-      title: "委托需要处理",
+      title: "目标需要处理",
       body: `${workOrder.title} · ${externalStage.outcome}`,
     };
   }
@@ -1941,10 +2060,10 @@ function stateNotification(workOrder: WorkOrder): {
     const resultKey = workOrder.result?.completedAt ?? workOrder.plan?.version ?? 0;
     return {
       dedupeKey: `response:${workOrder.id}:review:${resultKey}`,
-      kind: "response",
+      kind: "review",
       workOrderId: workOrder.id,
       stageId: stage?.id ?? null,
-      title: "委托等待验收",
+      title: "目标等待验收",
       body: workOrder.title,
     };
   }
@@ -1956,7 +2075,7 @@ function stateNotification(workOrder: WorkOrder): {
       kind: "response",
       workOrderId: workOrder.id,
       stageId: stage?.id ?? null,
-      title: "委托需要处理",
+      title: "目标需要处理",
       body: `${workOrder.title} · ${workOrder.currentSummary}`,
     };
   }
@@ -1989,7 +2108,7 @@ function notificationStage(
 }
 
 function notificationTargetUrl(workOrderId: string, stageId: string | null): string {
-  const path = `/work-orders/${encodeURIComponent(workOrderId)}`;
+  const path = `/goals/${encodeURIComponent(workOrderId)}`;
   return stageId ? `${path}?stage=${encodeURIComponent(stageId)}` : path;
 }
 
@@ -2029,15 +2148,25 @@ function mapRow(
         "已由你确认完成",
       )
     : storedPlan;
+  const importSource = normalizeImportSource(row.import_source_json);
+  const sourceSessions = normalizeSourceSessions(
+    row.source_sessions_json,
+    importSource,
+  );
   return {
     id: row.id,
+    name: row.title,
+    description: row.goal,
+    projectId: row.project_id,
     title: row.title,
     repositoryPath: row.repository_path,
     workspace: row.workspace_kind
       ? { kind: row.workspace_kind, path: row.repository_path }
       : null,
     materials: row.materials_json ? JSON.parse(row.materials_json) : [],
-    importSource: normalizeImportSource(row.import_source_json),
+    sourceSessions,
+    currentSessionId: row.session_id,
+    importSource: sourceSessions[0] ?? null,
     resourcePlan: normalizeResourcePlan(row.resource_plan_json),
     goal: row.goal,
     acceptance: row.acceptance,
@@ -2088,6 +2217,22 @@ function normalizeImportSource(value: string | null): WorkOrderImportSource | nu
     };
   } catch {
     return null;
+  }
+}
+
+function normalizeSourceSessions(
+  value: string | null,
+  legacySource: WorkOrderImportSource | null,
+): WorkOrderImportSource[] {
+  if (value === null) return legacySource ? [legacySource] : [];
+  try {
+    const stored = JSON.parse(value);
+    if (!Array.isArray(stored)) return [];
+    return stored
+      .map((source) => normalizeImportSource(JSON.stringify(source)))
+      .filter((source): source is WorkOrderImportSource => source !== null);
+  } catch {
+    return [];
   }
 }
 

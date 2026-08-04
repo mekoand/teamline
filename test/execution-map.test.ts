@@ -160,7 +160,7 @@ describe("execution map", () => {
       const firstApp = createApp({ store: firstStore });
       const created = firstStore.create({
         repositoryPath,
-        goal: "把执行地图接入正式计划",
+        goal: "把执行图接入正式计划",
       });
       const inspectId = crypto.randomUUID();
       const implementId = crypto.randomUUID();
@@ -191,7 +191,7 @@ describe("execution map", () => {
               },
               {
                 id: implementId,
-                outcome: "交付正式执行地图",
+                outcome: "交付正式执行图",
                 scope: "本地 HTTP 应用",
                 verification: "bun test",
                 verificationCommand: "bun test",
@@ -240,7 +240,7 @@ describe("execution map", () => {
         },
         {
           id: implementId,
-          outcome: "交付正式执行地图",
+          outcome: "交付正式执行图",
           scope: "本地 HTTP 应用",
           verification: "bun test",
           verificationCommand: "bun test",

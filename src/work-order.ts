@@ -198,11 +198,16 @@ export type PlanStageInput = Omit<
 
 export type WorkOrder = {
   id: string;
+  name: string;
+  description: string;
+  projectId: string | null;
   title: string;
   /** Legacy SQLite storage alias for workspace.path. Never derive it from materials. */
   repositoryPath: string;
   workspace: WorkOrderWorkspace | null;
   materials: WorkOrderMaterial[];
+  sourceSessions: WorkOrderImportSource[];
+  currentSessionId: string | null;
   importSource: WorkOrderImportSource | null;
   resourcePlan: WorkOrderResourcePlan;
   goal: string;
@@ -233,11 +238,15 @@ export type WorkOrder = {
 };
 
 export type CreateWorkOrderInput = {
+  name?: string;
+  description?: string;
+  projectId?: string | null;
   repositoryPath?: string;
   workspace?: WorkOrderWorkspace | null;
   materials?: Array<{ kind: WorkOrderMaterialKind; value: string }>;
+  sourceSessions?: WorkOrderImportSource[];
   importSource?: WorkOrderImportSource;
-  goal: string;
+  goal?: string;
   acceptance?: string;
 };
 
@@ -249,8 +258,18 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
       ? { kind: "git" as const, path: legacyRepositoryPath }
       : null;
   const repositoryPath = workspace?.path ?? "";
-  const goal = input.goal.trim();
+  const usesV2Fields = input.name !== undefined || input.description !== undefined;
+  const goal = (usesV2Fields ? input.description : input.goal)?.trim() ?? "";
   const acceptance = input.acceptance?.trim() || null;
+  const rawSourceSessions: unknown =
+    input.sourceSessions ?? (input.importSource ? [input.importSource] : []);
+  if (!Array.isArray(rawSourceSessions) || rawSourceSessions.length > 20) {
+    throw new Error("来源会话格式无效");
+  }
+  const sourceSessions = rawSourceSessions.map(normalizeSourceSession);
+  if (new Set(sourceSessions.map((source) => source.id)).size !== sourceSessions.length) {
+    throw new Error("来源会话不能重复");
+  }
 
   if (!goal) {
     throw new Error("请描述想完成的工作");
@@ -258,10 +277,15 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
 
   const now = new Date().toISOString();
   const firstLine = goal.split(/\r?\n/, 1)[0] ?? goal;
-  const title = firstLine.length > 56 ? `${firstLine.slice(0, 56)}…` : firstLine;
+  const legacyTitle = firstLine.length > 56 ? `${firstLine.slice(0, 56)}…` : firstLine;
+  const title = usesV2Fields ? input.name?.trim() ?? "" : legacyTitle;
+  if (!title) throw new Error("请填写目标名称");
 
   return {
     id: crypto.randomUUID(),
+    name: title,
+    description: goal,
+    projectId: input.projectId?.trim() || null,
     title,
     repositoryPath,
     workspace,
@@ -270,14 +294,9 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
       kind: material.kind,
       value: material.value.trim(),
     })),
-    importSource: input.importSource
-      ? {
-          kind: "codex_session",
-          id: input.importSource.id.trim(),
-          lastActiveAt: input.importSource.lastActiveAt,
-          version: 1,
-        }
-      : null,
+    sourceSessions,
+    currentSessionId: null,
+    importSource: sourceSessions[0] ?? null,
     resourcePlan: {
       priority: "normal",
       pace: "balanced",
@@ -308,5 +327,29 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     lastError: null,
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function normalizeSourceSession(value: unknown): WorkOrderImportSource {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("来源会话格式无效");
+  }
+  const source = value as Record<string, unknown>;
+  const id = typeof source.id === "string" ? source.id.trim() : "";
+  const lastActiveAt = source.lastActiveAt;
+  if (
+    source.kind !== "codex_session" ||
+    source.version !== 1 ||
+    !id ||
+    typeof lastActiveAt !== "string" ||
+    !Number.isFinite(Date.parse(lastActiveAt))
+  ) {
+    throw new Error("来源会话格式无效");
+  }
+  return {
+    kind: "codex_session",
+    id,
+    lastActiveAt,
+    version: 1,
   };
 }

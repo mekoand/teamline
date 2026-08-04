@@ -112,7 +112,7 @@ export function createApp({
       const activeRun = activeRuns.get(id);
       if (store.get(id)?.runStatus !== "running" || !activeRun) return;
 
-      const reason = `已达到本轮最长运行时间（${maxRunMinutes} 分钟），Codex 已停止；可以继续委托`;
+      const reason = `已达到本轮最长运行时间（${maxRunMinutes} 分钟），Codex 已停止；可以继续推进目标`;
       stopReasons.set(id, reason);
       store.markStopping(
         id,
@@ -469,6 +469,28 @@ export function createApp({
         return Response.json({ workOrders: store.list() });
       }
 
+      if (request.method === "GET" && url.pathname === "/api/projects") {
+        return Response.json({ projects: store.listProjects() });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/projects") {
+        try {
+          const body = (await request.json()) as { name?: string };
+          return Response.json(
+            { project: store.createProject(body.name ?? "") },
+            { status: 201 },
+          );
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_PROJECT",
+              error: error instanceof Error ? error.message : "无法创建项目",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
       if (request.method === "GET" && url.pathname === "/api/codex-sessions") {
         if (!codexSessionProvider) {
           return Response.json({
@@ -639,19 +661,19 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
         if (workOrder.runStatus === "running" || startingWorkOrderIds.has(id)) {
           return Response.json(
-            { code: "WORK_ORDER_ALREADY_RUNNING", error: "这项委托已经在运行" },
+            { code: "WORK_ORDER_ALREADY_RUNNING", error: "这个目标已经在运行" },
             { status: 409 },
           );
         }
         if (workOrder.status !== "ready" || !workOrder.plan) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_READY", error: "请先保存并确认委托计划" },
+            { code: "WORK_ORDER_NOT_READY", error: "请先保存并确认执行计划" },
             { status: 409 },
           );
         }
@@ -659,7 +681,7 @@ export function createApp({
           return Response.json(
             {
               code: "PLAN_CONFIRMATION_REQUIRED",
-              error: "请先检查并保存当前委托计划",
+              error: "请先检查并保存当前执行计划",
             },
             { status: 409 },
           );
@@ -714,7 +736,7 @@ export function createApp({
           return Response.json(
             {
               code: "CONCURRENCY_LIMIT_REACHED",
-              error: `已达到本机最大并发数（${maxConcurrency}），请等待一项委托结束或调整设置`,
+              error: `已达到本机最大并发数（${maxConcurrency}），请等待一个目标结束或调整设置`,
             },
             { status: 409 },
           );
@@ -729,7 +751,7 @@ export function createApp({
               workspacePath = delegatedWorktree.path;
             } catch (error) {
               const message = "无法准备独立 Git worktree，请确认仓库和分支状态后重试";
-              store.recordStartFailure(id, message, "委托工作区准备失败，请处理后重试");
+              store.recordStartFailure(id, message, "执行工作区准备失败，请处理后重试");
               return Response.json(
                 { code: "WORKTREE_PREPARATION_FAILED", error: message },
                 { status: 500 },
@@ -741,7 +763,7 @@ export function createApp({
             return Response.json(
               {
                 code: "WORKSPACE_IN_USE",
-                error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+                error: "这个工作区已由另一个活动目标使用，请选择其他工作区",
               },
               { status: 409 },
             );
@@ -839,7 +861,7 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -859,7 +881,7 @@ export function createApp({
         }
         if (workOrder.runStatus !== "running" || !activeRun) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_RUNNING", error: "这项委托当前没有可中断的运行" },
+            { code: "WORK_ORDER_NOT_RUNNING", error: "这个目标当前没有可中断的运行" },
             { status: 409 },
           );
         }
@@ -877,13 +899,13 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
         if (workOrder.status !== "interrupted") {
           return Response.json(
-            { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的委托可以继续" },
+            { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的目标可以继续" },
             { status: 409 },
           );
         }
@@ -906,7 +928,7 @@ export function createApp({
           return Response.json(
             {
               code: "WORKTREE_MISSING",
-              error: "委托工作区不存在，无法继续；Teamline 不会自动重建或覆盖现场",
+              error: "执行工作区不存在，无法继续；Teamline 不会自动重建或覆盖现场",
             },
             { status: 409 },
           );
@@ -922,7 +944,7 @@ export function createApp({
             return Response.json(
               {
                 code: "WORKTREE_MISSING",
-                error: "委托工作区不存在，无法继续；Teamline 不会自动重建或覆盖现场",
+                error: "执行工作区不存在，无法继续；Teamline 不会自动重建或覆盖现场",
               },
               { status: 409 },
             );
@@ -938,7 +960,7 @@ export function createApp({
           return Response.json(
             {
               code: "CONCURRENCY_LIMIT_REACHED",
-              error: `已达到本机最大并发数（${maxConcurrency}），请等待一项委托结束或调整设置`,
+              error: `已达到本机最大并发数（${maxConcurrency}），请等待一个目标结束或调整设置`,
             },
             { status: 409 },
           );
@@ -949,7 +971,7 @@ export function createApp({
           return Response.json(
             {
               code: "WORKSPACE_IN_USE",
-              error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+              error: "这个工作区已由另一个活动目标使用，请选择其他工作区",
             },
             { status: 409 },
           );
@@ -1029,13 +1051,13 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
         if (workOrder.status !== "interrupted") {
           return Response.json(
-            { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的委托可以重新执行" },
+            { code: "WORK_ORDER_NOT_INTERRUPTED", error: "只有已中断的目标可以重新执行" },
             { status: 409 },
           );
         }
@@ -1054,7 +1076,7 @@ export function createApp({
         }
         if (!workOrder.worktreePath || !workOrder.plan) {
           return Response.json(
-            { code: "WORKTREE_MISSING", error: "委托工作区不存在，无法重新执行" },
+            { code: "WORKTREE_MISSING", error: "执行工作区不存在，无法重新执行" },
             { status: 409 },
           );
         }
@@ -1066,7 +1088,7 @@ export function createApp({
         );
         if ("error" in resolvedWorkspace) {
           return Response.json(
-            { code: "WORKTREE_MISSING", error: "委托工作区不存在，无法重新执行" },
+            { code: "WORKTREE_MISSING", error: "执行工作区不存在，无法重新执行" },
             { status: 409 },
           );
         }
@@ -1082,7 +1104,7 @@ export function createApp({
           return Response.json(
             {
               code: "CONCURRENCY_LIMIT_REACHED",
-              error: `已达到本机最大并发数（${maxConcurrency}），请等待一项委托结束或调整设置`,
+              error: `已达到本机最大并发数（${maxConcurrency}），请等待一个目标结束或调整设置`,
             },
             { status: 409 },
           );
@@ -1091,7 +1113,7 @@ export function createApp({
           return Response.json(
             {
               code: "WORKSPACE_IN_USE",
-              error: "这个工作区已由另一项活动委托使用，请选择其他工作区",
+              error: "这个工作区已由另一个活动目标使用，请选择其他工作区",
             },
             { status: 409 },
           );
@@ -1167,7 +1189,7 @@ export function createApp({
         const id = decodeURIComponent(eventsMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1181,7 +1203,7 @@ export function createApp({
         const id = decodeURIComponent(deliverMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1189,7 +1211,7 @@ export function createApp({
           return Response.json({ workOrder: store.confirmDelivered(id) });
         } catch {
           return Response.json(
-            { code: "WORK_ORDER_NOT_IN_REVIEW", error: "只有待验收的委托可以确认交付" },
+            { code: "WORK_ORDER_NOT_IN_REVIEW", error: "只有待验收的目标可以确认交付" },
             { status: 409 },
           );
         }
@@ -1200,7 +1222,7 @@ export function createApp({
         const id = decodeURIComponent(reviseMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1228,7 +1250,7 @@ export function createApp({
         const stageId = decodeURIComponent(externalStageMatch[2]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1272,7 +1294,7 @@ export function createApp({
         const id = decodeURIComponent(confirmStageResultsMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1297,13 +1319,13 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
         if (!planIsEditable(workOrder)) {
           return Response.json(
-            { code: "WORK_ORDER_CONVERSATION_LOCKED", error: "当前状态不能更新委托对话" },
+            { code: "WORK_ORDER_CONVERSATION_LOCKED", error: "当前状态不能更新目标对话" },
             { status: 409 },
           );
         }
@@ -1361,7 +1383,7 @@ export function createApp({
               { status: 409 },
             );
           }
-          const message = error instanceof Error ? error.message : "无法更新委托对话";
+          const message = error instanceof Error ? error.message : "无法更新目标对话";
           const isInputError =
             message.includes("请填写") ||
             message.includes("找不到当前节点") ||
@@ -1386,13 +1408,13 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
         if (!planIsEditable(workOrder)) {
           return Response.json(
-            { code: "WORK_ORDER_PLAN_LOCKED", error: "委托开始执行后不能直接修改计划" },
+            { code: "WORK_ORDER_PLAN_LOCKED", error: "目标开始执行后不能直接修改计划" },
             { status: 409 },
           );
         }
@@ -1443,13 +1465,13 @@ export function createApp({
         const workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
         if (!planIsEditable(workOrder)) {
           return Response.json(
-            { code: "WORK_ORDER_PLAN_LOCKED", error: "委托开始执行后不能直接修改计划" },
+            { code: "WORK_ORDER_PLAN_LOCKED", error: "目标开始执行后不能直接修改计划" },
             { status: 409 },
           );
         }
@@ -1463,7 +1485,7 @@ export function createApp({
         try {
           const body = (await request.json()) as { stages?: PlanStageInput[] };
           if (!Array.isArray(body.stages)) {
-            throw new Error("请填写委托计划");
+            throw new Error("请填写执行计划");
           }
           const workOrder = store.savePlan(id, body.stages);
           scheduleAutoRunCheck();
@@ -1492,7 +1514,7 @@ export function createApp({
         const id = decodeURIComponent(settingsMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1520,7 +1542,7 @@ export function createApp({
         const id = decodeURIComponent(resourcePlanMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1541,7 +1563,7 @@ export function createApp({
             body.pace === undefined ||
             body.runWhenQuotaAvailable === undefined
           ) {
-            throw new Error("请完整填写委托资源安排");
+            throw new Error("请完整填写目标资源安排");
           }
           const workOrder = store.saveResourcePlan(id, {
             priority: body.priority,
@@ -1568,7 +1590,7 @@ export function createApp({
         const id = decodeURIComponent(workspaceMatch[1]);
         if (!store.get(id)) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1608,7 +1630,7 @@ export function createApp({
         const workOrder = store.get(decodeURIComponent(workOrderMatch[1]));
         if (!workOrder) {
           return Response.json(
-            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这项委托" },
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
@@ -1620,6 +1642,10 @@ export function createApp({
       if (request.method === "POST" && url.pathname === "/api/work-orders") {
         try {
           const body = (await request.json()) as {
+            name?: string;
+            description?: string;
+            projectId?: string | null;
+            sourceSessions?: WorkOrder["sourceSessions"];
             repositoryPath?: string;
             workspacePath?: string;
             goal?: string;
@@ -1654,6 +1680,10 @@ export function createApp({
 
           const materials = normalizeMaterials(body.materials);
           const workOrder = store.create({
+            name: body.name,
+            description: body.description,
+            projectId: body.projectId,
+            sourceSessions: body.sourceSessions,
             repositoryPath: requestedRepositoryPath,
             workspace,
             goal: body.goal ?? "",
@@ -1662,7 +1692,7 @@ export function createApp({
           });
           return Response.json({ workOrder }, { status: 201 });
         } catch (error) {
-          const message = error instanceof Error ? error.message : "创建委托失败";
+          const message = error instanceof Error ? error.message : "创建目标失败";
           return Response.json({ error: message }, { status: 400 });
         }
       }
@@ -1676,7 +1706,8 @@ export function createApp({
 
       if (
         request.method === "GET" &&
-        (url.pathname === "/resources" || /^\/work-orders\/[^/]+$/.test(url.pathname))
+        (url.pathname === "/resources" ||
+          /^\/(?:goals|work-orders)\/[^/]+$/.test(url.pathname))
       ) {
         return new Response(Bun.file(join(projectRoot, "public/index.html")), {
           headers: { "content-type": "text/html; charset=utf-8" },
@@ -1941,7 +1972,7 @@ function workspaceErrorResponse(error: WorkspaceValidationError): Response {
     },
     in_use: {
       code: "WORKSPACE_IN_USE",
-      error: "这个文件夹正在被另一项委托使用，请等待其结束或选择其他文件夹",
+      error: "这个文件夹正在被另一个目标使用，请等待其结束或选择其他文件夹",
     },
   }[error];
   return Response.json(details, { status: error === "in_use" ? 409 : 400 });
@@ -2038,7 +2069,7 @@ function normalizeSessionImports(
     goal: session?.goal?.trim() ?? "",
   }));
   if (normalized.some((session) => !session.id || !session.goal)) {
-    throw new Error("请为每个选中的会话确认委托目标");
+    throw new Error("请为每个选中的会话确认目标");
   }
   if (new Set(normalized.map((session) => session.id)).size !== normalized.length) {
     throw new Error("请勿重复选择同一个 Codex 会话");
@@ -2087,8 +2118,9 @@ function findImportedSession(
   return (
     workOrders.find(
       (workOrder) =>
-        workOrder.importSource?.kind === "codex_session" &&
-        workOrder.importSource.id === sourceId,
+        workOrder.sourceSessions.some(
+          (source) => source.kind === "codex_session" && source.id === sourceId,
+        ),
     ) ?? null
   );
 }

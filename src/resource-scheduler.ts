@@ -59,7 +59,7 @@ export function decideAutoRun(
       workOrder.id,
       priorityRank[workOrder.resourcePlan.priority] >
         priorityRank[candidate.resourcePlan.priority]
-        ? "等待更高优先级委托"
+        ? "等待更高优先级目标"
         : "等待本轮资源位置",
     );
   }

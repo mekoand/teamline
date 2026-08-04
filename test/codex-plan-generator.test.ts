@@ -41,7 +41,7 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
   stages: [{
     id: "plan",
     outcome: "得到可确认计划",
-    scope: "委托计划",
+    scope: "执行计划",
     verification: "检查计划内容",
     verificationCommand: null,
     dependsOn: [],

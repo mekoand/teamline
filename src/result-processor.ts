@@ -13,10 +13,10 @@ export interface WorkOrderResultProcessor {
 export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
   async process(workOrder: WorkOrder): Promise<WorkOrderResult> {
     if (!workOrder.worktreePath || !workOrder.plan) {
-      throw new Error("缺少委托工作区或已确认计划");
+      throw new Error("缺少执行工作区或已确认计划");
     }
     if (workOrder.workspace?.kind === "git" && !workOrder.baseCommit) {
-      throw new Error("Git 委托缺少起始提交");
+      throw new Error("Git 目标缺少起始提交");
     }
 
     const verifications: VerificationResult[] = [];

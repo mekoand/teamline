@@ -1,4 +1,5 @@
 import { accessSync, constants, existsSync } from "node:fs";
+import type { Project } from "./project";
 import {
   workOrderMaterialKinds,
   workOrderPaces,
@@ -20,7 +21,8 @@ import {
 import type { WorkOrderStore } from "./work-order-store";
 
 const bundleFormat = "teamline-local-state" as const;
-const bundleVersion = 1 as const;
+const bundleVersion = 2 as const;
+type BundleVersion = 1 | typeof bundleVersion;
 const maxBundleBytes = 5 * 1024 * 1024;
 const maxWorkOrders = 1_000;
 const maxCheckpointsPerWorkOrder = 1_000;
@@ -29,17 +31,21 @@ const checkpointInspectionTimeoutMs = 500;
 
 export type LocalStateBundle = {
   format: typeof bundleFormat;
-  version: typeof bundleVersion;
+  version: BundleVersion;
   exportedAt: string;
   settings: {
     maxConcurrency: number;
     executionMapView: "map" | "list";
   };
+  projects: Project[];
   workOrders: ExportedWorkOrder[];
 };
 
 type ExportedWorkOrder = {
   id: string;
+  name: string;
+  description: string;
+  projectId: string | null;
   title: string;
   goal: string;
   acceptance: string | null;
@@ -50,6 +56,8 @@ type ExportedWorkOrder = {
   materials: WorkOrderMaterial[];
   resourcePlan: WorkOrderResourcePlan;
   maxRunMinutes: number;
+  sourceSessions: WorkOrderImportSource[];
+  currentSessionId: string | null;
   sessionReferences: {
     imported: WorkOrderImportSource | null;
     active: string | null;
@@ -121,7 +129,10 @@ export class LocalStateTransfer {
   constructor(private readonly store: WorkOrderStore) {}
 
   export(): LocalStateBundle {
-    const workOrders = this.store.database.transaction(() => this.store.list())();
+    const snapshot = this.store.database.transaction(() => ({
+      projects: this.store.listProjects(),
+      workOrders: this.store.list(),
+    }))();
     return {
       format: bundleFormat,
       version: bundleVersion,
@@ -130,12 +141,29 @@ export class LocalStateTransfer {
         maxConcurrency: this.store.getExecutionSettings().maxConcurrency,
         executionMapView: this.store.getExecutionMapView(),
       },
-      workOrders: workOrders.map(exportWorkOrder),
+      projects: redactObject(snapshot.projects),
+      workOrders: snapshot.workOrders.map(exportWorkOrder),
     };
   }
 
   preview(value: unknown): RestorePreview {
     const bundle = parseBundle(value);
+    for (const project of bundle.projects) {
+      const existing = this.store.getProject(project.id);
+      if (existing && !sameProject(existing, project)) {
+        throw new InvalidStateBundleError(`项目 ${project.id} 与本机同 ID 项目不一致`);
+      }
+    }
+    for (const workOrder of bundle.workOrders) {
+      for (const source of workOrder.sourceSessions) {
+        const owner = findSourceSessionOwner(this.store, source.id);
+        if (owner && owner.id !== workOrder.id) {
+          throw new InvalidStateBundleError(
+            `来源会话 ${source.id} 已属于本机另一个目标`,
+          );
+        }
+      }
+    }
     const existing = new Set(this.store.list().map((workOrder) => workOrder.id));
     const conflictIds = new Set(
       bundle.workOrders.filter((workOrder) => existing.has(workOrder.id)).map((workOrder) => workOrder.id),
@@ -204,6 +232,9 @@ export class LocalStateTransfer {
     let copied = 0;
     let skipped = 0;
     this.store.database.transaction(() => {
+      for (const project of preview.bundle.projects) {
+        insertProject(this.store, project);
+      }
       for (const workOrder of preview.bundle.workOrders) {
         const resolution = resolutions[workOrder.id];
         if (preview.conflictIds.has(workOrder.id) && resolution === "keep_existing") {
@@ -239,6 +270,9 @@ export function assertStateBundleSize(value: string): void {
 function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
   return redactObject({
     id: workOrder.id,
+    name: workOrder.name,
+    description: workOrder.description,
+    projectId: workOrder.projectId,
     title: workOrder.title,
     goal: workOrder.goal,
     acceptance: workOrder.acceptance,
@@ -249,6 +283,8 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     materials: workOrder.materials,
     resourcePlan: workOrder.resourcePlan,
     maxRunMinutes: workOrder.maxRunMinutes,
+    sourceSessions: workOrder.sourceSessions,
+    currentSessionId: workOrder.currentSessionId,
     sessionReferences: {
       imported: workOrder.importSource,
       active: workOrder.sessionId,
@@ -518,6 +554,10 @@ function deduplicateAttention(items: RestoreAttention[]): RestoreAttention[] {
 }
 
 function databaseFingerprint(store: WorkOrderStore): string {
+  const projects = store
+    .listProjects()
+    .map(({ id, updatedAt }) => [id, updatedAt])
+    .sort(([left], [right]) => left.localeCompare(right));
   const workOrders = store
       .list()
       .map(({ id, updatedAt }) => [id, updatedAt])
@@ -529,12 +569,38 @@ function databaseFingerprint(store: WorkOrderStore): string {
     .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_order_conversation")
     .get()?.count ?? 0;
   return JSON.stringify({
+    projects,
     workOrders,
     checkpoints,
     decisions,
     executionSettings: store.getExecutionSettings(),
     executionMapView: store.getExecutionMapView(),
   });
+}
+
+function insertProject(store: WorkOrderStore, project: Project): void {
+  const existing = store.getProject(project.id);
+  if (existing) {
+    if (!sameProject(existing, project)) {
+      throw new InvalidStateBundleError(`项目 ${project.id} 与本机同 ID 项目不一致`);
+    }
+    return;
+  }
+  store.database
+    .query(`
+      INSERT INTO projects (id, name, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+    `)
+    .run(project.id, project.name, project.createdAt, project.updatedAt);
+}
+
+function sameProject(left: Project, right: Project): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
 }
 
 function prunePreviews(previews: Map<string, PendingPreview>): void {
@@ -547,6 +613,14 @@ function insertWorkOrder(
   id: string,
   copy: boolean,
 ): void {
+  for (const sourceSession of source.sourceSessions) {
+    const owner = findSourceSessionOwner(store, sourceSession.id);
+    if (owner) {
+      throw new InvalidStateBundleError(
+        `来源会话 ${sourceSession.id} 已属于本机另一个目标`,
+      );
+    }
+  }
   const needsReconfirmation = ["ready", "running", "interrupted"].includes(source.status);
   const status = needsReconfirmation
     ? source.executionMap
@@ -554,7 +628,7 @@ function insertWorkOrder(
       : "draft"
     : source.status;
   const summary = needsReconfirmation
-    ? "已恢复委托状态；请确认计划、工作空间和资源后再运行"
+    ? "已恢复目标状态；请确认计划、工作空间和资源后再运行"
     : source.currentSummary;
   const executionMap = safeRestoredPlan(source.executionMap);
   const resourcePlan = {
@@ -569,36 +643,38 @@ function insertWorkOrder(
   store.database
     .query(`
       INSERT INTO work_orders (
-        id, title, repository_path, workspace_kind, materials_json,
-        import_source_json, resource_plan_json, goal, acceptance, status,
+        id, title, project_id, repository_path, workspace_kind, materials_json,
+        source_sessions_json, import_source_json, resource_plan_json, goal, acceptance, status,
         current_summary, plan_json, clarification_json, result_json,
         revision_note, worktree_path, execution_branch, base_commit, session_id,
         run_status, run_started_at, run_ended_at, run_pid, run_number,
         runtime_ms, runtime_updated_at, max_run_minutes, last_error,
         created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
         NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?, ?, ?
       )
     `)
     .run(
       id,
-      copy ? `${source.title}（恢复副本）` : source.title,
+      copy ? `${source.name}（恢复副本）` : source.name,
+      source.projectId,
       source.workspace?.path ?? "",
       source.workspace?.kind ?? null,
       JSON.stringify(source.materials),
-      source.sessionReferences.imported
-        ? JSON.stringify(source.sessionReferences.imported)
+      JSON.stringify(source.sourceSessions),
+      source.sourceSessions[0]
+        ? JSON.stringify(source.sourceSessions[0])
         : null,
       JSON.stringify(resourcePlan),
-      source.goal,
+      source.description,
       source.acceptance,
       status,
       summary,
       executionMap ? JSON.stringify(executionMap) : null,
       source.pendingClarification ? JSON.stringify(source.pendingClarification) : null,
       source.revisionNote,
-      source.sessionReferences.active,
+      source.currentSessionId,
       runNumber,
       source.maxRunMinutes,
       null,
@@ -647,6 +723,17 @@ function insertWorkOrder(
   }
 }
 
+function findSourceSessionOwner(
+  store: WorkOrderStore,
+  sourceId: string,
+): WorkOrder | null {
+  return (
+    store.list().find((workOrder) =>
+      workOrder.sourceSessions.some((source) => source.id === sourceId),
+    ) ?? null
+  );
+}
+
 function safeRestoredPlan(plan: WorkOrderPlan | null): WorkOrderPlan | null {
   if (!plan) return null;
   return {
@@ -668,38 +755,100 @@ function safeRestoredPlan(plan: WorkOrderPlan | null): WorkOrderPlan | null {
 
 function parseBundle(value: unknown): LocalStateBundle {
   const bundle = object(value, "导出文件格式无法识别");
-  exactKeys(bundle, ["format", "version", "exportedAt", "settings", "workOrders"]);
-  if (bundle.format !== bundleFormat || bundle.version !== bundleVersion) {
+  if (bundle.format !== bundleFormat || (bundle.version !== 1 && bundle.version !== 2)) {
     throw new InvalidStateBundleError("导出文件版本不受支持");
   }
+  const version = bundle.version as BundleVersion;
+  exactKeys(
+    bundle,
+    version === 2
+      ? ["format", "version", "exportedAt", "settings", "projects", "workOrders"]
+      : ["format", "version", "exportedAt", "settings", "workOrders"],
+  );
   const exportedAt = dateString(bundle.exportedAt);
   const settingsObject = object(bundle.settings, "本机设置格式无法识别");
   exactKeys(settingsObject, ["maxConcurrency", "executionMapView"]);
   const maxConcurrency = integer(settingsObject.maxConcurrency, 1, 32);
   const executionMapView = oneOf(settingsObject.executionMapView, ["map", "list"] as const);
   if (!Array.isArray(bundle.workOrders) || bundle.workOrders.length > maxWorkOrders) {
-    throw new InvalidStateBundleError("委托列表格式无法识别");
+    throw new InvalidStateBundleError("目标列表格式无法识别");
+  }
+  const projects = version === 2
+    ? array(bundle.projects, parseProject, maxWorkOrders)
+    : [];
+  const workOrders = bundle.workOrders.map((workOrder) => parseWorkOrder(workOrder, version));
+  if (version === 1) assignLegacySourceOwnership(workOrders);
+  const projectIds = new Set(projects.map((project) => project.id));
+  if (projectIds.size !== projects.length) {
+    throw new InvalidStateBundleError("项目标识不能重复");
+  }
+  if (workOrders.some((workOrder) => workOrder.projectId && !projectIds.has(workOrder.projectId))) {
+    throw new InvalidStateBundleError("目标关联了导出文件中不存在的项目");
+  }
+  const sourceSessionIds = new Set<string>();
+  for (const workOrder of workOrders) {
+    for (const source of workOrder.sourceSessions) {
+      if (sourceSessionIds.has(source.id)) {
+        throw new InvalidStateBundleError(`来源会话 ${source.id} 被多个目标重复使用`);
+      }
+      sourceSessionIds.add(source.id);
+    }
   }
   return {
     format: bundleFormat,
-    version: bundleVersion,
+    version,
     exportedAt,
     settings: { maxConcurrency, executionMapView },
-    workOrders: bundle.workOrders.map(parseWorkOrder),
+    projects,
+    workOrders,
   };
 }
 
-function parseWorkOrder(value: unknown): ExportedWorkOrder {
-  const item = object(value, "委托格式无法识别");
-  exactKeys(item, [
+function assignLegacySourceOwnership(workOrders: ExportedWorkOrder[]): void {
+  const claimedSourceIds = new Set<string>();
+  const stableOrder = [...workOrders].sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+  for (const workOrder of stableOrder) {
+    workOrder.sourceSessions = workOrder.sourceSessions.filter((source) => {
+      if (claimedSourceIds.has(source.id)) return false;
+      claimedSourceIds.add(source.id);
+      return true;
+    });
+  }
+}
+
+function parseProject(value: unknown): Project {
+  const project = object(value, "项目格式无法识别");
+  exactKeys(project, ["id", "name", "createdAt", "updatedAt"]);
+  return {
+    id: nonempty(project.id),
+    name: nonempty(project.name),
+    createdAt: dateString(project.createdAt),
+    updatedAt: dateString(project.updatedAt),
+  };
+}
+
+function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrder {
+  const item = object(value, "目标格式无法识别");
+  const legacyKeys = [
     "id", "title", "goal", "acceptance", "status", "currentSummary", "revisionNote",
     "workspace", "materials", "resourcePlan", "maxRunMinutes", "sessionReferences",
     "executionMap", "pendingClarification", "checkpoints", "conversationDecisions",
     "createdAt", "updatedAt",
-  ]);
+  ];
+  exactKeys(
+    item,
+    version === 2
+      ? [...legacyKeys, "name", "description", "projectId", "sourceSessions", "currentSessionId"]
+      : legacyKeys,
+  );
   const id = nonempty(item.id);
   const title = nonempty(item.title);
   const goal = nonempty(item.goal);
+  const name = version === 2 ? nonempty(item.name) : title;
+  const description = version === 2 ? nonempty(item.description) : goal;
   const acceptance = nullableString(item.acceptance);
   const status = oneOf(item.status, workOrderStatuses);
   const currentSummary = string(item.currentSummary);
@@ -709,6 +858,12 @@ function parseWorkOrder(value: unknown): ExportedWorkOrder {
   const resourcePlan = parseResourcePlan(item.resourcePlan);
   const maxRunMinutes = oneOf(item.maxRunMinutes, [30, 60, 120, 240] as const);
   const sessionReferences = parseSessionReferences(item.sessionReferences);
+  const sourceSessions = version === 1
+    ? sessionReferences.imported ? [sessionReferences.imported] : []
+    : array(item.sourceSessions, parseSessionSource, 20);
+  const currentSessionId = version === 1
+    ? sessionReferences.active
+    : nullableString(item.currentSessionId);
   const executionMap = item.executionMap === null ? null : parsePlan(item.executionMap);
   const pendingClarification = parseClarification(item.pendingClarification);
   const checkpoints = array(
@@ -719,6 +874,9 @@ function parseWorkOrder(value: unknown): ExportedWorkOrder {
   const conversationDecisions = array(item.conversationDecisions, parseDecision, 100_000);
   return {
     id,
+    name,
+    description,
+    projectId: version === 2 ? nullableString(item.projectId) : null,
     title,
     goal,
     acceptance,
@@ -729,6 +887,8 @@ function parseWorkOrder(value: unknown): ExportedWorkOrder {
     materials,
     resourcePlan,
     maxRunMinutes,
+    sourceSessions,
+    currentSessionId,
     sessionReferences,
     executionMap,
     pendingClarification,
@@ -775,23 +935,27 @@ function parseSessionReferences(value: unknown): ExportedWorkOrder["sessionRefer
   exactKeys(references, ["imported", "active"]);
   let imported: WorkOrderImportSource | null = null;
   if (references.imported !== null) {
-    const source = object(references.imported, "会话来源格式无法识别");
-    exactKeys(source, ["kind", "id", "lastActiveAt", "version"]);
-    if (source.kind !== "codex_session" || source.version !== 1) {
-      throw new InvalidStateBundleError("会话来源格式无法识别");
-    }
-    imported = {
-      kind: "codex_session",
-      id: nonempty(source.id),
-      lastActiveAt: dateString(source.lastActiveAt),
-      version: 1,
-    };
+    imported = parseSessionSource(references.imported);
   }
   return { imported, active: nullableString(references.active) };
 }
 
+function parseSessionSource(value: unknown): WorkOrderImportSource {
+  const source = object(value, "会话来源格式无法识别");
+  exactKeys(source, ["kind", "id", "lastActiveAt", "version"]);
+  if (source.kind !== "codex_session" || source.version !== 1) {
+    throw new InvalidStateBundleError("会话来源格式无法识别");
+  }
+  return {
+    kind: "codex_session",
+    id: nonempty(source.id),
+    lastActiveAt: dateString(source.lastActiveAt),
+    version: 1,
+  };
+}
+
 function parsePlan(value: unknown): WorkOrderPlan {
-  const plan = object(value, "执行地图格式无法识别");
+  const plan = object(value, "执行图格式无法识别");
   exactKeys(plan, ["version", "stages", "confirmationRequired", "updatedAt"], true);
   const stages = array(plan.stages, parseStage, 10_000);
   validatePlanGraph(stages);
@@ -886,7 +1050,7 @@ function parseCheckpoint(value: unknown): WorkOrderCheckpoint {
 }
 
 function validatePlanGraph(stages: PlanStage[]): void {
-  if (!stages.length) throw new InvalidStateBundleError("执行地图不能为空");
+  if (!stages.length) throw new InvalidStateBundleError("执行图不能为空");
   const ids = stages.map((stage) => stage.id);
   const known = new Set(ids);
   if (known.size !== ids.length) {
@@ -905,7 +1069,7 @@ function validatePlanGraph(stages: PlanStage[]): void {
   const visited = new Set<string>();
   const dependencies = new Map(stages.map((stage) => [stage.id, stage.dependsOn]));
   const visit = (id: string): void => {
-    if (visiting.has(id)) throw new InvalidStateBundleError("执行地图不能包含循环依赖");
+    if (visiting.has(id)) throw new InvalidStateBundleError("执行图不能包含循环依赖");
     if (visited.has(id)) return;
     visiting.add(id);
     for (const dependency of dependencies.get(id) ?? []) visit(dependency);

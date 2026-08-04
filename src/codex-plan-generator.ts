@@ -100,7 +100,7 @@ function buildPrompt(workOrder: WorkOrder): string {
         .join("\n")}`
     : "";
   const conversation = workOrder.conversation.length
-    ? `\n委托对话与已形成的决定：\n${workOrder.conversation
+    ? `\n目标对话与已形成的决定：\n${workOrder.conversation
         .map((message) => `- ${message.role === "user" ? "用户" : "Teamline"}：${message.content}${message.requiresPlanConfirmation ? "（要求更新计划）" : ""}`)
         .join("\n")}`
     : "";
@@ -122,7 +122,7 @@ function buildPrompt(workOrder: WorkOrder): string {
     runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
   })}`;
 
-  return `你正在为一项工作生成简短的委托计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
+  return `你正在为一项工作生成简短的执行计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
 
 工作目标：
 ${workOrder.goal}${acceptance}${materials}${conversation}${currentPlan}${resources}
@@ -137,7 +137,7 @@ ${workOrder.goal}${acceptance}${materials}${conversation}${currentPlan}${resourc
 请把工作拆成少量能够独立检查的阶段。每个阶段填写：
 - id：在本计划内唯一、简短稳定的英文标识
 - outcome：完成后得到什么结果
-- scope：预计影响哪些代码范围
+- scope：预计影响哪些代码、文件、文档或外部工作范围
 - verification：如何检查这一阶段完成
 - verificationCommand：只有存在明确、可直接运行的自动验证命令时才填写，否则填写 null。不要把自然语言说明复制为命令
 - dependsOn：这个阶段依赖的前置阶段 id；没有依赖时填写空数组。不要仅因书写顺序假定依赖，可以并行时保持为空

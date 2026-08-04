@@ -177,8 +177,8 @@ describe("work-order resource scheduling", () => {
 
   test("one check starts only the highest-priority work order and rechecks after that round", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const background = enable(store, ready(store, "后台委托").id, "background");
-    const high = enable(store, ready(store, "优先委托").id, "high");
+    const background = enable(store, ready(store, "后台目标").id, "background");
+    const high = enable(store, ready(store, "优先目标").id, "high");
     const releases: Array<() => void> = [];
     const starts: string[] = [];
     const runner: CodexRunner = {
@@ -239,7 +239,7 @@ describe("work-order resource scheduling", () => {
     });
     expect(starts).toEqual([high.id]);
     expect(store.get(background.id)?.resourcePlan.autoRunReason).toBe(
-      "等待更高优先级委托",
+      "等待更高优先级目标",
     );
 
     releases[0]!();

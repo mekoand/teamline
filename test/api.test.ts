@@ -438,7 +438,7 @@ describe("work order API", () => {
     expect(duplicate.status).toBe(409);
     expect(await duplicate.json()).toEqual({
       code: "WORK_ORDER_ALREADY_RUNNING",
-      error: "这项委托已经在运行",
+      error: "这个目标已经在运行",
     });
 
     const concurrent = await app.fetch(
@@ -449,7 +449,7 @@ describe("work order API", () => {
     expect(concurrent.status).toBe(409);
     expect(await concurrent.json()).toEqual({
       code: "CONCURRENCY_LIMIT_REACHED",
-      error: "已达到本机最大并发数（1），请等待一项委托结束或调整设置",
+      error: "已达到本机最大并发数（1），请等待一个目标结束或调整设置",
     });
 
     finishFirstRun?.();
@@ -529,7 +529,7 @@ describe("work order API", () => {
         async start() {
           return {
             events: (async function* () {
-              yield { type: "progress" as const, message: "正在处理委托" };
+              yield { type: "progress" as const, message: "正在处理目标" };
               throw new Error("secret-token=must-not-reach-storage");
             })(),
           };
@@ -784,17 +784,22 @@ describe("work order API", () => {
     });
   });
 
-  test("a work order detail page can be opened directly", async () => {
+  test("a goal detail page and its legacy URL can be opened directly", async () => {
     const app = createApp({
       store: new WorkOrderStore(new Database(":memory:")),
     });
 
     const response = await app.fetch(
+      new Request("http://teamline.local/goals/example-id"),
+    );
+    const legacyResponse = await app.fetch(
       new Request("http://teamline.local/work-orders/example-id"),
     );
 
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("<title>Teamline</title>");
+    expect(legacyResponse.status).toBe(200);
+    expect(await legacyResponse.text()).toContain("<title>Teamline</title>");
   });
 
   test("plan generation returns a clear timeout instead of waiting forever", async () => {
