@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import {
   createProject,
   createProjectMaterial,
@@ -2016,7 +2017,11 @@ export class WorkOrderStore {
       result,
       checkpointedStageIds(workOrder),
     );
-    const mergedResult = mergeResults(workOrder?.result ?? null, result);
+    const mergedResult = mergeResults(
+      workOrder?.result ?? null,
+      result,
+      workOrder?.workspace?.kind === "directory",
+    );
     if (plan) {
       plan = advanceAfterCodexRun(plan, result);
     }
@@ -2144,7 +2149,11 @@ export class WorkOrderStore {
 
   recordVerificationFailure(id: string, result: WorkOrderResult): WorkOrder {
     const workOrder = this.get(id);
-    const mergedResult = mergeResults(workOrder?.result ?? null, result);
+    const mergedResult = mergeResults(
+      workOrder?.result ?? null,
+      result,
+      workOrder?.workspace?.kind === "directory",
+    );
     const plan = planWithVerificationStatuses(
       workOrder?.plan ?? null,
       result,
@@ -3273,6 +3282,7 @@ function advancePlanWithCompletedStages(
 function mergeResults(
   previous: WorkOrderResult | null,
   current: WorkOrderResult,
+  pruneMissingDirectoryArtifacts = false,
 ): WorkOrderResult {
   if (!previous || previous.planVersion !== current.planVersion) return current;
   const byStage = new Map(
@@ -3283,7 +3293,11 @@ function mergeResults(
   }
   return {
     ...current,
-    artifacts: mergeResultArtifacts(previous.artifacts, current.artifacts),
+    artifacts: mergeResultArtifacts(
+      previous.artifacts,
+      current.artifacts,
+      pruneMissingDirectoryArtifacts,
+    ),
     verifications: [...byStage.values()],
   };
 }
@@ -3291,12 +3305,20 @@ function mergeResults(
 function mergeResultArtifacts(
   previous: WorkOrderResult["artifacts"],
   current: WorkOrderResult["artifacts"],
+  pruneMissingDirectoryArtifacts: boolean,
 ): WorkOrderResult["artifacts"] {
   const byLocation = new Map(
     (previous ?? []).map((artifact) => [artifact.location, artifact]),
   );
   for (const artifact of current ?? []) byLocation.set(artifact.location, artifact);
-  return byLocation.size ? [...byLocation.values()] : undefined;
+  const artifacts = [...byLocation.values()].filter(
+    (artifact) =>
+      !pruneMissingDirectoryArtifacts ||
+      artifact.type !== "file" ||
+      !artifact.id.startsWith("directory-result:") ||
+      existsSync(artifact.location),
+  );
+  return artifacts.length ? artifacts : undefined;
 }
 
 function nextPlanSummary(plan: WorkOrderPlan | null): string {

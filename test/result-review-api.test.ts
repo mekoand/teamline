@@ -344,56 +344,66 @@ describe("result review persistence", () => {
     }
   });
 
-  test("keeps ordinary-folder artifacts from each completed node", () => {
-    const store = new WorkOrderStore(new Database(":memory:"));
-    const created = store.create({
-      workspace: { kind: "directory", path: "/tmp/teamline-merge-artifacts" },
-      goal: "分两步生成成果",
-    });
-    store.savePlan(created.id, [
-      { outcome: "生成 A", scope: "A.md", verification: "检查 A", verificationCommand: "true" },
-      { outcome: "生成 B", scope: "B.md", verification: "检查 B", verificationCommand: "true" },
-    ]);
-    store.saveDirectWorkspace(created.id, "/tmp/teamline-merge-artifacts");
-
-    const completeCurrentStage = (label: string) => {
-      const running = store.get(created.id)!;
-      const stage = running.plan!.stages.find((candidate) => candidate.status === "running")!;
-      const verifying = store.beginResultProcessing(created.id, "Codex 已正常结束");
-      return store.completeReview(created.id, {
-        planVersion: verifying.plan!.version,
-        artifacts: [{
-          id: `directory-result:${label}`,
-          type: "file",
-          label,
-          location: `/tmp/teamline-merge-artifacts/${label}`,
-        }],
-        git: {
-          diffStat: "普通文件夹不提供 Git 变化统计",
-          statusShort: "结果保留在所选本地文件夹中",
-        },
-        verifications: [{
-          stageId: stage.id,
-          stageOutcome: stage.outcome,
-          command: "true",
-          status: "passed",
-          exitCode: 0,
-          output: "（无输出）",
-        }],
-        completedAt: new Date().toISOString(),
+  test("keeps existing ordinary-folder artifacts and removes files deleted by a later node", () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-merge-artifacts-"));
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const created = store.create({
+        workspace: { kind: "directory", path: directory },
+        goal: "分两步生成成果",
       });
-    };
+      store.savePlan(created.id, [
+        { outcome: "生成 A", scope: "A.md", verification: "检查 A", verificationCommand: "true" },
+        { outcome: "生成 B", scope: "B.md", verification: "检查 B", verificationCommand: "true" },
+      ]);
+      store.saveDirectWorkspace(created.id, directory);
 
-    store.markStarted(created.id);
-    expect(completeCurrentStage("A.md").status).toBe("ready");
-    store.markNextStageStarted(created.id);
-    const completed = completeCurrentStage("B.md");
+      const completeCurrentStage = (labels: string[]) => {
+        const running = store.get(created.id)!;
+        const stage = running.plan!.stages.find((candidate) => candidate.status === "running")!;
+        const verifying = store.beginResultProcessing(created.id, "Codex 已正常结束");
+        return store.completeReview(created.id, {
+          planVersion: verifying.plan!.version,
+          artifacts: labels.map((label) => ({
+            id: `directory-result:${label}`,
+            type: "file" as const,
+            label,
+            location: join(directory, label),
+          })),
+          git: {
+            diffStat: "普通文件夹不提供 Git 变化统计",
+            statusShort: "结果保留在所选本地文件夹中",
+          },
+          verifications: [{
+            stageId: stage.id,
+            stageOutcome: stage.outcome,
+            command: "true",
+            status: "passed",
+            exitCode: 0,
+            output: "（无输出）",
+          }],
+          completedAt: new Date().toISOString(),
+        });
+      };
 
-    expect(completed.status).toBe("review");
-    expect(completed.result?.artifacts?.map((artifact) => artifact.label)).toEqual([
-      "A.md",
-      "B.md",
-    ]);
+      writeFileSync(join(directory, "A.md"), "A\n");
+      writeFileSync(join(directory, "gone.txt"), "temporary\n");
+      store.markStarted(created.id);
+      expect(completeCurrentStage(["A.md", "gone.txt"]).status).toBe("ready");
+
+      rmSync(join(directory, "gone.txt"));
+      writeFileSync(join(directory, "B.md"), "B\n");
+      store.markNextStageStarted(created.id);
+      const completed = completeCurrentStage(["B.md"]);
+
+      expect(completed.status).toBe("review");
+      expect(completed.result?.artifacts?.map((artifact) => artifact.label)).toEqual([
+        "A.md",
+        "B.md",
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("records a failed command and continues remaining stages", async () => {
