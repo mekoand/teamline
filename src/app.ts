@@ -1932,7 +1932,15 @@ export function createApp({
 
         planningWorkOrderIds.add(id);
         try {
-          return Response.json(await generateAndStorePlan(id, workOrder, false));
+          const body = request.headers.get("content-type")?.includes("application/json")
+            ? await request.json() as { continuationNote?: unknown }
+            : {};
+          const continuationNote = typeof body.continuationNote === "string"
+            ? body.continuationNote.trim() || undefined
+            : undefined;
+          return Response.json(
+            await generateAndStorePlan(id, workOrder, false, continuationNote),
+          );
         } catch (error) {
           if (error instanceof PlanGenerationTimeoutError) {
             return Response.json(

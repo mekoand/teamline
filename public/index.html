@@ -193,6 +193,28 @@
       </form>
     </dialog>
 
+    <dialog id="continue-goal-dialog" class="continue-goal-dialog">
+      <form id="continue-goal-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="overline">继续目标</p>
+            <h2>生成后续计划</h2>
+          </div>
+          <button type="button" class="icon-button" id="close-continue-goal" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-description">Teamline 会根据整理好的历史进展生成后续计划。你可以直接确认，也可以补充一句下一步要求。</p>
+        <label>
+          <span>补充信息 <em>可选</em></span>
+          <textarea name="continuationNote" rows="4" placeholder="例如：先补齐移动端验证"></textarea>
+        </label>
+        <p class="form-error" id="continue-goal-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" id="cancel-continue-goal">取消</button>
+          <button type="submit" class="primary-button" id="confirm-continue-goal">确认并生成计划</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="local-state-dialog" class="local-state-dialog">
       <div class="dialog-heading">
         <div>

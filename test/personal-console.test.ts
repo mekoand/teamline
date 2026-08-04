@@ -210,6 +210,22 @@ describe("personal console", () => {
     expect(script).not.toContain("data-session-goal");
   });
 
+  test("offers one-step confirmation before continuing a ready Codex import", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [page, script] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+    ]);
+
+    expect(page).toContain('id="continue-goal-dialog"');
+    expect(page).toContain('id="continue-goal-form"');
+    expect(page).toContain('name="continuationNote"');
+    expect(page).toContain("确认并生成计划");
+    expect(script).toContain("data-continue-imported-goal");
+    expect(script).toContain("continuationNote");
+    expect(script).toContain("继续这个目标");
+  });
+
   test("keeps resource provenance secondary to quota and work-order allocation", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();

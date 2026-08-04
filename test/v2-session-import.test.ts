@@ -170,6 +170,73 @@ describe("V2 single-goal Codex session import", () => {
     });
   });
 
+  test("continues a ready imported goal through the existing plan flow with an optional note", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    let planningInput: ReturnType<WorkOrderStore["get"]> = null;
+    const app = createApp({
+      store,
+      codexSessionProvider: provider(() => baseDiscovery),
+      sessionOrganizer: { async organize() { return singleSourceOrganization; } },
+      planGenerator: {
+        async generate(workOrder) {
+          planningInput = workOrder;
+          return {
+            outcome: "plan",
+            message: "后续计划已生成。",
+            questions: [],
+            stages: [{
+              id: "finish-verification",
+              outcome: "完成剩余验证",
+              scope: "现有成果",
+              verification: "检查验证结果",
+            }],
+          };
+        },
+      },
+    });
+    const importedResponse = await app.fetch(new Request(
+      "http://teamline.local/api/codex-sessions/import",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "完成设置页", sessionIds: ["session-a"] }),
+      },
+    ));
+    const imported = (await importedResponse.json()).workOrder;
+
+    const response = await app.fetch(new Request(
+      `http://teamline.local/api/work-orders/${imported.id}/plan/generate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ continuationNote: "先补齐移动端验证" }),
+      },
+    ));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(planningInput?.conversation.at(-1)).toMatchObject({
+      role: "user",
+      content: "先补齐移动端验证",
+      decisionTarget: "plan",
+    });
+    expect(body.workOrder).toMatchObject({
+      status: "ready",
+      runStatus: null,
+      currentSessionId: null,
+      sourceSessions: imported.sourceSessions,
+      importContext: imported.importContext,
+      plan: {
+        confirmationRequired: true,
+        stages: [expect.objectContaining({ outcome: "完成剩余验证" })],
+      },
+    });
+    expect(body.workOrder.conversation).toContainEqual(expect.objectContaining({
+      role: "user",
+      content: "先补齐移动端验证",
+    }));
+  });
+
   test("keeps a retryable planning goal when initial organization fails", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     let attempts = 0;

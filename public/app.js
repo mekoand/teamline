@@ -66,6 +66,9 @@ const resourceSummaryElement = document.querySelector("#resource-summary");
 const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
 const sessionImportError = document.querySelector("#session-import-error");
+const continueGoalDialog = document.querySelector("#continue-goal-dialog");
+const continueGoalForm = document.querySelector("#continue-goal-form");
+const continueGoalError = document.querySelector("#continue-goal-error");
 const notificationDialog = document.querySelector("#notification-dialog");
 const localStateDialog = document.querySelector("#local-state-dialog");
 
@@ -126,6 +129,9 @@ function bindShellEvents() {
   });
   document.querySelector("#close-session-import").addEventListener("click", closeSessionImport);
   document.querySelector("#cancel-session-import").addEventListener("click", closeSessionImport);
+  document.querySelector("#close-continue-goal").addEventListener("click", closeContinueGoal);
+  document.querySelector("#cancel-continue-goal").addEventListener("click", closeContinueGoal);
+  continueGoalForm.addEventListener("submit", continueImportedGoal);
   document.querySelector("#session-search").addEventListener("input", (event) => {
     state.sessionSearch = event.currentTarget.value;
     renderSessionCandidates();
@@ -1252,6 +1258,7 @@ function renderImportedHistorySurface(workOrder, feedback) {
              : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}`
         : `<div class="plan-empty"><p>${escapeHtml(context.error || "来源会话等待整理。")}</p></div>`}
       <div class="import-history-actions">
+        ${ready && !isImportOnlyGoal(workOrder) ? '<button class="primary-button" data-continue-imported-goal type="button">继续这个目标</button>' : ""}
         <button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>
       </div>
       <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
@@ -2220,6 +2227,13 @@ function bindRenderedEvents() {
   });
   document.querySelector("#goal-project-form")?.addEventListener("submit", saveGoalProjectContext);
 
+  document.querySelector("[data-continue-imported-goal]")?.addEventListener("click", () => {
+    continueGoalError.textContent = "";
+    continueGoalForm.reset();
+    continueGoalDialog.showModal();
+    document.querySelector("#confirm-continue-goal").focus();
+  });
+
   document.querySelectorAll("[data-reorganize-sessions]").forEach((button) => {
     button.addEventListener("click", async () => {
       setBusy(button, "正在整理…");
@@ -2584,6 +2598,40 @@ function closeSessionImport() {
   sessionImportDialog.close();
   sessionImportForm.reset();
   sessionImportError.textContent = "";
+}
+
+function closeContinueGoal() {
+  continueGoalDialog.close();
+  continueGoalForm.reset();
+  continueGoalError.textContent = "";
+  resetBusy(document.querySelector("#confirm-continue-goal"), "确认并生成计划");
+}
+
+async function continueImportedGoal(event) {
+  event.preventDefault();
+  const button = document.querySelector("#confirm-continue-goal");
+  const continuationNote = String(
+    new FormData(continueGoalForm).get("continuationNote") ?? "",
+  ).trim();
+  continueGoalError.textContent = "";
+  setBusy(button, "正在生成…");
+  try {
+    const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/plan/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ continuationNote }),
+    });
+    closeContinueGoal();
+    await acceptWorkOrderResult(
+      result.workOrder,
+      result.outcome === "clarification"
+        ? "还需要你确认一项关键信息。"
+        : "后续计划已生成，请检查并确认。",
+    );
+  } catch (error) {
+    resetBusy(button, "确认并生成计划");
+    continueGoalError.textContent = messageFrom(error, "无法生成后续计划，请重试。");
+  }
 }
 
 function renderSessionCandidates() {

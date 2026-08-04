@@ -1666,10 +1666,18 @@ dialog::backdrop {
   padding: 28px;
 }
 
+#continue-goal-form {
+  padding: 28px;
+}
+
 .session-import-dialog {
   width: min(720px, calc(100% - 32px));
   max-height: min(780px, calc(100vh - 48px));
   overflow: hidden;
+}
+
+.continue-goal-dialog {
+  width: min(520px, calc(100% - 32px));
 }
 
 .notification-dialog {
@@ -2384,6 +2392,14 @@ dialog::backdrop {
   .session-import-dialog {
     width: calc(100% - 20px);
     max-height: calc(100vh - 20px);
+  }
+
+  #continue-goal-form {
+    padding: 22px 18px;
+  }
+
+  .continue-goal-dialog {
+    width: calc(100% - 20px);
   }
 
   .session-select {
