@@ -1289,26 +1289,24 @@ export class WorkOrderStore {
       if (structuralChange) {
         this.savePlan(id, stages, { confirmationRequired: true });
       }
-      if (current.conversation.length > 0 || requiresPlanConfirmation) {
-        this.appendConversation(id, {
-          role: "teamline",
-          kind: "decision",
-          content: structuralChange
-            ? publicPlanningText(generated.message?.trim() || "计划已更新，请重新确认后再启动。")
-            : canUpdateResources
-              ? "资源偏好已更新，不改变计划版本。"
-              : "目标上下文已更新，不改变计划版本。",
-          stageId: null,
-          decisionTarget: structuralChange
-            ? "plan"
-            : canUpdateResources
-              ? "resources"
-              : canUpdateMaterials
-                ? "materials"
-                : "plan",
-          requiresPlanConfirmation: structuralChange,
-        });
-      }
+      this.appendConversation(id, {
+        role: "teamline",
+        kind: "decision",
+        content: structuralChange
+          ? publicPlanningText(generated.message?.trim() || "计划已更新，请重新确认后再启动。")
+          : canUpdateResources
+            ? "资源偏好已更新，不改变计划版本。"
+            : "目标上下文已更新，不改变计划版本。",
+        stageId: null,
+        decisionTarget: structuralChange
+          ? "plan"
+          : canUpdateResources
+            ? "resources"
+            : canUpdateMaterials
+              ? "materials"
+              : "plan",
+        requiresPlanConfirmation: structuralChange,
+      });
     })();
     return this.get(id)!;
   }
@@ -2903,7 +2901,7 @@ function normalizeClarification(value: string | null): WorkOrderClarification | 
 function normalizeClarificationQuestions(value: unknown): ClarificationQuestion[] {
   if (!Array.isArray(value)) throw new Error("澄清问题格式无法识别");
   const targets = ["goal", "acceptance", "materials", "resources", "plan"];
-  return value.map((item, index) => {
+  return value.slice(0, 1).map((item, index) => {
     if (!item || typeof item !== "object") throw new Error("澄清问题格式无法识别");
     const question = item as Partial<ClarificationQuestion>;
     const id = question.id?.trim() || `question-${index + 1}`;
@@ -3370,7 +3368,9 @@ function titleForGoal(goal: string): string {
 }
 
 function publicPlanningText(value: string): string {
-  return value.replace(/Ask\s+Matt/gi, "Teamline");
+  return value
+    .replace(/\[\$?[a-z0-9_-]+\]\([^)]*\/SKILL\.md\)/gi, "Teamline")
+    .replace(/\$ask-matt\b|\/ask-matt\b|Ask\s+Matt|ask-matt/gi, "Teamline");
 }
 
 function sanitizeGeneratedStages(stages: PlanStageInput[]): PlanStageInput[] {

@@ -8,6 +8,7 @@
     "message": { "type": "string" },
     "questions": {
       "type": "array",
+      "maxItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,

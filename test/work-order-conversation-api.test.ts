@@ -31,13 +31,13 @@ describe("work-order clarification and conversation", () => {
         async generate() {
           return {
             outcome: "plan",
-            message: "计划已生成。",
+            message: "计划已生成，预算仍为 $500。",
             questions: [],
             stages: [
               {
                 id: "fix-layout",
-                outcome: "登录按钮在窄屏完整显示",
-                scope: "登录页布局与样式",
+                outcome: "登录按钮在窄屏完整显示，保留 SQL skill 文案",
+                scope: "登录页布局、样式与 $HOME 示例",
                 verification: "检查 390px 和 320px 宽度",
               },
             ],
@@ -54,7 +54,73 @@ describe("work-order clarification and conversation", () => {
     expect(result.workOrder.pendingClarification).toBeNull();
     expect(result.workOrder.plan.confirmationRequired).toBe(true);
     expect(result.workOrder.plan.stages).toHaveLength(1);
-    expect(result.workOrder.conversation).toHaveLength(0);
+    expect(result.workOrder.plan.stages[0]).toMatchObject({
+      outcome: "登录按钮在窄屏完整显示，保留 SQL skill 文案",
+      scope: "登录页布局、样式与 $HOME 示例",
+    });
+    expect(result.workOrder.conversation).toEqual([
+      expect.objectContaining({
+        role: "teamline",
+        kind: "decision",
+        content: "计划已生成，预算仍为 $500。",
+        requiresPlanConfirmation: true,
+      }),
+    ]);
+  });
+
+  test("keeps only the first key question and presents it as needing a response", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const created = store.create({
+      goal: "整理发布范围",
+      importContext: {
+        status: "ready",
+        summary: "已经整理历史会话",
+        currentState: "等待确定发布范围",
+        historicalStages: [],
+        artifacts: [],
+        organizedAt: new Date().toISOString(),
+        error: null,
+      },
+    });
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate() {
+          return {
+            outcome: "clarification",
+            message: "还需确认范围。",
+            questions: [
+              {
+                id: "platform",
+                prompt: "这次只发布网页端吗？",
+                reason: "平台范围会改变执行节点",
+                target: "goal",
+              },
+              {
+                id: "pace",
+                prompt: "需要优先推进吗？",
+                reason: "执行节奏尚未确认",
+                target: "resources",
+              },
+            ],
+            stages: [],
+          };
+        },
+      },
+    });
+
+    const response = await app.fetch(request(`/api/work-orders/${created.id}/plan/generate`));
+    const result = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(result.workOrder.pendingClarification.questions).toHaveLength(1);
+    expect(result.workOrder.pendingClarification.questions[0].prompt).toBe("这次只发布网页端吗？");
+    expect(result.workOrder.conversation.filter((message) => message.kind === "question"))
+      .toHaveLength(1);
+    const consoleResponse = await app.fetch(new Request("http://teamline.local/api/console"));
+    const consoleResult = await consoleResponse.json();
+    expect(consoleResult.workOrders[0].userStatus).toBe("response");
+    expect(consoleResult.workOrders[0].statusReason).toBe("待补充关键信息");
   });
 
   test("asks only for a key ambiguity and turns the answer into structured plan data", async () => {

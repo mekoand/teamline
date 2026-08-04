@@ -30,6 +30,9 @@ function presentStatus(
   workOrder: WorkOrder,
   capacityReached: boolean,
 ): Pick<ConsoleWorkOrder, "userStatus" | "statusReason"> {
+  if (workOrder.pendingClarification) {
+    return { userStatus: "response", statusReason: "待补充关键信息" };
+  }
   if (workOrder.importContext && !workOrder.plan) {
     if (workOrder.importContext.status === "pending") {
       return { userStatus: "planning", statusReason: "正在整理来源会话" };
@@ -38,9 +41,6 @@ function presentStatus(
       return { userStatus: "planning", statusReason: "尚未整理" };
     }
     return { userStatus: "planning", statusReason: "待生成后续计划" };
-  }
-  if (workOrder.pendingClarification) {
-    return { userStatus: "planning", statusReason: "待补充信息" };
   }
   if (workOrder.status === "delivered") {
     return { userStatus: "completed", statusReason: "已确认交付" };

@@ -135,7 +135,7 @@ function buildPrompt(workOrder: WorkOrder): string {
 工作目标：
 ${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${currentPlan}${resources}
 
-先判断这些信息是否足以形成可确认的计划。信息足够时必须直接返回计划，不要为了完善细节而提问。只有缺少会改变目标边界、节点关系、素材选择或资源安排的关键信息时，才返回 clarification；问题要少、短、可直接回答，不得提及内部 skill 或 Ask Matt 名称。
+先判断这些信息是否足以形成可确认的计划。信息足够时必须直接返回计划，不要为了完善细节而提问。只有缺少会改变目标边界、节点关系、素材选择或资源安排的关键信息时，才返回 clarification；每次只能提出一个短且可直接回答的问题，不得提及内部 skill 或 Ask Matt 名称。
 
 始终返回目标、完成要求、素材和资源方案的完整快照。用户回答过澄清问题或要求更新计划时，把已经确认的决定写入这些快照和计划；不要只复述聊天。普通节点补充已经由 Teamline 归入节点上下文，不需要改动计划结构。
 
