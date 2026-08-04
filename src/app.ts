@@ -1824,6 +1824,7 @@ export function createApp({
       if (
         request.method === "GET" &&
         (url.pathname === "/resources" ||
+          url.pathname === "/projects" ||
           /^\/(?:goals|work-orders)\/[^/]+$/.test(url.pathname))
       ) {
         return new Response(Bun.file(join(projectRoot, "public/index.html")), {

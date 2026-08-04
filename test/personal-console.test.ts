@@ -37,6 +37,56 @@ describe("personal console", () => {
     expect(script).not.toContain('>节点图</button>');
   });
 
+  test("makes all goals the home view and keeps detail context separate from the primary work surface", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [page, script, styles, projectsPageResponse] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/projects")),
+    ]);
+
+    expect(page).toContain('id="open-all-goals"');
+    expect(page).toContain('id="open-projects"');
+    expect(projectsPageResponse.status).toBe(200);
+    expect(script).toContain("renderAllGoalsWorkspace");
+    expect(script).toContain('["response", "需响应"]');
+    expect(script).toContain('["review", "待验收"]');
+    expect(script).toContain('["running", "运行中"]');
+    expect(script).toContain('["planning", "规划中"]');
+    expect(script).toContain('["queued", "待运行"]');
+    expect(script).toContain('["completed", "已完成"]');
+    expect(script).toContain('data-home-status="${status}"');
+    expect(script).toContain('id="open-create-home"');
+    expect(script).toContain('id="open-session-import-home"');
+    expect(script).toContain("renderPrimaryWorkSurface");
+    expect(script).toContain("formatVisibleStatus");
+    expect(script).not.toContain('<span class="dependency-label">依赖：无</span>');
+    expect(script).not.toContain("\${renderRecoveryPanel(workOrder)}");
+    expect(script).not.toContain("\${renderRunPanel(workOrder)}");
+    expect(styles).toContain(".home-status-section");
+  });
+
+  test("uses stepped 390px navigation with explicit return paths and balanced Chinese wrapping", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [script, styles] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
+    ]);
+
+    expect(script).toContain('class="mobile-back-button"');
+    expect(script).toContain('id="back-to-all-goals"');
+    expect(script).toContain('id="back-to-goal"');
+    expect(script).toContain('id="open-goal-context"');
+    expect(script).toContain("mobileContextActionLabel");
+    expect(script).toContain('state.mobileContextOpen = true');
+    expect(script).toContain("mobileContextOpen");
+    expect(styles).toContain("@media (max-width: 680px)");
+    expect(styles).toContain(".console-shell.mobile-context-open");
+    expect(styles).toContain("text-wrap: balance");
+    expect(styles).toContain("word-break: auto-phrase");
+  });
+
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const [pageResponse, scriptResponse] = await Promise.all([

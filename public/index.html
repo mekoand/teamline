@@ -41,11 +41,17 @@
         </div>
       </header>
 
-      <aside class="order-sidebar" aria-label="目标列表">
+      <aside class="order-sidebar" aria-label="全局导航与最近目标">
         <div class="sidebar-heading">
           <h1>目标</h1>
           <span id="work-order-count" class="count">0</span>
         </div>
+        <button class="sidebar-nav" id="open-all-goals" type="button">
+          <span>全部目标</span><small>当前状态</small>
+        </button>
+        <button class="sidebar-nav" id="open-projects" type="button">
+          <span>项目</span><small>整理目标</small>
+        </button>
         <button class="sidebar-nav" id="open-resources" type="button">
           <span>资源</span><small>额度与安排</small>
         </button>
@@ -53,6 +59,9 @@
           <span>本地数据</span><small>导出与恢复</small>
         </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ 新建目标</button>
+        <div class="recent-goals-heading">
+          <span>最近目标</span>
+        </div>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
       </aside>
 

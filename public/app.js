@@ -7,13 +7,25 @@ const visibleStatusLabels = {
   completed: "已完成",
 };
 
+const allGoalStatusGroups = [
+  ["response", "需响应"],
+  ["review", "待验收"],
+  ["running", "运行中"],
+  ["planning", "规划中"],
+  ["queued", "待运行"],
+  ["completed", "已完成"],
+];
+
 const state = {
   workOrders: [],
+  projects: [],
   selected: null,
   selectedStageIndex: 0,
   followCurrentStage: true,
   draftStages: null,
   contextTab: "details",
+  primaryView: null,
+  mobileContextOpen: false,
   events: [],
   executionSettings: { maxConcurrency: 2 },
   resources: null,
@@ -75,13 +87,20 @@ function bindShellEvents() {
     .querySelector("#auto-run-stopped-notifications")
     .addEventListener("change", saveNotificationSettings);
 
-  document.querySelector("#open-create").addEventListener("click", () => {
-    createDialog.showModal();
-    createDialog.querySelector('[name="name"]').focus();
+  document.querySelector("#open-create").addEventListener("click", openCreateDialog);
+  document.querySelector("#open-all-goals").addEventListener("click", () => {
+    history.pushState({}, "", "/");
+    resetGoalSelection();
+    refreshConsole();
+  });
+  document.querySelector("#open-projects").addEventListener("click", () => {
+    history.pushState({}, "", "/projects");
+    resetGoalSelection();
+    refreshConsole();
   });
   document.querySelector("#open-resources").addEventListener("click", () => {
     history.pushState({}, "", "/resources");
-    state.draftStages = null;
+    resetGoalSelection();
     refreshConsole();
   });
   document.querySelector("#open-local-state").addEventListener("click", () => {
@@ -109,9 +128,21 @@ function bindShellEvents() {
   createForm.addEventListener("submit", createWorkOrder);
   document.querySelector("#add-material").addEventListener("click", () => addMaterialRow());
   window.addEventListener("popstate", () => {
-    state.draftStages = null;
+    resetGoalSelection();
     refreshConsole();
   });
+}
+
+function openCreateDialog() {
+  createDialog.showModal();
+  createDialog.querySelector('[name="name"]').focus();
+}
+
+function resetGoalSelection() {
+  state.selected = null;
+  state.draftStages = null;
+  state.primaryView = null;
+  state.mobileContextOpen = false;
 }
 
 function closeLocalState() {
@@ -248,12 +279,14 @@ async function refreshConsole({
   }
 
   try {
-    const [consoleState, notificationState] = await Promise.all([
+    const [consoleState, notificationState, projectState] = await Promise.all([
       requestJson("/api/console"),
       requestJson("/api/notifications"),
+      requestJson("/api/projects"),
     ]);
     const { workOrders, executionSettings } = consoleState;
     state.workOrders = workOrders;
+    state.projects = projectState.projects;
     state.executionSettings = executionSettings;
     state.notifications = notificationState.notifications;
     state.unreadNotificationCount = notificationState.unreadCount;
@@ -265,7 +298,7 @@ async function refreshConsole({
     );
     void refreshResources({ checkAutoRun });
     state.autoRunCheckRequested = false;
-    if (isResourceView()) {
+    if (isResourceView() || isProjectsView() || isAllGoalsView()) {
       state.selected = null;
       state.events = [];
       renderConsole();
@@ -273,7 +306,7 @@ async function refreshConsole({
       return;
     }
     const requestedId = selectedIdFromPath();
-    const selectedId = requestedId ?? state.selected?.id ?? workOrders[0]?.id ?? null;
+    const selectedId = requestedId ?? null;
 
     if (selectedId) {
       const { workOrder } = await requestJson(
@@ -517,7 +550,30 @@ async function refreshResources({ checkAutoRun = false } = {}) {
 
 function renderConsole(feedback = "") {
   renderWorkOrderList();
+  const shell = document.querySelector(".console-shell");
+  shell.className = [
+    "console-shell",
+    isAllGoalsView() ? "view-home" : "",
+    isProjectsView() ? "view-projects" : "",
+    isResourceView() ? "view-resources" : "",
+    state.selected ? "view-goal" : "",
+    state.mobileContextOpen ? "mobile-context-open" : "",
+  ].filter(Boolean).join(" ");
+  document.querySelector("#open-all-goals")?.classList.toggle("selected", isAllGoalsView());
+  document.querySelector("#open-projects")?.classList.toggle("selected", isProjectsView());
   document.querySelector("#open-resources")?.classList.toggle("selected", isResourceView());
+  if (isAllGoalsView()) {
+    workspaceElement.innerHTML = renderAllGoalsWorkspace();
+    contextElement.innerHTML = "";
+    bindOverviewEvents();
+    return;
+  }
+  if (isProjectsView()) {
+    workspaceElement.innerHTML = renderProjectsWorkspace();
+    contextElement.innerHTML = "";
+    bindOverviewEvents();
+    return;
+  }
   if (isResourceView()) {
     workspaceElement.innerHTML = renderResourceWorkspace();
     contextElement.innerHTML = renderResourceContext();
@@ -560,32 +616,103 @@ function renderWorkOrderList() {
     return;
   }
 
-  const groups = [
-    ["response", "需响应"],
-    ["review", "待验收"],
-    ["running", "运行中"],
-    ["planning", "规划中"],
-    ["queued", "待运行"],
-    ["completed", "已完成"],
-  ];
-  listElement.innerHTML = groups
-    .map(([status, label]) => {
-      const orders = state.workOrders.filter(
-        (workOrder) => visibleStatus(workOrder, state.workOrders).status === status,
-      );
-      if (orders.length === 0) return "";
-      return `
-        <section class="order-group" aria-labelledby="group-${status}">
-          <div class="order-group-heading">
-            <h2 id="group-${status}">${label}</h2>
-            <span>${orders.length}</span>
-          </div>
-          ${orders.map(renderOrderRow).join("")}
-        </section>`;
-    })
-    .join("");
+  listElement.innerHTML = state.workOrders.slice(0, 8).map(renderOrderRow).join("");
 
   document.querySelectorAll("[data-work-order-id]").forEach((button) => {
+    button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
+  });
+}
+
+function renderAllGoalsWorkspace() {
+  const groups = allGoalStatusGroups;
+  const counts = Object.fromEntries(groups.map(([status]) => [
+    status,
+    state.workOrders.filter(
+      (workOrder) => visibleStatus(workOrder, state.workOrders).status === status,
+    ).length,
+  ]));
+  return `
+    <section class="workspace-content all-goals-workspace">
+      <header class="overview-heading">
+        <div><p class="overline">工作台</p><h1>全部目标</h1></div>
+        <div class="overview-actions">
+          <button class="secondary-button" id="open-session-import-home" type="button">导入 Codex 会话</button>
+          <button class="primary-button" id="open-create-home" type="button">新建目标</button>
+        </div>
+      </header>
+      <nav class="home-mobile-nav" aria-label="工作台导航">
+        <button type="button" data-overview-path="/projects">项目</button>
+        <button type="button" data-overview-path="/resources">资源</button>
+        <button type="button" id="open-local-state-home">本地数据</button>
+      </nav>
+      <div class="status-summary" aria-label="目标状态摘要">
+        ${groups
+          .filter(([status]) => ["response", "review", "running", "completed"].includes(status))
+          .map(([status, label]) => `<div><strong>${counts[status]}</strong><span>${label}</span></div>`)
+          .join("")}
+      </div>
+      ${state.workOrders.length
+        ? `<div class="home-status-groups">${groups.map(([status, label]) => {
+            const orders = state.workOrders.filter(
+              (workOrder) => visibleStatus(workOrder, state.workOrders).status === status,
+            );
+            if (!orders.length) return "";
+            return `
+              <section class="home-status-section" data-home-status="${status}" aria-labelledby="home-${status}">
+                <header><h2 id="home-${status}">${label}</h2><span>${orders.length}</span></header>
+                <div>${orders.map(renderHomeGoalRow).join("")}</div>
+              </section>`;
+          }).join("")}</div>`
+        : `<section class="home-empty"><h2>还没有目标</h2><button class="primary-button" id="empty-create" type="button">新建目标</button></section>`}
+    </section>`;
+}
+
+function renderHomeGoalRow(workOrder) {
+  const presentation = visibleStatus(workOrder, state.workOrders);
+  return `
+    <button class="home-goal-row" data-work-order-id="${escapeHtml(workOrder.id)}" type="button">
+      <span class="status-dot ${presentation.status}"></span>
+      <span><strong>${escapeHtml(workOrder.title)}</strong><small>${escapeHtml(presentation.reason)}</small></span>
+      <time>${formatDate(workOrder.updatedAt)}</time>
+      <span class="row-arrow" aria-hidden="true">›</span>
+    </button>`;
+}
+
+function renderProjectsWorkspace() {
+  return `
+    <section class="workspace-content projects-workspace">
+      <header class="overview-heading">
+        <div><p class="overline">工作台</p><h1>项目</h1></div>
+      </header>
+      <nav class="home-mobile-nav" aria-label="工作台导航">
+        <button type="button" data-overview-path="/">全部目标</button>
+        <button type="button" data-overview-path="/resources">资源</button>
+      </nav>
+      ${state.projects.length
+        ? `<div class="project-list">${state.projects.map((project) => {
+            const goals = state.workOrders.filter((workOrder) => workOrder.projectId === project.id);
+            return `<article class="project-row"><strong>${escapeHtml(project.name)}</strong><span>${goals.length} 个目标</span></article>`;
+          }).join("")}</div>`
+        : '<section class="home-empty"><h2>还没有项目</h2></section>'}
+    </section>`;
+}
+
+function bindOverviewEvents() {
+  document.querySelector("#open-create-home")?.addEventListener("click", openCreateDialog);
+  document.querySelector("#empty-create")?.addEventListener("click", openCreateDialog);
+  document.querySelector("#open-session-import-home")?.addEventListener("click", openSessionImport);
+  document.querySelector("#open-local-state-home")?.addEventListener("click", () => {
+    resetRestorePreview();
+    localStateDialog.showModal();
+  });
+  document.querySelectorAll("[data-overview-path]").forEach((button) => {
+    button.addEventListener("click", () => {
+      history.pushState({}, "", button.dataset.overviewPath);
+      resetGoalSelection();
+      refreshConsole();
+    });
+  });
+  document.querySelectorAll(".home-goal-row").forEach((button) => {
     button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
   });
 }
@@ -786,7 +913,7 @@ function renderOrderRow(workOrder) {
       <span class="status-dot ${presentation.status}"></span>
       <span class="order-row-copy">
         <strong>${escapeHtml(workOrder.title)}</strong>
-        <small>${visibleStatusLabels[presentation.status]} · ${escapeHtml(presentation.reason)}</small>
+        <small>${escapeHtml(formatVisibleStatus(presentation.status, presentation.reason))}</small>
       </span>
       ${unread ? '<span class="unread-indicator" aria-label="有未读通知"></span>' : ""}
       <time>${formatDate(workOrder.updatedAt)}</time>
@@ -799,41 +926,69 @@ function renderWorkspace(workOrder, feedback) {
   const canEditPlan = state.draftStages !== null;
   return `
     <section class="workspace-content">
+      <button class="mobile-back-button" id="back-to-all-goals" type="button">‹ 全部目标</button>
       <header class="workspace-heading">
         <div>
           <div class="status-line">
             <span class="status-pill ${presentation.status}">${visibleStatusLabels[presentation.status]}</span>
-            <span>${escapeHtml(presentation.reason)}</span>
+            ${presentation.reason === visibleStatusLabels[presentation.status]
+              ? ""
+              : `<span>${escapeHtml(presentation.reason)}</span>`}
           </div>
           <h1>${escapeHtml(workOrder.title)}</h1>
           <p>${escapeHtml(workOrder.currentSummary)}</p>
         </div>
-        <span class="saved-state">本机已保存</span>
       </header>
+      <button class="secondary-button mobile-context-button" id="open-goal-context" type="button">${mobileContextActionLabel(workOrder)}</button>
+      ${renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback)}
+    </section>`;
+}
 
-      ${workOrder.pendingClarification ? renderConversationPanel(workOrder) : ""}
+function mobileContextActionLabel(workOrder) {
+  if (workOrder.pendingClarification) return "处理待回答问题";
+  if (workOrder.status === "review") return "查看验收操作";
+  if (workOrder.status === "interrupted") return "处理下一步";
+  return workOrder.plan?.stages?.length ? "查看当前节点详情" : "查看目标详情";
+}
 
-      <section class="map-panel">
+function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
+  const hasResult = Boolean(workOrder.result && !["ready", "running"].includes(workOrder.status));
+  const defaultView = hasResult && ["review", "delivered"].includes(workOrder.status)
+    ? "result"
+    : "map";
+  const activeView = hasResult ? (state.primaryView ?? defaultView) : "map";
+  if (activeView === "result") {
+    return `
+      <section class="primary-work-surface">
+        <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
+          <button type="button" data-primary-view="map" role="tab" aria-selected="false">执行图</button>
+          <button type="button" data-primary-view="result" role="tab" aria-selected="true" class="active">成果</button>
+        </div>
+        ${renderResultPanel(workOrder)}
+      </section>`;
+  }
+  return `
+    <section class="map-panel primary-work-surface">
+      <div class="primary-surface-heading">
         <div class="section-heading">
           <div>
-            <p class="overline">执行列表</p>
-            <h2>${stages ? (canEditPlan ? "检查并编辑计划" : "当前计划") : "准备执行计划"}</h2>
+            <p class="overline">目标主体</p>
+            <h2>${stages ? (canEditPlan ? "编辑执行图" : "执行图") : "准备执行图"}</h2>
           </div>
           <div class="map-heading-actions">
             ${workOrder.plan && !canEditPlan ? renderMapViewControls(workOrder) : ""}
             ${workOrder.plan ? `<span class="subtle-label">版本 ${workOrder.plan.version}</span>` : ""}
           </div>
         </div>
+        ${hasResult ? `
+          <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
+            <button type="button" data-primary-view="map" role="tab" aria-selected="true" class="active">执行图</button>
+            <button type="button" data-primary-view="result" role="tab" aria-selected="false">成果</button>
+          </div>` : ""}
+      </div>
         ${workOrder.revisionNote ? `<aside class="notice"><strong>补充要求</strong><p>${escapeHtml(workOrder.revisionNote)}</p></aside>` : ""}
         ${renderPlanArea(workOrder, stages, canEditPlan)}
         <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
-      </section>
-
-      ${workOrder.pendingClarification ? "" : renderConversationPanel(workOrder)}
-
-      ${renderRecoveryPanel(workOrder)}
-      ${renderRunPanel(workOrder)}
-      ${renderResultPanel(workOrder)}
     </section>`;
 }
 
@@ -978,11 +1133,11 @@ function renderMapNode(stage, index, stageById, singleStage) {
     <button class="map-node ${singleStage ? "single" : ""} ${state.selectedStageIndex === index ? "selected" : ""}" data-stage-index="${index}" type="button">
       <span class="map-node-topline">
         <span class="stage-index">${index + 1}</span>
-        <span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(visibleStatusLabels[stage.status] ?? "规划中")} · ${escapeHtml(stage.statusReason)}</span>
+        <span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</span>
       </span>
       <strong>${escapeHtml(stage.outcome)}</strong>
       <small>${escapeHtml(stage.scope)}</small>
-      ${dependencies.length ? `<span class="dependency-label">依赖：${escapeHtml(dependencies.join("；"))}</span>` : '<span class="dependency-label">依赖：无</span>'}
+      ${dependencies.length ? `<span class="dependency-label">依赖：${escapeHtml(dependencies.join("；"))}</span>` : ""}
     </button>`;
 }
 
@@ -1100,20 +1255,32 @@ function renderContext(workOrder) {
   const stage = stages[selectedIndex];
   return `
     <section class="context-content">
+      <button class="mobile-back-button" id="back-to-goal" type="button">‹ 返回目标</button>
       <div class="context-heading">
-        <div><p class="overline">${stage ? "当前节点" : "详情"}</p><h2>${stage ? `节点 ${selectedIndex + 1}` : "目标信息"}</h2></div>
+        <div><p class="overline">${stage ? `节点 ${selectedIndex + 1}` : "目标详情"}</p><h2>${escapeHtml(workOrder.title)}</h2></div>
         <span class="status-dot ${stage?.status ?? presentation.status}" title="${escapeHtml(stage?.statusReason ?? presentation.reason)}"></span>
       </div>
 
       ${stage ? renderContextTabs() : ""}
       ${stage ? renderContextTabContent(workOrder, stage) : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
-
-      ${renderMaterials(workOrder.materials)}
-
       ${renderContextAction(workOrder)}
+      ${renderContextSupport(workOrder)}
       <p class="inline-feedback" id="execution-feedback" role="status"></p>
       <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
+}
+
+function renderContextSupport(workOrder) {
+  const conversation = renderConversationPanel(workOrder);
+  const recovery = renderRecoveryPanel(workOrder);
+  const run = renderRunPanel(workOrder);
+  if (!conversation && !recovery && !run) return "";
+  return `
+    <div class="context-support">
+      ${conversation ? `<details class="context-disclosure" ${workOrder.pendingClarification ? "open" : ""}><summary>目标对话</summary>${conversation}</details>` : ""}
+      ${recovery ? `<details class="context-disclosure" open><summary>中断现场</summary>${recovery}</details>` : ""}
+      ${run ? `<details class="context-disclosure"><summary>运行记录</summary>${run}</details>` : ""}
+    </div>`;
 }
 
 function renderContextTabs() {
@@ -1184,7 +1351,7 @@ function renderContextTabContent(workOrder, stage) {
   return `
     <div class="context-stage context-tab-panel" role="tabpanel">
       <h3>${escapeHtml(stage.outcome)}</h3>
-      <p class="node-status-line"><span class="status-dot ${escapeHtml(stage.status)}"></span>${escapeHtml(visibleStatusLabels[stage.status] ?? "规划中")} · ${escapeHtml(stage.statusReason)}</p>
+      <p class="node-status-line"><span class="status-dot ${escapeHtml(stage.status)}"></span>${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</p>
       <dl class="context-list">
         <div><dt>影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
         <div><dt>执行方式</dt><dd>${escapeHtml(executionMethodLabel(stage.executionMethod))}</dd></div>
@@ -1195,11 +1362,9 @@ function renderContextTabContent(workOrder, stage) {
         <div><dt>补充上下文</dt><dd>${stage.contextNotes?.length ? stage.contextNotes.map(escapeHtml).join("；") : "暂无"}</dd></div>
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
-      <div class="context-section">
-        <p class="overline">目标信息</p>
+      <details class="node-source-details">
+        <summary>会话入口</summary>
         <dl class="context-list">
-          <div><dt>目标说明</dt><dd>${escapeHtml(workOrder.description ?? workOrder.goal)}</dd></div>
-          <div><dt>完成要求</dt><dd>${escapeHtml(workOrder.acceptance || "未单独填写")}</dd></div>
           <div><dt>来源会话</dt><dd>${escapeHtml(
             (workOrder.sourceSessions ?? (workOrder.importSource ? [workOrder.importSource] : []))
               .map((source) => source.id)
@@ -1207,7 +1372,7 @@ function renderContextTabContent(workOrder, stage) {
           )}</dd></div>
           <div><dt>当前执行会话</dt><dd>${escapeHtml(workOrder.currentSessionId ?? workOrder.sessionId ?? "未建立")}</dd></div>
         </dl>
-      </div>
+      </details>
     </div>`;
 }
 
@@ -1393,10 +1558,27 @@ function renderContextAction(workOrder) {
 }
 
 function bindRenderedEvents() {
+  document.querySelector("#back-to-all-goals")?.addEventListener("click", openAllGoals);
+  document.querySelector("#open-goal-context")?.addEventListener("click", () => {
+    state.mobileContextOpen = true;
+    renderConsole();
+  });
+  document.querySelector("#back-to-goal")?.addEventListener("click", () => {
+    state.mobileContextOpen = false;
+    renderConsole();
+  });
+  document.querySelectorAll("[data-primary-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.primaryView = button.dataset.primaryView;
+      state.mobileContextOpen = false;
+      renderConsole();
+    });
+  });
   document.querySelectorAll("[data-stage-index]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedStageIndex = Number(button.dataset.stageIndex);
       state.followCurrentStage = false;
+      state.mobileContextOpen = matchMedia("(max-width: 680px)").matches;
       renderConsole();
     });
   });
@@ -1673,6 +1855,8 @@ async function createWorkOrder(event) {
     state.selected = workOrder;
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
+    state.primaryView = null;
+    state.mobileContextOpen = false;
     await refreshConsole();
   } catch (error) {
     formError.textContent = messageFrom(error, "创建目标失败");
@@ -1774,6 +1958,8 @@ async function importSelectedSessions(event) {
       state.selected = workOrder;
       state.selectedStageIndex = 0;
       state.followCurrentStage = true;
+      state.primaryView = null;
+      state.mobileContextOpen = false;
     }
     await refreshConsole();
   } catch (error) {
@@ -1789,6 +1975,8 @@ async function selectWorkOrder(id) {
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
     state.contextTab = "details";
+    state.primaryView = null;
+    state.mobileContextOpen = false;
     history.pushState({}, "", `/goals/${encodeURIComponent(id)}`);
   }
   try {
@@ -1804,6 +1992,20 @@ async function selectWorkOrder(id) {
 
 function isResourceView() {
   return window.location.pathname === "/resources";
+}
+
+function isProjectsView() {
+  return window.location.pathname === "/projects";
+}
+
+function isAllGoalsView() {
+  return window.location.pathname === "/";
+}
+
+function openAllGoals() {
+  history.pushState({}, "", "/");
+  resetGoalSelection();
+  refreshConsole();
 }
 
 function closeCreateDialog() {
@@ -1868,6 +2070,11 @@ function visibleStatus(workOrder, allWorkOrders) {
     return { status: presented.userStatus, reason: presented.statusReason };
   }
   return { status: "planning", reason: "正在读取状态" };
+}
+
+function formatVisibleStatus(status, reason) {
+  const label = visibleStatusLabels[status] ?? "规划中";
+  return reason === label ? label : `${label} · ${reason}`;
 }
 
 function scheduleRefresh() {
