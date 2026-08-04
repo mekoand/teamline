@@ -115,6 +115,11 @@ describe("personal console", () => {
     expect(script).toContain("Codex 完成摘要");
     expect(script).toContain("completionSummaryForStage");
     expect(script).toContain("localArtifactReferences");
+    expect(script).toContain("workOrder.result.artifacts");
+    expect(script).toContain("打开文件");
+    expect(script).toContain("打开所在位置");
+    expect(script).toContain("本轮新建或修改的文件，最多显示 100 项");
+    expect(script).toContain("/artifacts/open`");
     expect(script).toContain("生成计划通常需要 30–90 秒");
   });
 

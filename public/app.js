@@ -1645,9 +1645,10 @@ function renderResultPanel(workOrder) {
       </section>
       <section class="result-section">
         <h3>产物</h3>
+        ${workOrder.workspace?.kind === "directory" ? '<p class="result-artifact-note">本轮新建或修改的文件，最多显示 100 项。</p>' : ""}
         <div class="result-artifact-grid">
           ${resultData.artifacts.length
-            ? resultData.artifacts.map(renderReference).join("")
+            ? resultData.artifacts.map((reference) => renderReference(reference, workOrder)).join("")
             : '<p class="result-empty">没有识别到单独的产物引用，请在工作空间中查看本轮变化。</p>'}
         </div>
       </section>
@@ -1694,6 +1695,7 @@ function collectResultViewData(workOrder, historical) {
     seen.add(location);
     artifacts.push(reference);
   };
+  (workOrder.result.artifacts ?? []).forEach(addArtifact);
   stages.flatMap((stage) => stage.artifacts ?? []).forEach(addArtifact);
   summaries.flatMap((item) => localArtifactReferences(item.rawSummary)).forEach((reference) =>
     addArtifact({ id: `summary:${reference.location}`, type: "file", ...reference }),
@@ -2021,8 +2023,14 @@ function cleanCompletionSummary(summary) {
   return summary.replace(/\[([^\]\n]+)\]\((\/[^)\n]+)\)/g, "$1").trim();
 }
 
-function renderReference(reference) {
-  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code></article>`;
+function renderReference(reference, workOrder) {
+  const canOpen =
+    workOrder?.workspace?.kind === "directory" &&
+    reference.type === "file" &&
+    (workOrder.result?.artifacts ?? []).some(
+      (artifact) => artifact.type === "file" && artifact.location === reference.location,
+    );
+  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
 }
 
 function renderContextAction(workOrder) {
@@ -2182,6 +2190,28 @@ function bindRenderedEvents() {
       state.primaryView = button.dataset.primaryView;
       state.mobileContextOpen = false;
       renderConsole();
+    });
+  });
+  document.querySelectorAll("[data-open-result-artifact], [data-reveal-result-artifact]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const reveal = button.hasAttribute("data-reveal-result-artifact");
+      const path = reveal
+        ? button.dataset.revealResultArtifact
+        : button.dataset.openResultArtifact;
+      const idleLabel = reveal ? "打开所在位置" : "打开文件";
+      setBusy(button, "正在打开…");
+      try {
+        await requestJson(`/api/work-orders/${encodedSelectedId()}/artifacts/open`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, reveal }),
+        });
+        resetBusy(button, idleLabel);
+        setFeedback("result-feedback", reveal ? "已在 Finder 中显示成果。" : "已打开成果文件。", false);
+      } catch (error) {
+        resetBusy(button, idleLabel);
+        setFeedback("result-feedback", messageFrom(error, "无法打开这个成果。"), true);
+      }
     });
   });
   document.querySelectorAll("[data-progress-view]").forEach((button) => {

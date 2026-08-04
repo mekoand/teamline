@@ -157,6 +157,7 @@ export type VerificationResult = {
 
 export type WorkOrderResult = {
   planVersion: number;
+  artifacts?: PlanReference[];
   git: GitChangeSummary;
   verifications: VerificationResult[];
   completedAt: string;

@@ -1418,6 +1418,13 @@ textarea {
   margin: 0;
 }
 
+.result-artifact-note {
+  margin: -4px 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .result-incomplete {
   color: var(--danger);
 }
@@ -1541,6 +1548,28 @@ textarea {
   overflow-wrap: anywhere;
   color: var(--text-soft);
   font-size: 10px;
+}
+
+.artifact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 5px;
+}
+
+.artifact-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.artifact-actions button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
 }
 
 .completion-reference p {

@@ -3283,8 +3283,20 @@ function mergeResults(
   }
   return {
     ...current,
+    artifacts: mergeResultArtifacts(previous.artifacts, current.artifacts),
     verifications: [...byStage.values()],
   };
+}
+
+function mergeResultArtifacts(
+  previous: WorkOrderResult["artifacts"],
+  current: WorkOrderResult["artifacts"],
+): WorkOrderResult["artifacts"] {
+  const byLocation = new Map(
+    (previous ?? []).map((artifact) => [artifact.location, artifact]),
+  );
+  for (const artifact of current ?? []) byLocation.set(artifact.location, artifact);
+  return byLocation.size ? [...byLocation.values()] : undefined;
 }
 
 function nextPlanSummary(plan: WorkOrderPlan | null): string {
