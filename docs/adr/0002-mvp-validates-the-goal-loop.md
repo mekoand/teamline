@@ -1,3 +1,11 @@
+# The MVP Must Validate the Complete Goal Loop
+
+Quota and usage monitoring may reduce the barrier to adoption, but they do not constitute the product MVP because they cannot test whether users will entrust work to the system and rely on it to resume execution. The first build must complete the entire local loop with one codebase and one existing coding tool: create a goal, confirm its plan, authorize execution, create checkpoints, recover after interruption, and reach review. The team control plane comes after this local execution kernel works. Multi-tool switching, a complete cross-project overview, and desktop packaging remain later work.
+
+---
+
+## 中文
+
 # 产品 MVP 必须验证目标闭环
 
 Quota 与用量监控可以作为降低采用门槛的先行工具，但不构成产品 MVP，因为它无法验证用户是否愿意把工作交给系统并信任其恢复执行。第一个建设阶段必须在一个本地代码库和一种现有编码工具上，通过个人本地控制台跑通创建目标、确认计划、授权执行、生成检查点、中断恢复和进入待验收的完整闭环。团队控制面在该本地执行内核成立后加入；多工具切换、完整跨项目总览和桌面封装继续后置。

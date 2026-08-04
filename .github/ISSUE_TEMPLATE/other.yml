@@ -1,0 +1,19 @@
+name: Other / 其他问题
+description: Open an issue that does not fit the other forms / 提交无法归入其他表单的问题
+title: ""
+labels:
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English or Chinese is welcome. A maintainer will classify this issue during triage.
+
+        可以使用英文或中文填写。维护者会在首次处理时补充类型标签。
+  - type: textarea
+    id: description
+    attributes:
+      label: Description / 说明
+      description: Tell us what you need help with. / 请说明你希望反馈或讨论的事情。
+    validations:
+      required: true
