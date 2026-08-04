@@ -343,6 +343,7 @@ export class WorkOrderStore {
     if (input.kind === "goal") {
       const goal = this.get(input.value.trim());
       if (!goal) throw new Error("找不到引用的目标");
+      if (goal.status !== "delivered") throw new Error("只能引用已完成目标");
     }
     const material = createProjectMaterial(projectId, input);
     this.database.transaction(() => {
@@ -1078,10 +1079,15 @@ export class WorkOrderStore {
     questions: ClarificationQuestion[],
     requiresPlanConfirmation = false,
     pendingReply?: string,
+    allowReview = false,
   ): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder) throw new Error("找不到这个目标");
-    if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
+    if (
+      (!allowReview && workOrder.runStatus !== null) ||
+      (allowReview && ![null, "completed"].includes(workOrder.runStatus)) ||
+      !["draft", "ready", ...(allowReview ? ["review"] : [])].includes(workOrder.status)
+    ) {
       throw new PlanLockedError("目标开始执行后不能直接修改计划");
     }
     const normalized = normalizeClarificationQuestions(questions);
@@ -1106,11 +1112,23 @@ export class WorkOrderStore {
       this.database
         .query(`
           UPDATE work_orders
-          SET clarification_json = ?, status = 'draft', current_summary = ?, updated_at = ?
+          SET clarification_json = ?, plan_json = ?,
+              revision_note = COALESCE(?, revision_note),
+              run_status = CASE WHEN ? THEN NULL ELSE run_status END,
+              status = 'draft', current_summary = ?, updated_at = ?
           WHERE id = ?
         `)
         .run(
           JSON.stringify(clarification),
+          workOrder.plan
+            ? JSON.stringify({
+                ...workOrder.plan,
+                ...(allowReview ? { confirmationRequired: true } : {}),
+                updatedAt: now,
+              })
+            : null,
+          allowReview ? pendingReply?.trim() || null : null,
+          allowReview ? 1 : 0,
           normalized.length === 1 ? "需要补充一项关键信息" : `需要补充 ${normalized.length} 项关键信息`,
           now,
           id,
@@ -1189,6 +1207,7 @@ export class WorkOrderStore {
     },
     requiresPlanConfirmation = false,
     pendingReply?: string,
+    forcePlanVersion = false,
   ): WorkOrder {
     const current = this.get(id);
     if (!current) throw new Error("找不到这个目标");
@@ -1242,7 +1261,14 @@ export class WorkOrderStore {
       current.plan,
       sanitizeGeneratedStages(generated.stages),
     );
+    const continuingRevision =
+      current.pendingClarification?.requiresPlanConfirmation === true &&
+      Boolean(current.revisionNote) &&
+      current.result !== null &&
+      current.result.planVersion === current.plan?.version;
+    const forceNewPlanVersion = forcePlanVersion || continuingRevision;
     const structuralChange =
+      forceNewPlanVersion ||
       current.plan === null ||
       planStructureChanged(current, stages, goal, acceptance);
     const now = new Date().toISOString();
@@ -1261,7 +1287,9 @@ export class WorkOrderStore {
         .query(`
           UPDATE work_orders
           SET title = ?, goal = ?, acceptance = ?, materials_json = ?, resource_plan_json = ?,
-              clarification_json = NULL, status = ?, current_summary = ?, updated_at = ?
+              clarification_json = NULL, revision_note = COALESCE(?, revision_note),
+              run_status = CASE WHEN ? THEN NULL ELSE run_status END,
+              status = ?, current_summary = ?, updated_at = ?
           WHERE id = ?
         `)
         .run(
@@ -1277,9 +1305,13 @@ export class WorkOrderStore {
               ? current.resourcePlan.autoRunReason
               : null,
           }),
-          structuralChange ? current.status : "ready",
+          forcePlanVersion && !continuingRevision ? pendingReply?.trim() || null : null,
+          forceNewPlanVersion ? 1 : 0,
+          forceNewPlanVersion ? "ready" : structuralChange ? current.status : "ready",
           structuralChange
-            ? current.currentSummary
+            ? forceNewPlanVersion
+              ? "正在保存后续计划"
+              : current.currentSummary
             : canUpdateResources
               ? "资源偏好已更新"
               : "目标上下文已更新",
@@ -2127,17 +2159,20 @@ export class WorkOrderStore {
       throw new Error("只有待验收的目标可以确认完成");
     }
     const plan = workOrder.plan
-      ? advancePlanWithCompletedStages(
-          workOrder.plan,
-          new Set(workOrder.plan.stages.map((stage) => stage.id)),
-          "已由你确认完成",
-        )
+      ? {
+          ...workOrder.plan,
+          stages: workOrder.plan.stages.map((stage) => ({
+            ...stage,
+            status: "completed" as const,
+            statusReason: "已由你确认完成",
+          })),
+        }
       : null;
     const now = new Date().toISOString();
     this.database
       .query(`
         UPDATE work_orders
-        SET status = 'delivered', plan_json = ?, current_summary = '已由用户确认交付', updated_at = ?
+        SET status = 'delivered', plan_json = ?, current_summary = '已由你确认完成', updated_at = ?
         WHERE id = ? AND status = 'review'
       `)
       .run(plan ? JSON.stringify(plan) : null, now, id);
@@ -2161,6 +2196,7 @@ export class WorkOrderStore {
         status: "planning",
         statusReason: "等待确认并启动",
       })),
+      confirmationRequired: true,
       updatedAt: now,
     };
     this.database

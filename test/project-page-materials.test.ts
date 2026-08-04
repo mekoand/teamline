@@ -7,6 +7,7 @@ import { createApp } from "../src/app";
 import { buildResumePrompt } from "../src/codex-runner";
 import { LocalStateTransfer } from "../src/local-state-transfer";
 import { WorkOrderStore } from "../src/work-order-store";
+import type { WorkOrder } from "../src/work-order";
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "teamline-project-page-"));
@@ -22,6 +23,32 @@ function fixture() {
       rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+function deliverGoal(store: WorkOrderStore, workOrder: WorkOrder): WorkOrder {
+  const planned = store.savePlan(workOrder.id, [{
+    id: "complete-goal",
+    outcome: "目标成果可引用",
+    scope: "目标成果",
+    verification: "人工确认",
+    verificationCommand: "true",
+  }]);
+  store.markStarted(planned.id);
+  const verifying = store.beginResultProcessing(planned.id, "Codex 已正常结束");
+  store.completeReview(planned.id, {
+    planVersion: planned.plan!.version,
+    git: { diffStat: "", statusShort: "" },
+    verifications: [{
+      stageId: planned.plan!.stages[0]!.id,
+      stageOutcome: planned.plan!.stages[0]!.outcome,
+      command: "true",
+      status: "passed",
+      exitCode: 0,
+      output: "验证通过",
+    }],
+    completedAt: new Date().toISOString(),
+  });
+  return store.confirmDelivered(planned.id);
 }
 
 describe("project page and project materials", () => {
@@ -278,12 +305,12 @@ describe("project page and project materials", () => {
     try {
       const project = context.store.createProject("发布项目");
       const sourceProject = context.store.createProject("原型项目");
-      const source = context.store.create({
+      const source = deliverGoal(context.store, context.store.create({
         name: "完成界面原型",
         description: "完成界面原型",
         projectId: sourceProject.id,
         projectMaterialSelectionConfirmed: true,
-      });
+      }));
       const reference = context.store.createProjectMaterial(project.id, {
         kind: "goal",
         label: "界面原型成果",
@@ -315,6 +342,17 @@ describe("project page and project materials", () => {
           new LocalStateTransfer(context.store).export(),
         ),
       ).not.toThrow();
+
+      const unfinished = context.store.create({
+        name: "尚未完成的目标",
+        description: "不能作为项目素材引用",
+        projectId: sourceProject.id,
+      });
+      expect(() => context.store.createProjectMaterial(project.id, {
+        kind: "goal",
+        label: "未完成目标",
+        value: unfinished.id,
+      })).toThrow("只能引用已完成目标");
     } finally {
       context.close();
     }
@@ -474,12 +512,12 @@ describe("project page and project materials", () => {
     const target = fixture();
     try {
       const project = source.store.createProject("目标引用迁移");
-      const sourceGoal = source.store.create({
+      const sourceGoal = deliverGoal(source.store, source.store.create({
         name: "Bundle 来源目标",
         description: "需要恢复为副本",
         projectId: project.id,
         materials: [{ kind: "text", value: "来源目标中的共享素材" }],
-      });
+      }));
       const goalMaterial = source.store.createProjectMaterial(project.id, {
         kind: "goal",
         label: "来源目标摘要",

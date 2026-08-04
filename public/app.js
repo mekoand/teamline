@@ -1,3 +1,5 @@
+import { gitArtifactPaths } from "./result-artifacts.js";
+
 const visibleStatusLabels = {
   planning: "规划中",
   running: "运行中",
@@ -757,6 +759,7 @@ function renderProjectDetailWorkspace(detail) {
   const { project, summary, goals, materials, results } = detail;
   const focusGoals = goals.filter((goal) => ["running", "response", "review"].includes(visibleStatus(goal, state.workOrders).status));
   const recentGoals = [...goals].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 6);
+  const completedGoals = state.workOrders.filter((goal) => goal.status === "delivered");
   return `
     <section class="workspace-content project-detail-workspace">
       <button class="mobile-back-button project-back-button" id="back-to-projects" type="button">‹ 全部项目</button>
@@ -781,7 +784,9 @@ function renderProjectDetailWorkspace(detail) {
             <label><span>类型</span><select name="kind"><option value="text">文本</option><option value="repository">Git 仓库</option><option value="folder">文件夹</option><option value="file">文件路径</option><option value="image">图片路径</option><option value="link">链接</option><option value="goal">目标引用</option></select></label>
             <label><span>名称</span><input name="label" required placeholder="简短名称" autocomplete="off" /></label>
             <label data-project-material-value><span>内容或位置</span><textarea name="value" rows="3" required placeholder="写下文本，或填写本地路径和链接"></textarea></label>
-            <label data-project-goal-value hidden><span>引用目标</span><select name="goalId">${goals.map((goal) => `<option value="${escapeHtml(goal.id)}">${escapeHtml(goal.name)}</option>`).join("")}</select></label>
+            <label data-project-goal-value hidden><span>引用已完成目标</span><select name="goalId">${completedGoals.length
+              ? completedGoals.map((goal) => `<option value="${escapeHtml(goal.id)}">${escapeHtml(goal.name)}</option>`).join("")
+              : '<option value="" disabled selected>还没有已完成目标</option>'}</select></label>
             <button class="primary-button" type="submit">添加素材</button>
           </form>
           <form id="project-upload-form" class="project-upload-form">
@@ -1175,7 +1180,7 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
   if (isImportOnlyGoal(workOrder) || (workOrder.importContext && !stages && !canEditPlan)) {
     return renderImportedHistorySurface(workOrder, feedback);
   }
-  const hasResult = Boolean(workOrder.result && !["ready", "running"].includes(workOrder.status));
+  const hasResult = Boolean(workOrder.result);
   const defaultView = hasResult && ["review", "delivered"].includes(workOrder.status)
     ? "result"
     : "map";
@@ -1606,22 +1611,42 @@ function renderRunPanel(workOrder) {
 }
 
 function renderResultPanel(workOrder) {
-  if (!workOrder.result || ["ready", "running"].includes(workOrder.status)) return "";
+  if (!workOrder.result) return "";
   const historical = workOrder.result.planVersion !== workOrder.plan?.version;
+  const resultData = collectResultViewData(workOrder, historical);
+  const resultState = historical
+    ? "历史成果"
+    : workOrder.status === "delivered"
+      ? "已确认完成"
+      : workOrder.status === "review"
+        ? "待确认"
+        : "本轮结果";
   return `
     <section class="result-panel">
       <div class="section-heading compact">
-        <div><p class="overline">验收</p><h2>成果与检查</h2></div>
-        <span class="subtle-label">计划版本 ${workOrder.result.planVersion}</span>
+        <div><p class="overline">成果</p><h2>实际成果</h2></div>
+        <span class="result-state ${workOrder.status === "delivered" && !historical ? "completed" : ""}">${resultState}</span>
       </div>
-      ${historical ? `<p class="notice">这是上一版计划的历史结果。</p>` : ""}
-      <article class="result-card">
-        <h3>${workOrder.workspace?.kind === "directory" ? "普通文件夹结果" : "Git 变化摘要"}</h3>
-        ${workOrder.workspace?.kind === "directory" ? "<p>普通文件夹不提供 Git 隔离、版本记录或回滚；请自行确认和保存目录内容。</p>" : ""}
-        <pre>${escapeHtml(workOrder.result.git.diffStat || "没有已记录的差异统计")}</pre>
-        <pre>${escapeHtml(workOrder.result.git.statusShort || "工作区没有未提交变化")}</pre>
-      </article>
-      <div class="verification-list">
+      <p class="result-version">计划版本 ${workOrder.result.planVersion}${historical ? " · 这是上一轮结果" : ""}</p>
+      <section class="result-section">
+        <h3>完成摘要</h3>
+        <div class="result-summary-list">
+          ${resultData.summaries.length
+            ? resultData.summaries.map((item) => `<article class="result-summary-card"><strong>${escapeHtml(item.stage)}</strong><p>${escapeHtml(item.summary)}</p></article>`).join("")
+            : `<p class="result-empty">${escapeHtml(workOrder.currentSummary || "本轮已经结束。")}</p>`}
+        </div>
+      </section>
+      <section class="result-section">
+        <h3>产物</h3>
+        <div class="result-artifact-grid">
+          ${resultData.artifacts.length
+            ? resultData.artifacts.map(renderReference).join("")
+            : '<p class="result-empty">没有识别到单独的产物引用，请在工作空间中查看本轮变化。</p>'}
+        </div>
+      </section>
+      <section class="result-section">
+        <h3>验证结果</h3>
+        <div class="verification-list">
         ${workOrder.result.verifications
           .map(
             (verification) => `
@@ -1631,9 +1656,62 @@ function renderResultPanel(workOrder) {
                 <pre>${escapeHtml(verification.output)}</pre>
               </article>`,
           )
-          .join("")}
-      </div>
+          .join("") || '<p class="result-empty">没有自动验证结果，请人工确认本轮成果。</p>'}
+        </div>
+      </section>
+      ${resultData.incomplete.length ? `
+        <section class="result-section result-incomplete">
+          <h3>仍需处理</h3>
+          <ul>${resultData.incomplete.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </section>` : ""}
+      <details class="result-technical-details">
+        <summary>工作区变化</summary>
+        ${workOrder.workspace?.kind === "directory" ? "<p>普通文件夹不提供 Git 变化记录，请直接检查当前目录。</p>" : ""}
+        <pre>${escapeHtml(workOrder.result.git.diffStat || "没有已记录的差异统计")}</pre>
+        <pre>${escapeHtml(workOrder.result.git.statusShort || "工作区没有未提交变化")}</pre>
+      </details>
     </section>`;
+}
+
+function collectResultViewData(workOrder, historical) {
+  const stages = historical ? [] : workOrder.plan?.stages ?? [];
+  const summaries = stages
+    .map((stage) => ({ stage: stage.outcome, rawSummary: completionSummaryForStage(workOrder, stage) }))
+    .filter((item) => item.rawSummary)
+    .map((item) => ({ ...item, summary: cleanCompletionSummary(item.rawSummary) }));
+  const artifacts = [];
+  const seen = new Set();
+  const addArtifact = (reference) => {
+    const location = reference.location?.trim();
+    if (!location || seen.has(location)) return;
+    seen.add(location);
+    artifacts.push(reference);
+  };
+  stages.flatMap((stage) => stage.artifacts ?? []).forEach(addArtifact);
+  summaries.flatMap((item) => localArtifactReferences(item.rawSummary)).forEach((reference) =>
+    addArtifact({ id: `summary:${reference.location}`, type: "file", ...reference }),
+  );
+  gitArtifactReferences(workOrder).forEach(addArtifact);
+  const incomplete = stages
+    .filter((stage) => stage.status !== "completed")
+    .map((stage) => `${stage.outcome}：${stage.statusReason}`);
+  workOrder.result.verifications
+    .filter((verification) => verification.status === "failed")
+    .forEach((verification) => incomplete.push(`${verification.stageOutcome}：验证未通过`));
+  return { summaries, artifacts, incomplete: [...new Set(incomplete)] };
+}
+
+function gitArtifactReferences(workOrder) {
+  if (workOrder.workspace?.kind !== "git" || !workOrder.result?.git.statusShort) return [];
+  const root = workOrder.worktreePath || workOrder.workspace.path;
+  if (!root) return [];
+  return gitArtifactPaths(workOrder.result.git.statusShort)
+    .map((path, index) => ({
+      id: `git-result:${index}:${path}`,
+      type: "file",
+      label: path.split("/").at(-1) || path,
+      location: `${root.replace(/\/$/, "")}/${path}`,
+    }));
 }
 
 function renderContext(workOrder) {
@@ -2026,8 +2104,8 @@ function renderContextAction(workOrder) {
         <p>结果已整理完成，需要你确认是否符合目标。</p>
         <button class="primary-button full-button" id="deliver-work-order" type="button">确认完成</button>
         <form id="revision-form">
-          <label><span>还有补充要求？</span><textarea name="revisionNote" rows="3" required placeholder="说明需要继续处理的内容"></textarea></label>
-          <button class="secondary-button full-button" id="revise-work-order" type="submit">补充要求并继续</button>
+          <label><span>继续调整</span><textarea name="revisionNote" rows="3" required placeholder="说明还需要调整什么"></textarea></label>
+          <button class="secondary-button full-button" id="revise-work-order" type="submit">生成后续计划</button>
         </form>
       </section>`;
   }
@@ -2325,7 +2403,8 @@ function bindRenderedEvents() {
   document.querySelector("#revision-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = document.querySelector("#revise-work-order");
-    setBusy(button, "正在保存…");
+    setBusy(button, "正在生成…");
+    setFeedback("result-feedback", "正在根据调整内容生成后续计划，通常需要 30–90 秒。", false);
     try {
       const revisionNote = new FormData(event.currentTarget).get("revisionNote");
       const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/revise`, {
@@ -2333,10 +2412,16 @@ function bindRenderedEvents() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ revisionNote }),
       });
-      await acceptWorkOrderResult(result.workOrder, "补充要求已保存，请检查并再次确认计划。");
+      state.primaryView = "map";
+      await acceptWorkOrderResult(
+        result.workOrder,
+        result.outcome === "clarification"
+          ? "还需要确认一项关键信息。"
+          : "后续计划已生成，请检查并确认。",
+      );
     } catch (error) {
-      resetBusy(button, "补充要求并继续");
-      setFeedback("result-feedback", messageFrom(error, "无法保存补充要求，请重试。"), true);
+      resetBusy(button, "生成后续计划");
+      setFeedback("result-feedback", messageFrom(error, "无法生成后续计划，请重试。"), true);
     }
   });
 }

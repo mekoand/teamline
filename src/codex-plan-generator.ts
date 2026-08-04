@@ -114,7 +114,23 @@ function buildPrompt(workOrder: WorkOrder): string {
         dependsOn: stage.dependsOn,
         executionMethod: stage.executionMethod,
         contextNotes: stage.contextNotes ?? [],
+        status: stage.status,
+        statusReason: stage.statusReason,
+        artifacts: stage.artifacts.map(({ type, label }) => ({ type, label })),
       })))}`
+    : "";
+  const previousResult = workOrder.result
+    ? `\n上一轮精简结果（只用于判断仍需调整的内容）：\n${JSON.stringify({
+        planVersion: workOrder.result.planVersion,
+        git: {
+          hasChanges: countGitChanges(workOrder.result.git.statusShort) > 0,
+          changedEntryCount: countGitChanges(workOrder.result.git.statusShort),
+        },
+        verifications: workOrder.result.verifications.map(({ stageId, status }) => ({
+          stageId,
+          status,
+        })),
+      })}`
     : "";
   const importedHistory = workOrder.importContext?.status === "ready"
     ? `\n导入会话整理结果（仅作为历史上下文，不是未来执行计划）：\n${JSON.stringify({
@@ -133,11 +149,13 @@ function buildPrompt(workOrder: WorkOrder): string {
   return `你正在为一项工作生成简短的执行计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
 
 工作目标：
-${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${currentPlan}${resources}
+${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${currentPlan}${previousResult}${resources}
 
 先判断这些信息是否足以形成可确认的计划。信息足够时必须直接返回计划，不要为了完善细节而提问。只有缺少会改变目标边界、节点关系、素材选择或资源安排的关键信息时，才返回 clarification；每次只能提出一个短且可直接回答的问题，不得提及内部 skill 或 Ask Matt 名称。
 
 始终返回目标、完成要求、素材和资源方案的完整快照。用户回答过澄清问题或要求更新计划时，把已经确认的决定写入这些快照和计划；不要只复述聊天。普通节点补充已经由 Teamline 归入节点上下文，不需要改动计划结构。
+
+如果提供了上一轮精简结果，它只代表此前已经得到的成果与验证状态。结合用户的调整要求，只规划仍需完成或修改的部分，不要把此前已经完成且不受影响的工作重复列入计划。
 
 返回 clarification 时：stages 填空数组，questions 填必须回答的问题，message 简要说明为何需要回答。
 返回 plan 时：questions 填空数组，stages 至少包含一个节点；message 简要说明计划或结构化决定已经更新。
@@ -152,6 +170,28 @@ ${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${cur
 - executionMethod：需要 Codex 修改或检查本地工作空间时填写 codex；需要用户在设计、文档协作或其他外部工具中完成时填写 external。外部节点只记录状态和成果引用，不要要求 Teamline 控制、复制或自动核验外部正文
 
 不要执行计划，只返回符合指定 JSON Schema 的结果。`;
+}
+
+function countGitChanges(statusShort: string): number {
+  return statusShort
+    .split(/\r?\n/)
+    .filter((line) => isGitStatusEntry(line))
+    .length;
+}
+
+function isGitStatusEntry(line: string): boolean {
+  if (line.length < 4 || line[2] !== " ") return false;
+
+  const indexStatus = line[0];
+  const worktreeStatus = line[1];
+  if (indexStatus === "!" && worktreeStatus === "!") return false;
+  if (indexStatus === "?" || worktreeStatus === "?") {
+    return indexStatus === "?" && worktreeStatus === "?";
+  }
+
+  const validStatus = " MADRCU";
+  return validStatus.includes(indexStatus) && validStatus.includes(worktreeStatus)
+    && (indexStatus !== " " || worktreeStatus !== " ");
 }
 
 function lastUsefulLine(output: string): string {

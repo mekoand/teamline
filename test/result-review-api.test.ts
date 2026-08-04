@@ -332,12 +332,12 @@ describe("result review persistence", () => {
     expect((await deliveredResponse.json()).workOrder).toMatchObject({
       status: "delivered",
       runStatus: "completed",
-      currentSummary: "已由用户确认交付",
+      currentSummary: "已由你确认完成",
       plan: {
         stages: [
           {
             status: "completed",
-            statusReason: "自动验证通过",
+            statusReason: "已由你确认完成",
           },
         ],
       },
@@ -352,14 +352,37 @@ describe("result review persistence", () => {
     expect(await duplicate.json()).toMatchObject({ code: "WORK_ORDER_NOT_IN_REVIEW" });
   });
 
-  test("supplemental requirements copy the stages into a new ready plan version", async () => {
+  test("continue adjustment generates a confirmed new plan and keeps the previous result", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const workOrder = resultWorkOrder(store, "/tmp/delegated", ["bun test"]);
     store.markStarted(workOrder.id);
     const verifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
     const oldResult = resultFixture(verifying);
     store.completeReview(workOrder.id, oldResult);
-    const app = createApp({ store });
+    let planningStatus = "";
+    let planningMessage = "";
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate(planningWorkOrder) {
+          planningStatus = planningWorkOrder.status;
+          planningMessage = planningWorkOrder.conversation.at(-1)?.content ?? "";
+          return {
+            outcome: "plan",
+            message: "后续计划已生成，请确认后启动。",
+            questions: [],
+            stages: [
+              {
+                id: "mobile-empty-state",
+                outcome: "移动端空状态清晰可用",
+                scope: "移动端成果页",
+                verification: "检查 390px 布局",
+              },
+            ],
+          };
+        },
+      },
+    });
 
     const response = await app.fetch(
       new Request(`http://teamline.local/api/work-orders/${workOrder.id}/revise`, {
@@ -368,17 +391,169 @@ describe("result review persistence", () => {
         body: JSON.stringify({ revisionNote: "补充移动端空状态" }),
       }),
     );
-    const revised = (await response.json()).workOrder as WorkOrder;
+    const payload = await response.json();
+    const revised = payload.workOrder as WorkOrder;
 
     expect(response.status).toBe(200);
+    expect(payload.outcome).toBe("plan");
+    expect(planningStatus).toBe("review");
+    expect(planningMessage).toBe("补充移动端空状态");
     expect(revised).toMatchObject({
       status: "ready",
       runStatus: null,
       revisionNote: "补充移动端空状态",
       result: oldResult,
-      plan: { version: 2 },
+      plan: { version: 2, confirmationRequired: true },
     });
-    expect(revised.plan?.stages).toEqual(workOrder.plan?.stages);
+    expect(revised.plan?.stages).toMatchObject([
+      { id: "mobile-empty-state", outcome: "移动端空状态清晰可用" },
+    ]);
+
+    const startResponse = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/start`, {
+        method: "POST",
+      }),
+    );
+    expect(startResponse.status).toBe(409);
+    expect(await startResponse.json()).toMatchObject({ code: "PLAN_CONFIRMATION_REQUIRED" });
+  });
+
+  test("continue adjustment planning failures leave review state unchanged", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = resultWorkOrder(store, "/tmp/delegated", ["bun test"]);
+    store.markStarted(workOrder.id);
+    const verifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
+    store.completeReview(workOrder.id, resultFixture(verifying));
+    const before = structuredClone(store.get(workOrder.id));
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate() {
+          throw new Error("planner unavailable");
+        },
+      },
+    });
+
+    const response = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/revise`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revisionNote: "继续完善窄屏" }),
+      }),
+    );
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ code: "PLAN_GENERATION_FAILED" });
+    expect(store.get(workOrder.id)).toEqual(before);
+  });
+
+  test("continue adjustment clarification still creates a new plan version after reply", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = resultWorkOrder(store, "/tmp/delegated", ["bun test"]);
+    store.markStarted(workOrder.id);
+    const verifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
+    const oldResult = resultFixture(verifying);
+    store.completeReview(workOrder.id, oldResult);
+    let calls = 0;
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate(planningWorkOrder) {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              outcome: "clarification",
+              message: "",
+              questions: [{
+                target: "plan" as const,
+                prompt: "需要保留桌面布局吗？",
+                reason: "这会影响后续计划范围",
+              }],
+              stages: [],
+            };
+          }
+          return {
+            outcome: "plan",
+            message: "已按回复生成后续计划。",
+            questions: [],
+            stages: planningWorkOrder.plan!.stages.map((stage) => ({
+              id: stage.id,
+              outcome: stage.outcome,
+              scope: stage.scope,
+              verification: stage.verification,
+              verificationCommand: stage.verificationCommand,
+            })),
+          };
+        },
+      },
+    });
+
+    const clarificationResponse = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/revise`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revisionNote: "继续完善响应式布局" }),
+      }),
+    );
+    const clarification = await clarificationResponse.json();
+    expect(clarificationResponse.status).toBe(200);
+    expect(clarification).toMatchObject({
+      outcome: "clarification",
+      workOrder: {
+        status: "draft",
+        revisionNote: "继续完善响应式布局",
+        result: oldResult,
+        plan: { version: 1, confirmationRequired: true },
+        pendingClarification: { requiresPlanConfirmation: true },
+      },
+    });
+
+    const replyResponse = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/conversation`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "reply", message: "需要保留" }),
+      }),
+    );
+    const reply = await replyResponse.json();
+    expect(replyResponse.status).toBe(200);
+    expect(reply).toMatchObject({
+      outcome: "plan",
+      workOrder: {
+        status: "ready",
+        revisionNote: "继续完善响应式布局",
+        result: oldResult,
+        plan: { version: 2, confirmationRequired: true },
+        pendingClarification: null,
+      },
+    });
+  });
+
+  test("continue adjustment rejects non-review goals before calling the planner", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = resultWorkOrder(store, "/tmp/delegated", ["bun test"]);
+    let calls = 0;
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate() {
+          calls += 1;
+          throw new Error("must not run");
+        },
+      },
+    });
+
+    const response = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/revise`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revisionNote: "不应调用规划器" }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "WORK_ORDER_NOT_IN_REVIEW" });
+    expect(calls).toBe(0);
   });
 
   test("includes the saved supplemental requirement in the next Codex prompt", async () => {
@@ -457,7 +632,8 @@ describe("result review persistence", () => {
     const firstVerifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
     const oldResult = resultFixture(firstVerifying);
     store.completeReview(workOrder.id, oldResult);
-    store.revise(workOrder.id, "继续完善");
+    const revised = store.revise(workOrder.id, "继续完善");
+    store.savePlan(revised.id, revised.plan!.stages);
     const app = createApp({
       store,
       worktreeManager: {

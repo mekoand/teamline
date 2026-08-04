@@ -199,7 +199,6 @@ describe("personal console", () => {
     expect(script).toContain("isImportOnlyGoal(workOrder)");
     expect(script).toContain("当前版本不会从 Claude Code 来源目标生成计划或开始执行");
     expect(script).toContain('workOrder.importOnly ? \'<p class="source-import-only">');
-    expect(script).not.toContain("生成后续计划");
     expect(script).not.toContain("data-session-goal");
   });
 

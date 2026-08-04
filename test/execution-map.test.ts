@@ -361,6 +361,24 @@ describe("execution map", () => {
     let starts = 0;
     const app = createApp({
       store,
+      planGenerator: {
+        async generate(workOrder) {
+          return {
+            outcome: "plan",
+            message: "后续节点已整理，请确认后启动。",
+            questions: [],
+            stages: workOrder.plan!.stages.map((stage) => ({
+              id: stage.id,
+              outcome: stage.outcome,
+              scope: stage.scope,
+              verification: stage.verification,
+              verificationCommand: stage.verificationCommand,
+              executionMethod: stage.executionMethod,
+              dependsOn: stage.dependsOn,
+            })),
+          };
+        },
+      },
       codexRunner: {
         async start() {
           const runNumber = starts++;

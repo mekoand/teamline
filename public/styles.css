@@ -1319,6 +1319,107 @@ textarea {
   white-space: pre-wrap;
 }
 
+.result-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-soft);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.result-state.completed {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  color: var(--accent);
+}
+
+.result-version {
+  margin: -3px 0 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.result-section {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+
+.result-section > h3 {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.result-summary-list,
+.result-artifact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.result-summary-card {
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.result-summary-card strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: balance;
+}
+
+.result-summary-card p,
+.result-empty,
+.result-incomplete li,
+.result-technical-details p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.result-artifact-grid .reference-card {
+  margin: 0;
+}
+
+.result-incomplete {
+  color: var(--danger);
+}
+
+.result-incomplete ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.result-technical-details {
+  padding: 16px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.result-technical-details summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.result-technical-details pre {
+  overflow: auto;
+  margin: 10px 0 0;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .verification-passed {
   border-left: 3px solid var(--accent);
 }
@@ -2171,6 +2272,11 @@ dialog::backdrop {
   .resource-overview,
   .resource-order-row dl,
   .resource-summary-list {
+    grid-template-columns: 1fr;
+  }
+
+  .result-summary-list,
+  .result-artifact-grid {
     grid-template-columns: 1fr;
   }
 

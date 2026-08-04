@@ -90,4 +90,91 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     expect(argumentsUsed.at(-1)).toContain("等待形成后续执行计划");
     expect(argumentsUsed.at(-1)).not.toContain(".jsonl");
   });
+
+  test("includes bounded prior result context without local details", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-plan-result-context-test-"));
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
+    const executablePath = join(directory, "fake-codex");
+    const capturedArgumentsPath = join(directory, "arguments.json");
+    writeFileSync(
+      executablePath,
+      `#!/usr/bin/env bun
+const args = Bun.argv.slice(2);
+await Bun.write(${JSON.stringify(capturedArgumentsPath)}, JSON.stringify(args));
+const outputIndex = args.indexOf("--output-last-message");
+await Bun.write(args[outputIndex + 1], JSON.stringify({
+  stages: [{
+    id: "revise",
+    outcome: "完成调整",
+    scope: "现有成果",
+    verification: "检查调整结果",
+    verificationCommand: null,
+    dependsOn: [],
+    executionMethod: "codex"
+  }]
+}));
+`,
+    );
+    chmodSync(executablePath, 0o755);
+
+    const database = new Database(":memory:");
+    cleanup.push(() => database.close());
+    const workOrder = new WorkOrderStore(database).create({ goal: "继续调整现有成果" });
+    workOrder.plan = {
+      version: 2,
+      updatedAt: "2026-08-04T03:00:00.000Z",
+      stages: [{
+        id: "previous-stage",
+        outcome: "得到初版",
+        scope: "页面",
+        verification: "人工检查",
+        dependsOn: [],
+        executionMethod: "codex",
+        workspace: { kind: "directory", path: null },
+        materials: [],
+        artifacts: [{
+          id: "artifact-1",
+          type: "file",
+          label: "approved-output.pdf",
+          location: "/private/secret/result.html",
+        }],
+        status: "completed",
+        statusReason: "自动验证通过",
+      }],
+    };
+    workOrder.result = {
+      planVersion: 2,
+      git: {
+        diffStat: "secret-result.html | 10 ++++++++++",
+        statusShort: " M secret-result.html\n?? new-secret.txt",
+      },
+      verifications: [{
+        stageId: "previous-stage",
+        stageOutcome: "得到初版",
+        command: "run-private-verification --secret",
+        status: "passed",
+        exitCode: 0,
+        output: "private verification output",
+      }],
+      completedAt: "2026-08-04T04:00:00.000Z",
+    };
+
+    await new CodexPlanGenerator(executablePath).generate(workOrder);
+    const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
+    const prompt = argumentsUsed.at(-1) ?? "";
+
+    expect(prompt).toContain('"status":"completed"');
+    expect(prompt).toContain('"statusReason":"自动验证通过"');
+    expect(prompt).toContain('"artifacts":[{"type":"file","label":"approved-output.pdf"}]');
+    expect(prompt).toContain('"planVersion":2');
+    expect(prompt).toContain('"hasChanges":true');
+    expect(prompt).toContain('"changedEntryCount":2');
+    expect(prompt).toContain('"stageId":"previous-stage","status":"passed"');
+    expect(prompt).not.toContain("/private/secret/result.html");
+    expect(prompt).not.toContain("secret-result.html");
+    expect(prompt).not.toContain("new-secret.txt");
+    expect(prompt).not.toContain("run-private-verification --secret");
+    expect(prompt).not.toContain("private verification output");
+    expect(prompt).not.toContain("2026-08-04T04:00:00.000Z");
+  });
 });

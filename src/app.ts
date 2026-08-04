@@ -88,6 +88,10 @@ class PlanGenerationTimeoutError extends Error {}
 const staticFiles: Record<string, { path: string; type: string }> = {
   "/": { path: "public/index.html", type: "text/html; charset=utf-8" },
   "/app.js": { path: "public/app.js", type: "text/javascript; charset=utf-8" },
+  "/result-artifacts.js": {
+    path: "public/result-artifacts.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/styles.css": { path: "public/styles.css", type: "text/css; charset=utf-8" },
   "/teamline-logo.png": { path: "public/teamline-logo.png", type: "image/png" },
 };
@@ -157,6 +161,7 @@ export function createApp({
     workOrder: WorkOrder,
     requiresPlanConfirmation: boolean,
     pendingReply?: string,
+    forcePlanVersion = false,
   ) => {
     if (!planGenerator) throw new Error("Codex 规划服务尚未配置");
     const planningInput = pendingReply
@@ -200,6 +205,7 @@ export function createApp({
           generated.questions ?? [],
           requiresPlanConfirmation,
           pendingReply,
+          workOrder.status === "review",
         ),
       };
     }
@@ -208,6 +214,7 @@ export function createApp({
       generated,
       requiresPlanConfirmation,
       pendingReply,
+      forcePlanVersion,
     );
     scheduleAutoRunCheck();
     return { outcome: "plan" as const, workOrder: saved };
@@ -1621,25 +1628,57 @@ export function createApp({
       const reviseMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/revise$/);
       if (request.method === "POST" && reviseMatch) {
         const id = decodeURIComponent(reviseMatch[1]);
-        if (!store.get(id)) {
+        const workOrder = store.get(id);
+        if (!workOrder) {
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
             { status: 404 },
           );
         }
+        if (workOrder.status !== "review") {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_IN_REVIEW", error: "只有待验收的目标可以继续调整" },
+            { status: 409 },
+          );
+        }
+        if (!planGenerator) {
+          return Response.json(
+            { code: "PLAN_GENERATOR_UNAVAILABLE", error: "Codex 规划服务尚未配置" },
+            { status: 503 },
+          );
+        }
+        if (planningWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLANNING_IN_PROGRESS", error: "正在整理上一次更新，请稍候" },
+            { status: 409 },
+          );
+        }
+        planningWorkOrderIds.add(id);
         try {
           const body = (await request.json()) as { revisionNote?: string };
-          return Response.json({ workOrder: store.revise(id, body.revisionNote ?? "") });
+          const revisionNote = body.revisionNote?.trim() ?? "";
+          if (!revisionNote) throw new Error("请填写需要调整的内容");
+          return Response.json(
+            await generateAndStorePlan(id, workOrder, true, revisionNote, true),
+          );
         } catch (error) {
+          if (error instanceof PlanGenerationTimeoutError) {
+            return Response.json(
+              { code: "PLAN_GENERATION_TIMEOUT", error: "生成后续计划超时，请重试" },
+              { status: 504 },
+            );
+          }
           const message = error instanceof Error ? error.message : "无法补充要求";
-          const invalidState = message.includes("只有待验收");
+          const isInputError = message.includes("请填写");
           return Response.json(
             {
-              code: invalidState ? "WORK_ORDER_NOT_IN_REVIEW" : "INVALID_REVISION_NOTE",
-              error: message,
+              code: isInputError ? "INVALID_REVISION_NOTE" : "PLAN_GENERATION_FAILED",
+              error: isInputError ? message : "Codex 无法生成后续计划，请稍后重试",
             },
-            { status: invalidState ? 409 : 400 },
+            { status: isInputError ? 400 : 502 },
           );
+        } finally {
+          planningWorkOrderIds.delete(id);
         }
       }
 
@@ -1768,11 +1807,16 @@ export function createApp({
           if (!message) throw new Error("请填写回复");
           const requiresPlanConfirmation =
             mode === "replan" || workOrder.pendingClarification?.requiresPlanConfirmation === true;
+          const forcePlanVersion =
+            workOrder.pendingClarification?.requiresPlanConfirmation === true &&
+            Boolean(workOrder.revisionNote) &&
+            workOrder.result?.planVersion === workOrder.plan?.version;
           const result = await generateAndStorePlan(
             id,
             workOrder,
             requiresPlanConfirmation,
             message,
+            forcePlanVersion,
           );
           return Response.json(result);
         } catch (error) {
