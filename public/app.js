@@ -19,6 +19,10 @@ const allGoalStatusGroups = [
 const state = {
   workOrders: [],
   projects: [],
+  projectDetail: null,
+  projectCreateOpen: false,
+  createProjectMaterials: null,
+  goalProjectMaterials: null,
   selected: null,
   selectedStageIndex: 0,
   followCurrentStage: true,
@@ -127,6 +131,9 @@ function bindShellEvents() {
   document.querySelector("#cancel-create").addEventListener("click", closeCreateDialog);
   createForm.addEventListener("submit", createWorkOrder);
   document.querySelector("#add-material").addEventListener("click", () => addMaterialRow());
+  document.querySelector("#create-project-select").addEventListener("change", refreshCreateProjectMaterials);
+  createForm.querySelector('[name="name"]').addEventListener("blur", refreshCreateProjectMaterials);
+  createForm.querySelector('[name="description"]').addEventListener("blur", refreshCreateProjectMaterials);
   window.addEventListener("popstate", () => {
     resetGoalSelection();
     refreshConsole();
@@ -134,6 +141,9 @@ function bindShellEvents() {
 }
 
 function openCreateDialog() {
+  populateProjectSelect(document.querySelector("#create-project-select"));
+  state.createProjectMaterials = null;
+  renderCreateProjectMaterials();
   createDialog.showModal();
   createDialog.querySelector('[name="name"]').focus();
 }
@@ -223,6 +233,10 @@ function renderRestorePreview() {
           : ""}
       </article>`;
   }).join("");
+  const projectMaterialRows = (preview.projectMaterials ?? [])
+    .filter((material) => material.attention.length)
+    .map((material) => `<article class="restore-order-card"><div class="restore-order-heading"><strong>${escapeHtml(material.label)}</strong><span class="status-pill response">项目素材</span></div><ul class="restore-attention-list">${material.attention.map((item) => `<li><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.reason)}</span><code>${escapeHtml(shortPath(item.location))}</code></li>`).join("")}</ul></article>`)
+    .join("");
   document.querySelector("#restore-preview").innerHTML = `
     <div class="restore-summary">
       <strong>将恢复 ${preview.summary.total} 个目标</strong>
@@ -231,7 +245,7 @@ function renderRestorePreview() {
     ${preview.settingsConflict
       ? `<label class="restore-conflict-choice settings-choice"><span>本机设置不同</span><select id="restore-settings-resolution"><option value="">请选择</option><option value="keep_existing">保留现有设置</option><option value="use_imported">使用导入设置</option></select></label>`
       : ""}
-    <div class="restore-order-list">${rows || '<p class="muted">文件中没有目标。</p>'}</div>
+    <div class="restore-order-list">${rows || '<p class="muted">文件中没有目标。</p>'}${projectMaterialRows}</div>
     <p class="restore-safety-note">确认后也不会覆盖已有目标；缺失位置会保留并标为需处理。</p>`;
 }
 
@@ -298,7 +312,18 @@ async function refreshConsole({
     );
     void refreshResources({ checkAutoRun });
     state.autoRunCheckRequested = false;
-    if (isResourceView() || isProjectsView() || isAllGoalsView()) {
+    if (isProjectsView()) {
+      state.selected = null;
+      state.events = [];
+      const projectId = selectedProjectIdFromPath();
+      state.projectDetail = projectId
+        ? await requestJson(`/api/projects/${encodeURIComponent(projectId)}`)
+        : null;
+      renderConsole();
+      scheduleRefresh();
+      return;
+    }
+    if (isResourceView() || isAllGoalsView()) {
       state.selected = null;
       state.events = [];
       renderConsole();
@@ -313,6 +338,7 @@ async function refreshConsole({
         `/api/work-orders/${encodeURIComponent(selectedId)}`,
       );
       state.selected = workOrder;
+      await refreshGoalProjectMaterials(workOrder);
       const requestedStageId = selectedStageFromPath();
       if (requestedStageId) {
         const requestedStageIndex = workOrder.plan?.stages.findIndex(
@@ -679,22 +705,92 @@ function renderHomeGoalRow(workOrder) {
 }
 
 function renderProjectsWorkspace() {
+  if (state.projectDetail) return renderProjectDetailWorkspace(state.projectDetail);
   return `
     <section class="workspace-content projects-workspace">
       <header class="overview-heading">
         <div><p class="overline">工作台</p><h1>项目</h1></div>
+        <button class="secondary-button" id="toggle-project-create" type="button">新建项目</button>
       </header>
       <nav class="home-mobile-nav" aria-label="工作台导航">
         <button type="button" data-overview-path="/">全部目标</button>
         <button type="button" data-overview-path="/resources">资源</button>
       </nav>
+      ${state.projectCreateOpen ? `
+        <form class="project-create-form" id="project-create-form">
+          <label><span>项目名称</span><input name="name" required placeholder="例如：发布 Personal Beta" autocomplete="off" /></label>
+          <div><button class="primary-button" type="submit">创建项目</button><button class="text-button" id="cancel-project-create" type="button">取消</button></div>
+          <p class="inline-feedback" id="project-feedback" role="status"></p>
+        </form>` : ""}
       ${state.projects.length
         ? `<div class="project-list">${state.projects.map((project) => {
             const goals = state.workOrders.filter((workOrder) => workOrder.projectId === project.id);
-            return `<article class="project-row"><strong>${escapeHtml(project.name)}</strong><span>${goals.length} 个目标</span></article>`;
+            const completed = goals.filter((goal) => goal.userStatus === "completed").length;
+            return `<button class="project-row" data-project-id="${escapeHtml(project.id)}" type="button"><span><strong>${escapeHtml(project.name)}</strong><small>${goals.length} 个目标${completed ? ` · ${completed} 个已完成` : ""}</small></span><span class="row-arrow" aria-hidden="true">›</span></button>`;
           }).join("")}</div>`
-        : '<section class="home-empty"><h2>还没有项目</h2></section>'}
+        : '<section class="home-empty"><h2>还没有项目</h2><p>项目只用来整理相关目标、素材和成果。</p></section>'}
     </section>`;
+}
+
+function renderProjectDetailWorkspace(detail) {
+  const { project, summary, goals, materials, results } = detail;
+  const focusGoals = goals.filter((goal) => ["running", "response", "review"].includes(visibleStatus(goal, state.workOrders).status));
+  const recentGoals = [...goals].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 6);
+  return `
+    <section class="workspace-content project-detail-workspace">
+      <button class="mobile-back-button project-back-button" id="back-to-projects" type="button">‹ 全部项目</button>
+      <header class="project-detail-heading">
+        <div><p class="overline">项目</p><h1>${escapeHtml(project.name)}</h1></div>
+        <dl><div><dt>目标</dt><dd>${summary.totalGoals}</dd></div><div><dt>已完成</dt><dd>${summary.completedGoals}</dd></div></dl>
+      </header>
+      <section class="project-section">
+        <div class="section-heading compact"><div><p class="overline">当前</p><h2>需要关注</h2></div></div>
+        ${focusGoals.length ? `<div class="project-goal-list">${focusGoals.map(renderProjectGoalRow).join("")}</div>` : '<p class="project-empty-copy">当前没有运行中、需响应或待验收的目标。</p>'}
+      </section>
+      <section class="project-section">
+        <div class="section-heading compact"><div><p class="overline">目标</p><h2>最近更新</h2></div><button class="secondary-button" id="create-goal-in-project" type="button">新建目标</button></div>
+        ${recentGoals.length ? `<div class="project-goal-list">${recentGoals.map(renderProjectGoalRow).join("")}</div>` : '<p class="project-empty-copy">这个项目还没有目标。</p>'}
+      </section>
+      <section class="project-section project-material-section">
+        <div class="section-heading compact"><div><p class="overline">项目素材</p><h2>可供目标使用</h2></div><span class="subtle-label">${materials.length} 项</span></div>
+        ${materials.length ? `<div class="project-material-grid">${materials.map(renderProjectMaterialCard).join("")}</div>` : '<p class="project-empty-copy">还没有素材，可以新建、引用或上传。</p>'}
+        <details class="project-add-disclosure">
+          <summary>添加项目素材</summary>
+          <form id="project-material-form" class="project-material-form">
+            <label><span>类型</span><select name="kind"><option value="text">文本</option><option value="repository">Git 仓库</option><option value="folder">文件夹</option><option value="file">文件路径</option><option value="image">图片路径</option><option value="link">链接</option><option value="goal">目标引用</option></select></label>
+            <label><span>名称</span><input name="label" required placeholder="简短名称" autocomplete="off" /></label>
+            <label data-project-material-value><span>内容或位置</span><textarea name="value" rows="3" required placeholder="写下文本，或填写本地路径和链接"></textarea></label>
+            <label data-project-goal-value hidden><span>引用目标</span><select name="goalId">${goals.map((goal) => `<option value="${escapeHtml(goal.id)}">${escapeHtml(goal.name)}</option>`).join("")}</select></label>
+            <button class="primary-button" type="submit">添加素材</button>
+          </form>
+          <form id="project-upload-form" class="project-upload-form">
+            <label><span>上传文件或图片</span><input name="file" type="file" required /></label>
+            <button class="secondary-button" type="submit">上传</button>
+          </form>
+          <p class="inline-feedback" id="project-material-feedback" role="status"></p>
+        </details>
+      </section>
+      <section class="project-section">
+        <div class="section-heading compact"><div><p class="overline">成果</p><h2>主要成果</h2></div></div>
+        ${results.length ? `<div class="project-result-list">${results.map(renderProjectResultCard).join("")}</div>` : '<p class="project-empty-copy">项目内目标产生成果后，会汇总在这里。</p>'}
+      </section>
+    </section>`;
+}
+
+function renderProjectGoalRow(goal) {
+  const presentation = visibleStatus(goal, state.workOrders);
+  return `<button class="project-goal-row" data-work-order-id="${escapeHtml(goal.id)}" type="button"><span class="status-dot ${presentation.status}"></span><span><strong>${escapeHtml(goal.name)}</strong><small>${escapeHtml(formatVisibleStatus(presentation.status, presentation.reason))}</small></span><time>${formatDate(goal.updatedAt)}</time><span class="row-arrow" aria-hidden="true">›</span></button>`;
+}
+
+function renderProjectMaterialCard(material) {
+  return `<article class="project-material-card"><span>${escapeHtml(projectMaterialKindLabel(material.kind))}${material.sourceGoalId ? " · 来自目标" : ""}</span><strong>${escapeHtml(material.label)}</strong><code>${escapeHtml(material.kind === "text" ? truncateText(material.value, 64) : shortPath(material.value))}</code></article>`;
+}
+
+function renderProjectResultCard(result) {
+  const goal = state.workOrders.find((candidate) => candidate.id === result.workOrderId);
+  const presentation = goal ? visibleStatus(goal, state.workOrders) : { status: "completed", reason: "已产生结果" };
+  const artifact = result.artifacts?.[0];
+  return `<button class="project-result-card" data-work-order-id="${escapeHtml(result.workOrderId)}" type="button"><span>${escapeHtml(visibleStatusLabels[presentation.status] || presentation.reason)}</span><strong>${escapeHtml(result.title)}</strong><p>${escapeHtml(artifact?.label || result.gitSummary || result.summary)}</p></button>`;
 }
 
 function bindOverviewEvents() {
@@ -715,6 +811,108 @@ function bindOverviewEvents() {
   document.querySelectorAll(".home-goal-row").forEach((button) => {
     button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
   });
+  document.querySelector("#toggle-project-create")?.addEventListener("click", () => {
+    state.projectCreateOpen = !state.projectCreateOpen;
+    renderConsole();
+  });
+  document.querySelector("#cancel-project-create")?.addEventListener("click", () => {
+    state.projectCreateOpen = false;
+    renderConsole();
+  });
+  document.querySelector("#project-create-form")?.addEventListener("submit", createProject);
+  document.querySelectorAll("[data-project-id]").forEach((button) => {
+    button.addEventListener("click", () => openProject(button.dataset.projectId));
+  });
+  document.querySelector("#back-to-projects")?.addEventListener("click", openProjects);
+  document.querySelector("#create-goal-in-project")?.addEventListener("click", () => {
+    openCreateDialog();
+    document.querySelector("#create-project-select").value = state.projectDetail.project.id;
+    void refreshCreateProjectMaterials();
+  });
+  document.querySelectorAll(".project-goal-row, .project-result-card").forEach((button) => {
+    button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
+  });
+  document.querySelector("#project-material-form [name=kind]")?.addEventListener("change", toggleProjectMaterialValue);
+  document.querySelector("#project-material-form")?.addEventListener("submit", createProjectMaterial);
+  document.querySelector("#project-upload-form")?.addEventListener("submit", uploadProjectMaterial);
+}
+
+async function createProject(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  setBusy(button, "正在创建…");
+  try {
+    const { project } = await requestJson("/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: new FormData(event.currentTarget).get("name") }),
+    });
+    state.projectCreateOpen = false;
+    history.pushState({}, "", `/projects/${encodeURIComponent(project.id)}`);
+    await refreshConsole();
+  } catch (error) {
+    resetBusy(button, "创建项目");
+    setFeedback("project-feedback", messageFrom(error, "无法创建项目"), true);
+  }
+}
+
+function openProject(id) {
+  history.pushState({}, "", `/projects/${encodeURIComponent(id)}`);
+  state.projectDetail = null;
+  refreshConsole();
+}
+
+function openProjects() {
+  history.pushState({}, "", "/projects");
+  state.projectDetail = null;
+  refreshConsole();
+}
+
+function toggleProjectMaterialValue(event) {
+  const isGoal = event.currentTarget.value === "goal";
+  document.querySelector("[data-project-material-value]").hidden = isGoal;
+  document.querySelector("[data-project-material-value] textarea").required = !isGoal;
+  document.querySelector("[data-project-goal-value]").hidden = !isGoal;
+  document.querySelector("[data-project-goal-value] select").required = isGoal;
+}
+
+async function createProjectMaterial(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const kind = String(data.get("kind"));
+  const button = event.submitter;
+  setBusy(button, "正在添加…");
+  try {
+    await requestJson(`/api/projects/${encodeURIComponent(state.projectDetail.project.id)}/materials`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind,
+        label: data.get("label"),
+        value: kind === "goal" ? data.get("goalId") : data.get("value"),
+      }),
+    });
+    await refreshConsole();
+  } catch (error) {
+    resetBusy(button, "添加素材");
+    setFeedback("project-material-feedback", messageFrom(error, "无法添加素材"), true);
+  }
+}
+
+async function uploadProjectMaterial(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  setBusy(button, "正在上传…");
+  try {
+    await requestJson(`/api/projects/${encodeURIComponent(state.projectDetail.project.id)}/uploads`, {
+      method: "POST",
+      body: new FormData(event.currentTarget),
+    });
+    await refreshConsole();
+  } catch (error) {
+    resetBusy(button, "上传");
+    setFeedback("project-material-feedback", messageFrom(error, "无法上传文件"), true);
+  }
 }
 
 function renderResourceSummary() {
@@ -1263,11 +1461,46 @@ function renderContext(workOrder) {
 
       ${stage ? renderContextTabs() : ""}
       ${stage ? renderContextTabContent(workOrder, stage) : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
+      ${renderGoalProjectContext(workOrder)}
       ${renderContextAction(workOrder)}
       ${renderContextSupport(workOrder)}
       <p class="inline-feedback" id="execution-feedback" role="status"></p>
       <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
+}
+
+function renderGoalProjectContext(workOrder) {
+  const selection = state.goalProjectMaterials;
+  const displayProjectId = selection?.projectId ?? workOrder.projectId;
+  const currentProject = state.projects.find((project) => project.id === displayProjectId);
+  const active = ["running", "stopping", "verifying"].includes(workOrder.runStatus);
+  const savedProjectMaterialIds = workOrder.materials
+    .map((material) => material.projectMaterialId)
+    .filter(Boolean);
+  const selectedIds = new Set(
+    displayProjectId === workOrder.projectId
+      ? savedProjectMaterialIds
+      : [],
+  );
+  const recommendedIds = new Set(
+    workOrder.projectMaterialSelectionConfirmed ? [] : selection?.recommendedIds ?? [],
+  );
+  const materials = selection?.projectId === displayProjectId ? selection.materials : [];
+  return `
+    <details class="context-disclosure goal-project-context">
+      <summary>项目与素材${currentProject ? ` · ${escapeHtml(currentProject.name)}` : ""}</summary>
+      <form id="goal-project-form">
+        <label><span>所属项目</span><select name="projectId" ${active ? "disabled" : ""}>${projectOptions(displayProjectId)}</select></label>
+        <fieldset ${active ? "disabled" : ""}>
+          <legend>发送给 Codex 的项目素材</legend>
+          ${materials.length
+            ? materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="projectMaterialId" value="${escapeHtml(material.id)}" ${selectedIds.has(material.id) ? "checked" : ""} /><span><strong>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}${recommendedIds.has(material.id) ? " · 建议" : ""}</small></span></label>`).join("")
+            : `<p class="muted">${displayProjectId ? "这个项目还没有可选素材。" : "选择项目后可以使用其中的素材。"}</p>`}
+        </fieldset>
+        ${active ? '<p class="muted">目标运行时暂不能调整素材。</p>' : '<button class="secondary-button full-button" type="submit">保存项目与素材</button>'}
+        <p class="inline-feedback" id="goal-project-feedback" role="status"></p>
+      </form>
+    </details>`;
 }
 
 function renderContextSupport(workOrder) {
@@ -1605,6 +1838,11 @@ function bindRenderedEvents() {
       renderConsole();
     });
   });
+  document.querySelector("#goal-project-form [name=projectId]")?.addEventListener("change", async (event) => {
+    await refreshGoalProjectMaterials(state.selected, event.currentTarget.value);
+    renderConsole();
+  });
+  document.querySelector("#goal-project-form")?.addEventListener("submit", saveGoalProjectContext);
 
   document.querySelector("#generate-plan")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -1847,6 +2085,8 @@ async function createWorkOrder(event) {
         name: data.get("name"),
         description: data.get("description"),
         acceptance: data.get("acceptance"),
+        projectId: data.get("projectId") || null,
+        projectMaterialIds: readCreateProjectMaterialIds(),
         materials: readMaterials(),
       }),
     });
@@ -1995,7 +2235,7 @@ function isResourceView() {
 }
 
 function isProjectsView() {
-  return window.location.pathname === "/projects";
+  return window.location.pathname === "/projects" || /^\/projects\/[^/]+$/.test(window.location.pathname);
 }
 
 function isAllGoalsView() {
@@ -2012,6 +2252,8 @@ function closeCreateDialog() {
   createDialog.close();
   createForm.reset();
   document.querySelector("#material-list").innerHTML = "";
+  state.createProjectMaterials = null;
+  renderCreateProjectMaterials();
   formError.textContent = "";
   resetBusy(createButton, "创建目标");
 }
@@ -2056,12 +2298,135 @@ function renderMaterials(materials = []) {
 
 function materialKindLabel(kind) {
   return {
+    text: "文本",
     repository: "仓库",
     folder: "文件夹",
     file: "文件",
     image: "图片",
     link: "链接",
   }[kind] ?? "素材";
+}
+
+function projectMaterialKindLabel(kind) {
+  return {
+    text: "文本",
+    repository: "仓库",
+    folder: "文件夹",
+    file: "文件",
+    image: "图片",
+    link: "链接",
+    goal: "目标",
+  }[kind] ?? "素材";
+}
+
+function projectOptions(selectedId = "") {
+  return [
+    '<option value="">暂不归入项目</option>',
+    ...state.projects.map(
+      (project) => `<option value="${escapeHtml(project.id)}" ${project.id === selectedId ? "selected" : ""}>${escapeHtml(project.name)}</option>`,
+    ),
+  ].join("");
+}
+
+function populateProjectSelect(select, selectedId = "") {
+  if (!select) return;
+  select.innerHTML = projectOptions(selectedId);
+}
+
+async function refreshCreateProjectMaterials() {
+  const projectId = document.querySelector("#create-project-select")?.value;
+  if (!projectId) {
+    state.createProjectMaterials = null;
+    renderCreateProjectMaterials();
+    return;
+  }
+  const name = createForm.querySelector('[name="name"]').value;
+  const description = createForm.querySelector('[name="description"]').value;
+  try {
+    state.createProjectMaterials = {
+      projectId,
+      ...(await requestJson(
+        `/api/projects/${encodeURIComponent(projectId)}/material-recommendations?name=${encodeURIComponent(name)}&description=${encodeURIComponent(description)}`,
+      )),
+    };
+    renderCreateProjectMaterials();
+  } catch (error) {
+    state.createProjectMaterials = null;
+    formError.textContent = messageFrom(error, "无法读取项目素材");
+  }
+}
+
+function renderCreateProjectMaterials() {
+  const container = document.querySelector("#create-project-materials");
+  const list = document.querySelector("#create-project-material-list");
+  if (!container || !list) return;
+  const selection = state.createProjectMaterials;
+  container.hidden = !selection;
+  if (!selection) {
+    list.innerHTML = "";
+    return;
+  }
+  const recommended = new Set(selection.recommendedIds);
+  list.innerHTML = selection.materials.length
+    ? selection.materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="createProjectMaterialId" value="${escapeHtml(material.id)}" ${recommended.has(material.id) ? "checked" : ""} /><span><strong>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}</small></span></label>`).join("")
+    : '<p class="muted">这个项目还没有素材。</p>';
+}
+
+function readCreateProjectMaterialIds() {
+  return [...document.querySelectorAll('[name="createProjectMaterialId"]:checked')].map(
+    (input) => input.value,
+  );
+}
+
+async function refreshGoalProjectMaterials(workOrder, projectId = workOrder?.projectId) {
+  if (!workOrder || !projectId) {
+    state.goalProjectMaterials = projectId === "" ? { projectId: "", materials: [], recommendedIds: [] } : null;
+    return;
+  }
+  try {
+    state.goalProjectMaterials = {
+      projectId,
+      ...(await requestJson(
+        `/api/projects/${encodeURIComponent(projectId)}/material-recommendations?name=${encodeURIComponent(workOrder.name)}&description=${encodeURIComponent(workOrder.description)}`,
+      )),
+    };
+  } catch {
+    state.goalProjectMaterials = { projectId, materials: [], recommendedIds: [] };
+  }
+}
+
+async function saveGoalProjectContext(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const button = event.submitter;
+  setBusy(button, "正在保存…");
+  try {
+    const { workOrder } = await requestJson(
+      `/api/work-orders/${encodedSelectedId()}/project-context`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectId: data.get("projectId") || null,
+          projectMaterialIds: data.getAll("projectMaterialId"),
+        }),
+      },
+    );
+    await refreshGoalProjectMaterials(workOrder);
+    await acceptWorkOrderResult(workOrder);
+  } catch (error) {
+    resetBusy(button, "保存项目与素材");
+    setFeedback("goal-project-feedback", messageFrom(error, "无法保存项目与素材"), true);
+  }
+}
+
+function selectedProjectIdFromPath() {
+  const match = window.location.pathname.match(/^\/projects\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function truncateText(value, maxLength) {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
 }
 
 function visibleStatus(workOrder, allWorkOrders) {

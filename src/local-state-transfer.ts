@@ -1,5 +1,9 @@
 import { accessSync, constants, existsSync } from "node:fs";
-import type { Project } from "./project";
+import {
+  projectMaterialKinds,
+  type Project,
+  type ProjectMaterial,
+} from "./project";
 import {
   workOrderMaterialKinds,
   workOrderPaces,
@@ -21,8 +25,8 @@ import {
 import type { WorkOrderStore } from "./work-order-store";
 
 const bundleFormat = "teamline-local-state" as const;
-const bundleVersion = 2 as const;
-type BundleVersion = 1 | typeof bundleVersion;
+const bundleVersion = 3 as const;
+type BundleVersion = 1 | 2 | typeof bundleVersion;
 const maxBundleBytes = 5 * 1024 * 1024;
 const maxWorkOrders = 1_000;
 const maxCheckpointsPerWorkOrder = 1_000;
@@ -38,6 +42,7 @@ export type LocalStateBundle = {
     executionMapView: "map" | "list";
   };
   projects: Project[];
+  projectMaterials: ProjectMaterial[];
   workOrders: ExportedWorkOrder[];
 };
 
@@ -46,6 +51,7 @@ type ExportedWorkOrder = {
   name: string;
   description: string;
   projectId: string | null;
+  projectMaterialSelectionConfirmed: boolean;
   title: string;
   goal: string;
   acceptance: string | null;
@@ -103,6 +109,11 @@ export type RestorePreview = {
     conflict: boolean;
     attention: RestoreAttention[];
   }>;
+  projectMaterials: Array<{
+    id: string;
+    label: string;
+    attention: RestoreAttention[];
+  }>;
 };
 
 export type RestoreResolution = "keep_existing" | "import_copy";
@@ -131,6 +142,9 @@ export class LocalStateTransfer {
   export(): LocalStateBundle {
     const snapshot = this.store.database.transaction(() => ({
       projects: this.store.listProjects(),
+      projectMaterials: this.store
+        .listProjects()
+        .flatMap((project) => this.store.listProjectMaterials(project.id)),
       workOrders: this.store.list(),
     }))();
     return {
@@ -142,6 +156,7 @@ export class LocalStateTransfer {
         executionMapView: this.store.getExecutionMapView(),
       },
       projects: redactObject(snapshot.projects),
+      projectMaterials: redactObject(snapshot.projectMaterials),
       workOrders: snapshot.workOrders.map(exportWorkOrder),
     };
   }
@@ -152,6 +167,14 @@ export class LocalStateTransfer {
       const existing = this.store.getProject(project.id);
       if (existing && !sameProject(existing, project)) {
         throw new InvalidStateBundleError(`项目 ${project.id} 与本机同 ID 项目不一致`);
+      }
+    }
+    for (const material of bundle.projectMaterials) {
+      const existing = this.store
+        .listProjectMaterials(material.projectId)
+        .find((candidate) => candidate.id === material.id);
+      if (existing && !sameProjectMaterial(existing, material)) {
+        throw new InvalidStateBundleError(`项目素材 ${material.id} 与本机数据不一致`);
       }
     }
     for (const workOrder of bundle.workOrders) {
@@ -183,6 +206,11 @@ export class LocalStateTransfer {
       conflict: conflictIds.has(workOrder.id),
       attention: inspectReferences(workOrder, checkpointAvailability),
     }));
+    const projectMaterials = bundle.projectMaterials.map((material) => ({
+      id: material.id,
+      label: material.label,
+      attention: inspectProjectMaterial(material),
+    }));
     const previewId = crypto.randomUUID();
     this.previews.set(previewId, {
       bundle,
@@ -196,12 +224,17 @@ export class LocalStateTransfer {
       summary: {
         total: workOrders.length,
         conflicts: conflictIds.size,
-        needsAttention: workOrders.filter((item) =>
-          item.attention.some((attention) => attention.status === "needs_attention"),
-        ).length,
+        needsAttention:
+          workOrders.filter((item) =>
+            item.attention.some((attention) => attention.status === "needs_attention"),
+          ).length +
+          projectMaterials.filter((item) =>
+            item.attention.some((attention) => attention.status === "needs_attention"),
+          ).length,
       },
       settingsConflict,
       workOrders,
+      projectMaterials,
     };
   }
 
@@ -231,9 +264,49 @@ export class LocalStateTransfer {
     let imported = 0;
     let copied = 0;
     let skipped = 0;
+    const targetIds = new Map(
+      preview.bundle.workOrders.map((workOrder) => [
+        workOrder.id,
+        resolutions[workOrder.id] === "import_copy"
+          ? crypto.randomUUID()
+          : workOrder.id,
+      ]),
+    );
+    const projectMaterialTargetIds = new Map(
+      preview.bundle.projectMaterials.map((material) => {
+        const remappedGoalId =
+          material.kind === "goal"
+            ? targetIds.get(material.value) ?? material.value
+            : material.value;
+        const existing = this.store
+          .listProjectMaterials(material.projectId)
+          .some((candidate) => candidate.id === material.id);
+        return [
+          material.id,
+          material.kind === "goal" && remappedGoalId !== material.value && existing
+            ? crypto.randomUUID()
+            : material.id,
+        ];
+      }),
+    );
     this.store.database.transaction(() => {
       for (const project of preview.bundle.projects) {
         insertProject(this.store, project);
+      }
+      for (const material of preview.bundle.projectMaterials) {
+        insertProjectMaterial(
+          this.store,
+          material.kind === "goal"
+            ? {
+                ...material,
+                id: projectMaterialTargetIds.get(material.id)!,
+                value: targetIds.get(material.value) ?? material.value,
+                sourceGoalId: material.sourceGoalId
+                  ? targetIds.get(material.sourceGoalId) ?? material.sourceGoalId
+                  : null,
+              }
+            : material,
+        );
       }
       for (const workOrder of preview.bundle.workOrders) {
         const resolution = resolutions[workOrder.id];
@@ -241,10 +314,24 @@ export class LocalStateTransfer {
           skipped += 1;
           continue;
         }
-        const targetId = resolution === "import_copy" ? crypto.randomUUID() : workOrder.id;
+        const targetId = targetIds.get(workOrder.id)!;
         insertWorkOrder(
           this.store,
-          workOrder,
+          {
+            ...workOrder,
+            materials: workOrder.materials.map((material) => ({
+              ...material,
+              ...(material.projectMaterialId
+                ? {
+                    projectMaterialId: remapInheritedMaterialId(
+                      projectMaterialTargetIds.get(material.projectMaterialId) ??
+                        material.projectMaterialId,
+                      targetIds,
+                    ),
+                  }
+                : {}),
+            })),
+          },
           targetId,
           resolution === "import_copy",
         );
@@ -261,6 +348,19 @@ export class LocalStateTransfer {
   }
 }
 
+function remapInheritedMaterialId(
+  materialId: string,
+  targetIds: ReadonlyMap<string, string>,
+): string {
+  for (const [sourceId, targetId] of targetIds) {
+    const prefix = `goal-material:${sourceId}:`;
+    if (materialId.startsWith(prefix)) {
+      return `goal-material:${targetId}:${materialId.slice(prefix.length)}`;
+    }
+  }
+  return materialId;
+}
+
 export function assertStateBundleSize(value: string): void {
   if (new TextEncoder().encode(value).byteLength > maxBundleBytes) {
     throw new InvalidStateBundleError("导出文件过大，无法预览");
@@ -273,6 +373,8 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     name: workOrder.name,
     description: workOrder.description,
     projectId: workOrder.projectId,
+    projectMaterialSelectionConfirmed:
+      workOrder.projectMaterialSelectionConfirmed,
     title: workOrder.title,
     goal: workOrder.goal,
     acceptance: workOrder.acceptance,
@@ -391,7 +493,9 @@ function inspectReferences(
     });
   }
   for (const material of workOrder.materials) {
-    inspectLocation(attention, "reference", material.kind, material.value, material.kind);
+    if (["repository", "folder", "file", "image", "link"].includes(material.kind)) {
+      inspectLocation(attention, "reference", material.kind, material.value, material.kind);
+    }
   }
   for (const stage of workOrder.executionMap?.stages ?? []) {
     if (stage.verificationCommand) {
@@ -429,6 +533,14 @@ function inspectReferences(
     });
   }
   return deduplicateAttention(attention);
+}
+
+function inspectProjectMaterial(material: ProjectMaterial): RestoreAttention[] {
+  const attention: RestoreAttention[] = [];
+  if (["repository", "folder", "file", "image", "link"].includes(material.kind)) {
+    inspectLocation(attention, "reference", material.label, material.value, material.kind);
+  }
+  return attention;
 }
 
 function inspectLocation(
@@ -558,6 +670,11 @@ function databaseFingerprint(store: WorkOrderStore): string {
     .listProjects()
     .map(({ id, updatedAt }) => [id, updatedAt])
     .sort(([left], [right]) => left.localeCompare(right));
+  const projectMaterials = store
+    .listProjects()
+    .flatMap((project) => store.listProjectMaterials(project.id))
+    .map(({ id, updatedAt }) => [id, updatedAt])
+    .sort(([left], [right]) => left.localeCompare(right));
   const workOrders = store
       .list()
       .map(({ id, updatedAt }) => [id, updatedAt])
@@ -570,6 +687,7 @@ function databaseFingerprint(store: WorkOrderStore): string {
     .get()?.count ?? 0;
   return JSON.stringify({
     projects,
+    projectMaterials,
     workOrders,
     checkpoints,
     decisions,
@@ -598,6 +716,48 @@ function sameProject(left: Project, right: Project): boolean {
   return (
     left.id === right.id &&
     left.name === right.name &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
+function insertProjectMaterial(store: WorkOrderStore, material: ProjectMaterial): void {
+  const existing = store
+    .listProjectMaterials(material.projectId)
+    .find((candidate) => candidate.id === material.id);
+  if (existing) {
+    if (!sameProjectMaterial(existing, material)) {
+      throw new InvalidStateBundleError(`项目素材 ${material.id} 与本机数据不一致`);
+    }
+    return;
+  }
+  store.database
+    .query(`
+      INSERT INTO project_materials (
+        id, project_id, material_kind, label, value, source_goal_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      material.id,
+      material.projectId,
+      material.kind,
+      material.label,
+      material.value,
+      material.sourceGoalId,
+      material.createdAt,
+      material.updatedAt,
+    );
+}
+
+function sameProjectMaterial(left: ProjectMaterial, right: ProjectMaterial): boolean {
+  return (
+    left.id === right.id &&
+    left.projectId === right.projectId &&
+    left.kind === right.kind &&
+    left.label === right.label &&
+    left.value === right.value &&
+    left.sourceGoalId === right.sourceGoalId &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt
   );
@@ -643,7 +803,8 @@ function insertWorkOrder(
   store.database
     .query(`
       INSERT INTO work_orders (
-        id, title, project_id, repository_path, workspace_kind, materials_json,
+        id, title, project_id, project_materials_confirmed,
+        repository_path, workspace_kind, materials_json,
         source_sessions_json, import_source_json, resource_plan_json, goal, acceptance, status,
         current_summary, plan_json, clarification_json, result_json,
         revision_note, worktree_path, execution_branch, base_commit, session_id,
@@ -651,7 +812,7 @@ function insertWorkOrder(
         runtime_ms, runtime_updated_at, max_run_minutes, last_error,
         created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
         NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?, ?, ?
       )
     `)
@@ -659,6 +820,7 @@ function insertWorkOrder(
       id,
       copy ? `${source.name}（恢复副本）` : source.name,
       source.projectId,
+      source.projectMaterialSelectionConfirmed ? 1 : 0,
       source.workspace?.path ?? "",
       source.workspace?.kind ?? null,
       JSON.stringify(source.materials),
@@ -755,13 +917,18 @@ function safeRestoredPlan(plan: WorkOrderPlan | null): WorkOrderPlan | null {
 
 function parseBundle(value: unknown): LocalStateBundle {
   const bundle = object(value, "导出文件格式无法识别");
-  if (bundle.format !== bundleFormat || (bundle.version !== 1 && bundle.version !== 2)) {
+  if (
+    bundle.format !== bundleFormat ||
+    (bundle.version !== 1 && bundle.version !== 2 && bundle.version !== 3)
+  ) {
     throw new InvalidStateBundleError("导出文件版本不受支持");
   }
   const version = bundle.version as BundleVersion;
   exactKeys(
     bundle,
-    version === 2
+    version === 3
+      ? ["format", "version", "exportedAt", "settings", "projects", "projectMaterials", "workOrders"]
+      : version === 2
       ? ["format", "version", "exportedAt", "settings", "projects", "workOrders"]
       : ["format", "version", "exportedAt", "settings", "workOrders"],
   );
@@ -773,8 +940,11 @@ function parseBundle(value: unknown): LocalStateBundle {
   if (!Array.isArray(bundle.workOrders) || bundle.workOrders.length > maxWorkOrders) {
     throw new InvalidStateBundleError("目标列表格式无法识别");
   }
-  const projects = version === 2
+  const projects = version >= 2
     ? array(bundle.projects, parseProject, maxWorkOrders)
+    : [];
+  const projectMaterials = version === 3
+    ? array(bundle.projectMaterials, parseProjectMaterial, 10_000)
     : [];
   const workOrders = bundle.workOrders.map((workOrder) => parseWorkOrder(workOrder, version));
   if (version === 1) assignLegacySourceOwnership(workOrders);
@@ -784,6 +954,53 @@ function parseBundle(value: unknown): LocalStateBundle {
   }
   if (workOrders.some((workOrder) => workOrder.projectId && !projectIds.has(workOrder.projectId))) {
     throw new InvalidStateBundleError("目标关联了导出文件中不存在的项目");
+  }
+  if (projectMaterials.some((material) => !projectIds.has(material.projectId))) {
+    throw new InvalidStateBundleError("项目素材关联了导出文件中不存在的项目");
+  }
+  if (new Set(projectMaterials.map((material) => material.id)).size !== projectMaterials.length) {
+    throw new InvalidStateBundleError("项目素材标识不能重复");
+  }
+  const workOrdersById = new Map(workOrders.map((workOrder) => [workOrder.id, workOrder]));
+  for (const material of projectMaterials) {
+    if (material.kind === "goal") {
+      const sourceGoal = material.sourceGoalId
+        ? workOrdersById.get(material.sourceGoalId)
+        : null;
+      if (
+        material.sourceGoalId !== material.value ||
+        !sourceGoal
+      ) {
+        throw new InvalidStateBundleError("目标引用素材关联了无效的来源目标");
+      }
+    } else if (material.sourceGoalId !== null) {
+      throw new InvalidStateBundleError("非目标素材不能关联来源目标");
+    }
+  }
+  const materialProjects = new Map(
+    projectMaterials.map((material) => [material.id, material.projectId]),
+  );
+  for (const workOrder of workOrders) {
+    if (!workOrder.projectId) continue;
+    for (const material of workOrder.materials) {
+      if (!material.projectMaterialId) {
+        const inheritedId = `goal-material:${workOrder.id}:${material.id}`;
+        if (materialProjects.has(inheritedId)) {
+          throw new InvalidStateBundleError("项目素材标识发生冲突");
+        }
+        materialProjects.set(inheritedId, workOrder.projectId);
+      }
+    }
+  }
+  for (const workOrder of workOrders) {
+    for (const material of workOrder.materials) {
+      if (
+        material.projectMaterialId &&
+        materialProjects.get(material.projectMaterialId) !== workOrder.projectId
+      ) {
+        throw new InvalidStateBundleError("目标关联了导出文件中不存在的项目素材");
+      }
+    }
   }
   const sourceSessionIds = new Set<string>();
   for (const workOrder of workOrders) {
@@ -800,6 +1017,7 @@ function parseBundle(value: unknown): LocalStateBundle {
     exportedAt,
     settings: { maxConcurrency, executionMapView },
     projects,
+    projectMaterials,
     workOrders,
   };
 }
@@ -830,6 +1048,30 @@ function parseProject(value: unknown): Project {
   };
 }
 
+function parseProjectMaterial(value: unknown): ProjectMaterial {
+  const material = object(value, "项目素材格式无法识别");
+  exactKeys(material, [
+    "id",
+    "projectId",
+    "kind",
+    "label",
+    "value",
+    "sourceGoalId",
+    "createdAt",
+    "updatedAt",
+  ]);
+  return {
+    id: nonempty(material.id),
+    projectId: nonempty(material.projectId),
+    kind: oneOf(material.kind, projectMaterialKinds),
+    label: nonempty(material.label),
+    value: nonempty(material.value),
+    sourceGoalId: nullableString(material.sourceGoalId),
+    createdAt: dateString(material.createdAt),
+    updatedAt: dateString(material.updatedAt),
+  };
+}
+
 function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrder {
   const item = object(value, "目标格式无法识别");
   const legacyKeys = [
@@ -840,21 +1082,27 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   ];
   exactKeys(
     item,
-    version === 2
+    version === 3
+      ? [...legacyKeys, "name", "description", "projectId", "projectMaterialSelectionConfirmed", "sourceSessions", "currentSessionId"]
+      : version === 2
       ? [...legacyKeys, "name", "description", "projectId", "sourceSessions", "currentSessionId"]
       : legacyKeys,
   );
   const id = nonempty(item.id);
   const title = nonempty(item.title);
   const goal = nonempty(item.goal);
-  const name = version === 2 ? nonempty(item.name) : title;
-  const description = version === 2 ? nonempty(item.description) : goal;
+  const name = version >= 2 ? nonempty(item.name) : title;
+  const description = version >= 2 ? nonempty(item.description) : goal;
   const acceptance = nullableString(item.acceptance);
   const status = oneOf(item.status, workOrderStatuses);
   const currentSummary = string(item.currentSummary);
   const revisionNote = nullableString(item.revisionNote);
   const workspace = parseWorkspace(item.workspace);
-  const materials = array(item.materials, parseMaterial, 10_000);
+  const materials = array(
+    item.materials,
+    (material) => parseMaterial(material, version),
+    10_000,
+  );
   const resourcePlan = parseResourcePlan(item.resourcePlan);
   const maxRunMinutes = oneOf(item.maxRunMinutes, [30, 60, 120, 240] as const);
   const sessionReferences = parseSessionReferences(item.sessionReferences);
@@ -876,7 +1124,9 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
     id,
     name,
     description,
-    projectId: version === 2 ? nullableString(item.projectId) : null,
+    projectId: version >= 2 ? nullableString(item.projectId) : null,
+    projectMaterialSelectionConfirmed:
+      version === 3 ? boolean(item.projectMaterialSelectionConfirmed) : false,
     title,
     goal,
     acceptance,
@@ -909,13 +1159,22 @@ function parseWorkspace(value: unknown): WorkOrderWorkspace | null {
   };
 }
 
-function parseMaterial(value: unknown): WorkOrderMaterial {
+function parseMaterial(value: unknown, version: BundleVersion): WorkOrderMaterial {
   const material = object(value, "素材引用格式无法识别");
-  exactKeys(material, ["id", "kind", "value"]);
+  exactKeys(
+    material,
+    version === 3
+      ? ["id", "kind", "value", "projectMaterialId"]
+      : ["id", "kind", "value"],
+    version === 3,
+  );
   return {
     id: nonempty(material.id),
     kind: oneOf(material.kind, workOrderMaterialKinds),
     value: nonempty(material.value),
+    ...(version === 3 && material.projectMaterialId !== undefined
+      ? { projectMaterialId: nonempty(material.projectMaterialId) }
+      : {}),
   };
 }
 

@@ -1,5 +1,12 @@
 import { Database } from "bun:sqlite";
-import { createProject, type Project } from "./project";
+import {
+  createProject,
+  createProjectMaterial,
+  type CreateProjectMaterialInput,
+  type Project,
+  type ProjectMaterial,
+  type ProjectMaterialKind,
+} from "./project";
 import {
   createWorkOrder,
   type CreateWorkOrderInput,
@@ -29,6 +36,7 @@ type WorkOrderRow = {
   id: string;
   title: string;
   project_id: string | null;
+  project_materials_confirmed: number;
   repository_path: string;
   workspace_kind: "git" | "directory" | null;
   materials_json: string | null;
@@ -63,6 +71,17 @@ type WorkOrderRow = {
 type ProjectRow = {
   id: string;
   name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ProjectMaterialRow = {
+  id: string;
+  project_id: string;
+  material_kind: ProjectMaterialKind;
+  label: string;
+  value: string;
+  source_goal_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -150,6 +169,21 @@ export class WorkOrderStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
+    `);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS project_materials (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        material_kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        value TEXT NOT NULL,
+        source_goal_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS project_materials_lookup
+      ON project_materials(project_id, created_at DESC);
     `);
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_orders (
@@ -279,6 +313,202 @@ export class WorkOrderStore {
       `)
       .run(project.id, project.name, project.createdAt, project.updatedAt);
     return project;
+  }
+
+  listProjectMaterials(projectId: string): ProjectMaterial[] {
+    return this.database
+      .query<ProjectMaterialRow, [string]>(`
+        SELECT * FROM project_materials
+        WHERE project_id = ?
+        ORDER BY created_at DESC, id DESC
+      `)
+      .all(projectId)
+      .map(mapProjectMaterialRow);
+  }
+
+  createProjectMaterial(
+    projectId: string,
+    input: CreateProjectMaterialInput,
+  ): ProjectMaterial {
+    if (!this.getProject(projectId)) throw new Error("找不到这个项目");
+    if (input.kind === "goal") {
+      const goal = this.get(input.value.trim());
+      if (!goal) throw new Error("找不到引用的目标");
+    }
+    const material = createProjectMaterial(projectId, input);
+    this.database.transaction(() => {
+      this.database
+        .query(`
+          INSERT INTO project_materials (
+            id, project_id, material_kind, label, value, source_goal_id,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          material.id,
+          material.projectId,
+          material.kind,
+          material.label,
+          material.value,
+          material.sourceGoalId,
+          material.createdAt,
+          material.updatedAt,
+        );
+      this.touchProject(projectId, material.updatedAt);
+    })();
+    return material;
+  }
+
+  listProjectScopeMaterials(projectId: string): ProjectMaterial[] {
+    const explicit = this.listProjectMaterials(projectId);
+    const explicitLocations = new Set(
+      explicit
+        .filter((material) => material.kind !== "goal")
+        .map((material) => `${material.kind}:${material.value}`),
+    );
+    const inherited = this.list()
+      .filter((workOrder) => workOrder.projectId === projectId)
+      .flatMap((workOrder) =>
+        workOrder.materials
+          .filter(
+            (material) =>
+              !material.projectMaterialId &&
+              !explicitLocations.has(`${material.kind}:${material.value}`),
+          )
+          .map((material) => ({
+            id: `goal-material:${workOrder.id}:${material.id}`,
+            projectId,
+            kind: material.kind,
+            label: `${workOrder.name} · ${projectMaterialLabel(material.value)}`,
+            value: material.value,
+            sourceGoalId: workOrder.id,
+            createdAt: workOrder.createdAt,
+            updatedAt: workOrder.updatedAt,
+          })),
+      );
+    return [...explicit, ...inherited].sort(
+      (left, right) => right.updatedAt.localeCompare(left.updatedAt),
+    );
+  }
+
+  recommendProjectMaterials(
+    projectId: string,
+    name: string,
+    description: string,
+  ): { materials: ProjectMaterial[]; recommendedIds: string[] } {
+    const materials = this.listProjectScopeMaterials(projectId);
+    const queryTokens = textTokens(`${name} ${description}`);
+    const ranked = materials
+      .map((material, index) => ({
+        material,
+        index,
+        score: overlapScore(
+          queryTokens,
+          textTokens(`${material.label} ${material.value}`),
+        ),
+      }))
+      .sort(
+        (left, right) =>
+          right.score - left.score || left.index - right.index,
+      );
+    const selected = ranked.filter((item) => item.score > 0).slice(0, 3);
+    return {
+      materials,
+      recommendedIds: selected.map((item) => item.material.id),
+    };
+  }
+
+  resolveProjectMaterials(
+    projectId: string | null,
+    materialIds: string[],
+  ): WorkOrder["materials"] {
+    if (!projectId) {
+      if (materialIds.length) throw new Error("请先选择项目");
+      return [];
+    }
+    const available = new Map(
+      this.listProjectScopeMaterials(projectId).map((material) => [material.id, material]),
+    );
+    return [...new Set(materialIds)].map((id) => {
+      const material = available.get(id);
+      if (!material) throw new Error("所选项目素材已经不可用");
+      return {
+        id: crypto.randomUUID(),
+        kind: material.kind === "goal" ? "text" : material.kind,
+        value:
+          material.kind === "goal"
+            ? this.goalReferenceSnapshot(material.value)
+            : material.value,
+        projectMaterialId: material.id,
+      };
+    });
+  }
+
+  saveProjectContext(
+    id: string,
+    projectId: string | null,
+    projectMaterialIds: string[],
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    if (["running", "stopping", "verifying"].includes(workOrder.runStatus ?? "")) {
+      throw new Error("目标运行时不能修改项目素材");
+    }
+    const normalizedProjectId = projectId?.trim() || null;
+    if (normalizedProjectId && !this.getProject(normalizedProjectId)) {
+      throw new Error("找不到所选项目");
+    }
+    const inherited = this.resolveProjectMaterials(
+      normalizedProjectId,
+      projectMaterialIds,
+    );
+    const ownMaterials = workOrder.materials.filter(
+      (material) => !material.projectMaterialId,
+    );
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database
+        .query(`
+          UPDATE work_orders
+          SET project_id = ?, project_materials_confirmed = 1,
+              materials_json = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(
+          normalizedProjectId,
+          JSON.stringify([...ownMaterials, ...inherited]),
+          now,
+          id,
+        );
+      if (normalizedProjectId) this.touchProject(normalizedProjectId, now);
+    })();
+    return this.get(id)!;
+  }
+
+  private goalReferenceSnapshot(id: string): string {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("引用的目标已经不可用");
+    const status = {
+      draft: "规划中",
+      ready: "待运行",
+      running: "运行中",
+      interrupted: "需响应",
+      review: "待验收",
+      delivered: "已完成",
+    }[workOrder.status];
+    const artifacts = workOrder.plan?.stages
+      .flatMap((stage) => stage.artifacts)
+      .slice(0, 5)
+      .map((artifact) => `${artifact.label}（${artifact.location}）`)
+      .join("；");
+    const result = artifacts || workOrder.result?.git.diffStat || workOrder.currentSummary;
+    return `目标“${workOrder.name}”：${status}。成果摘要：${result || "暂无成果"}`;
+  }
+
+  private touchProject(id: string, updatedAt = new Date().toISOString()): void {
+    this.database
+      .query("UPDATE projects SET updated_at = ? WHERE id = ?")
+      .run(updatedAt, id);
   }
 
   list(): WorkOrder[] {
@@ -690,15 +920,17 @@ export class WorkOrderStore {
     this.database
       .query(`
         INSERT INTO work_orders (
-          id, title, project_id, repository_path, workspace_kind, materials_json,
+          id, title, project_id, project_materials_confirmed,
+          repository_path, workspace_kind, materials_json,
           source_sessions_json, import_source_json,
           goal, acceptance, status, current_summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
         workOrder.title,
         workOrder.projectId,
+        workOrder.projectMaterialSelectionConfirmed ? 1 : 0,
         workOrder.repositoryPath,
         workOrder.workspace?.kind ?? null,
         JSON.stringify(workOrder.materials),
@@ -868,10 +1100,21 @@ export class WorkOrderStore {
     const canUpdateMaterials = Boolean(pendingReply) && clarificationTargets.has("materials");
     const materials = !canUpdateMaterials || generated.materials === undefined
       ? current.materials
-      : normalizeMaterialInputs(generated.materials).map((material) => ({
-          id: crypto.randomUUID(),
-          ...material,
-        }));
+      : normalizeMaterialInputs(generated.materials).map((material) => {
+          const selectedProjectMaterial = current.materials.find(
+            (candidate) =>
+              candidate.projectMaterialId &&
+              candidate.kind === material.kind &&
+              candidate.value === material.value,
+          );
+          return {
+            id: crypto.randomUUID(),
+            ...material,
+            ...(selectedProjectMaterial?.projectMaterialId
+              ? { projectMaterialId: selectedProjectMaterial.projectMaterialId }
+              : {}),
+          };
+        });
     const canUpdateResources = Boolean(pendingReply) && clarificationTargets.has("resources");
     const resourcePlan = canUpdateResources && generated.resourcePlan
       ? {
@@ -2000,6 +2243,11 @@ export class WorkOrderStore {
     if (!columns.has("project_id")) {
       this.database.exec("ALTER TABLE work_orders ADD COLUMN project_id TEXT");
     }
+    if (!columns.has("project_materials_confirmed")) {
+      this.database.exec(
+        "ALTER TABLE work_orders ADD COLUMN project_materials_confirmed INTEGER NOT NULL DEFAULT 0",
+      );
+    }
     if (!columns.has("source_sessions_json")) {
       this.database.exec("ALTER TABLE work_orders ADD COLUMN source_sessions_json TEXT");
     }
@@ -2197,6 +2445,7 @@ function mapRow(
     name: row.title,
     description: row.goal,
     projectId: row.project_id,
+    projectMaterialSelectionConfirmed: row.project_materials_confirmed === 1,
     title: row.title,
     repositoryPath: row.repository_path,
     workspace: row.workspace_kind
@@ -2380,6 +2629,46 @@ function mapCheckpointRow(row: CheckpointRow): WorkOrderCheckpoint {
     treeHash: row.tree_hash,
     createdAt: row.created_at,
   };
+}
+
+function mapProjectMaterialRow(row: ProjectMaterialRow): ProjectMaterial {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    kind: row.material_kind,
+    label: row.label,
+    value: row.value,
+    sourceGoalId: row.source_goal_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function projectMaterialLabel(value: string): string {
+  const parts = value.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.at(-1) || value;
+}
+
+function textTokens(value: string): Set<string> {
+  const normalized = value.toLocaleLowerCase();
+  const tokens = new Set(
+    normalized.match(/[a-z0-9][a-z0-9._-]+/g)?.filter((token) => token.length > 1) ?? [],
+  );
+  for (const sequence of normalized.match(/\p{Script=Han}+/gu) ?? []) {
+    if (sequence.length === 1) tokens.add(sequence);
+    for (let index = 0; index < sequence.length - 1; index += 1) {
+      tokens.add(sequence.slice(index, index + 2));
+    }
+  }
+  return tokens;
+}
+
+function overlapScore(left: Set<string>, right: Set<string>): number {
+  let score = 0;
+  for (const token of left) {
+    if (right.has(token)) score += 1;
+  }
+  return score;
 }
 
 function normalizeStoredPlan(

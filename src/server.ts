@@ -31,6 +31,7 @@ const app = createApp({
     resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
   ),
   projectRoot,
+  dataDirectory,
 });
 
 const server = Bun.serve({

@@ -1,4 +1,12 @@
-import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
 import type { CheckpointManager } from "./checkpoint-manager";
@@ -21,6 +29,7 @@ import {
   type WorkOrderResult,
 } from "./work-order";
 import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
+import { projectMaterialKinds, type ProjectMaterialKind } from "./project";
 import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
 import {
   unavailableResourceSnapshot,
@@ -61,6 +70,7 @@ type AppDependencies = {
   ) => () => void;
   autoRunRetryMs?: number;
   codexSessionProvider?: CodexSessionProvider;
+  dataDirectory?: string;
 };
 
 type NextStageRun = {
@@ -91,6 +101,7 @@ export function createApp({
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
   codexSessionProvider,
+  dataDirectory = join(projectRoot, ".teamline"),
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const planningWorkOrderIds = new Set<string>();
@@ -552,6 +563,134 @@ export function createApp({
               code: "INVALID_PROJECT",
               error: error instanceof Error ? error.message : "无法创建项目",
             },
+            { status: 400 },
+          );
+        }
+      }
+
+      const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+      if (request.method === "GET" && projectMatch) {
+        const projectId = decodeURIComponent(projectMatch[1]);
+        const project = store.getProject(projectId);
+        if (!project) {
+          return Response.json(
+            { code: "PROJECT_NOT_FOUND", error: "找不到这个项目" },
+            { status: 404 },
+          );
+        }
+        const goals = store.list().filter((workOrder) => workOrder.projectId === projectId);
+        const results = goals
+          .filter(
+            (workOrder) =>
+              workOrder.result ||
+              workOrder.plan?.stages.some((stage) => stage.artifacts.length),
+          )
+          .map((workOrder) => ({
+            workOrderId: workOrder.id,
+            title: workOrder.name,
+            status: workOrder.status,
+            summary: workOrder.currentSummary,
+            artifacts:
+              workOrder.plan?.stages.flatMap((stage) => stage.artifacts).slice(0, 8) ?? [],
+            gitSummary: workOrder.result?.git.diffStat ?? "",
+          }));
+        return Response.json({
+          project,
+          summary: {
+            totalGoals: goals.length,
+            completedGoals: goals.filter((workOrder) => workOrder.status === "delivered").length,
+          },
+          goals,
+          materials: store.listProjectScopeMaterials(projectId),
+          results,
+        });
+      }
+
+      const recommendationsMatch = url.pathname.match(
+        /^\/api\/projects\/([^/]+)\/material-recommendations$/,
+      );
+      if (request.method === "GET" && recommendationsMatch) {
+        try {
+          const projectId = decodeURIComponent(recommendationsMatch[1]);
+          if (!store.getProject(projectId)) throw new Error("找不到这个项目");
+          return Response.json(
+            store.recommendProjectMaterials(
+              projectId,
+              url.searchParams.get("name") ?? "",
+              url.searchParams.get("description") ?? "",
+            ),
+          );
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : "无法推荐项目素材" },
+            { status: 400 },
+          );
+        }
+      }
+
+      const projectMaterialsMatch = url.pathname.match(
+        /^\/api\/projects\/([^/]+)\/materials$/,
+      );
+      if (request.method === "POST" && projectMaterialsMatch) {
+        try {
+          const projectId = decodeURIComponent(projectMaterialsMatch[1]);
+          const body = (await request.json()) as {
+            kind?: string;
+            label?: string;
+            value?: string;
+          };
+          if (!projectMaterialKinds.includes(body.kind as ProjectMaterialKind)) {
+            throw new Error("素材类型无法识别");
+          }
+          const material = store.createProjectMaterial(projectId, {
+            kind: body.kind as ProjectMaterialKind,
+            label: body.label ?? "",
+            value: body.value ?? "",
+          });
+          return Response.json({ material }, { status: 201 });
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : "无法添加项目素材" },
+            { status: 400 },
+          );
+        }
+      }
+
+      const projectUploadsMatch = url.pathname.match(
+        /^\/api\/projects\/([^/]+)\/uploads$/,
+      );
+      if (request.method === "POST" && projectUploadsMatch) {
+        try {
+          const projectId = decodeURIComponent(projectUploadsMatch[1]);
+          if (!store.getProject(projectId)) throw new Error("找不到这个项目");
+          const form = await request.formData();
+          const file = form.get("file");
+          if (!(file instanceof File) || !file.name) throw new Error("请选择文件");
+          if (file.size > 20 * 1024 * 1024) throw new Error("文件不能超过 20 MB");
+          const safeName = safeUploadName(file.name);
+          const uploadDirectory = join(dataDirectory, "project-files");
+          mkdirSync(uploadDirectory, { recursive: true });
+          const location = join(uploadDirectory, `${crypto.randomUUID()}-${safeName}`);
+          let material;
+          try {
+            await Bun.write(location, file);
+            material = store.createProjectMaterial(projectId, {
+              kind: file.type.startsWith("image/") ? "image" : "file",
+              label: file.name,
+              value: location,
+            });
+          } catch (error) {
+            try {
+              unlinkSync(location);
+            } catch {
+              // The upload either did not finish or has already been removed.
+            }
+            throw error;
+          }
+          return Response.json({ material }, { status: 201 });
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : "无法上传文件" },
             { status: 400 },
           );
         }
@@ -1768,6 +1907,7 @@ export function createApp({
             goal?: string;
             acceptance?: string;
             materials?: Array<{ kind?: string; value?: string }>;
+            projectMaterialIds?: string[];
           };
           const requestedRepositoryPath = body.repositoryPath?.trim() ?? "";
           const requestedWorkspacePath = body.workspacePath?.trim() ?? "";
@@ -1796,21 +1936,58 @@ export function createApp({
           }
 
           const materials = normalizeMaterials(body.materials);
+          const projectMaterialIds = normalizeProjectMaterialIds(body.projectMaterialIds);
+          const projectMaterials = store.resolveProjectMaterials(
+            body.projectId?.trim() || null,
+            projectMaterialIds,
+          );
           const workOrder = store.create({
             name: body.name,
             description: body.description,
             projectId: body.projectId,
+            projectMaterialSelectionConfirmed:
+              body.projectMaterialIds !== undefined,
             sourceSessions: body.sourceSessions,
             repositoryPath: requestedRepositoryPath,
             workspace,
             goal: body.goal ?? "",
             acceptance: body.acceptance,
-            materials,
+            materials: [
+              ...materials,
+              ...projectMaterials.map(({ kind, value, projectMaterialId }) => ({
+                kind,
+                value,
+                projectMaterialId,
+              })),
+            ],
           });
           return Response.json({ workOrder }, { status: 201 });
         } catch (error) {
           const message = error instanceof Error ? error.message : "创建目标失败";
           return Response.json({ error: message }, { status: 400 });
+        }
+      }
+
+      const projectContextMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/project-context$/,
+      );
+      if (request.method === "PUT" && projectContextMatch) {
+        try {
+          const body = (await request.json()) as {
+            projectId?: string | null;
+            projectMaterialIds?: string[];
+          };
+          const workOrder = store.saveProjectContext(
+            decodeURIComponent(projectContextMatch[1]),
+            body.projectId?.trim() || null,
+            normalizeProjectMaterialIds(body.projectMaterialIds),
+          );
+          return Response.json({ workOrder });
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : "无法保存项目与素材" },
+            { status: 400 },
+          );
         }
       }
 
@@ -1825,7 +2002,8 @@ export function createApp({
         request.method === "GET" &&
         (url.pathname === "/resources" ||
           url.pathname === "/projects" ||
-          /^\/(?:goals|work-orders)\/[^/]+$/.test(url.pathname))
+          /^\/(?:goals|work-orders)\/[^/]+$/.test(url.pathname) ||
+          /^\/projects\/[^/]+$/.test(url.pathname))
       ) {
         return new Response(Bun.file(join(projectRoot, "public/index.html")), {
           headers: { "content-type": "text/html; charset=utf-8" },
@@ -2248,6 +2426,28 @@ function normalizeMaterials(
     }
     return { kind: kind as WorkOrderMaterialKind, value };
   });
+}
+
+function normalizeProjectMaterialIds(value: string[] | undefined): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new Error("项目素材格式无法识别");
+  }
+  return [...new Set(value.map((id) => {
+    if (typeof id !== "string" || !id.trim()) {
+      throw new Error("项目素材格式无法识别");
+    }
+    return id.trim();
+  }))];
+}
+
+function safeUploadName(value: string): string {
+  const normalized = value
+    .normalize("NFC")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+    .replace(/^\.+/, "")
+    .trim();
+  return normalized.slice(0, 120) || "附件";
 }
 
 function normalizeSessionImports(

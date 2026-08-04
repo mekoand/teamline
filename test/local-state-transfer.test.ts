@@ -114,7 +114,8 @@ describe("local Teamline state transfer", () => {
     const sourceApp = createApp({ store: sourceStore });
     const bundle = await (await sourceApp.fetch(request("/api/local-state/export"))).json();
     expect(bundle).toMatchObject({
-      version: 2,
+      version: 3,
+      projectMaterials: [],
       projects: [{ id: project.id, name: "Teamline V2" }],
       workOrders: [
         {
@@ -163,9 +164,11 @@ describe("local Teamline state transfer", () => {
     ).json();
     bundle.version = 1;
     delete bundle.projects;
+    delete bundle.projectMaterials;
     delete bundle.workOrders[0].name;
     delete bundle.workOrders[0].description;
     delete bundle.workOrders[0].projectId;
+    delete bundle.workOrders[0].projectMaterialSelectionConfirmed;
     delete bundle.workOrders[0].sourceSessions;
     delete bundle.workOrders[0].currentSessionId;
 
@@ -205,10 +208,12 @@ describe("local Teamline state transfer", () => {
     bundle.workOrders.push(later);
     bundle.version = 1;
     delete bundle.projects;
+    delete bundle.projectMaterials;
     for (const workOrder of bundle.workOrders) {
       delete workOrder.name;
       delete workOrder.description;
       delete workOrder.projectId;
+      delete workOrder.projectMaterialSelectionConfirmed;
       delete workOrder.sourceSessions;
       delete workOrder.currentSessionId;
     }
@@ -377,7 +382,8 @@ describe("local Teamline state transfer", () => {
     expect(response.headers.get("content-disposition")).toContain("teamline-state-");
     expect(bundle).toMatchObject({
       format: "teamline-local-state",
-      version: 2,
+      version: 3,
+      projectMaterials: [],
       settings: { maxConcurrency: 3, executionMapView: "list" },
       workOrders: [
         {

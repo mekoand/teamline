@@ -96,6 +96,20 @@
           <span>完成要求 <em>可选</em></span>
           <textarea name="acceptance" rows="3" placeholder="例如：保留现有布局，并通过相关测试"></textarea>
         </label>
+        <label>
+          <span>所属项目 <em>可选</em></span>
+          <select name="projectId" id="create-project-select">
+            <option value="">暂不归入项目</option>
+          </select>
+        </label>
+
+        <section class="project-material-picker" id="create-project-materials" hidden>
+          <div>
+            <strong>建议使用的项目素材</strong>
+            <p>这里只勾选与当前目标较相关的内容，你可以增减。</p>
+          </div>
+          <div id="create-project-material-list"></div>
+        </section>
 
         <section class="material-editor">
           <div class="material-editor-heading">

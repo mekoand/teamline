@@ -29,7 +29,7 @@
         "additionalProperties": false,
         "required": ["kind", "value"],
         "properties": {
-          "kind": { "enum": ["repository", "folder", "file", "image", "link"] },
+          "kind": { "enum": ["repository", "folder", "file", "image", "link", "text"] },
           "value": { "type": "string", "minLength": 1 }
         }
       }

@@ -397,7 +397,7 @@ describe("V2 domain data", () => {
           new Request("http://teamline.local/api/local-state/export"),
         )
       ).json();
-      expect(exported.version).toBe(2);
+      expect(exported.version).toBe(3);
       database.close();
 
       const restoredStore = new WorkOrderStore(new Database(":memory:"));

@@ -77,6 +77,7 @@ export type PlanStage = {
 };
 
 export const workOrderMaterialKinds = [
+  "text",
   "repository",
   "folder",
   "file",
@@ -90,6 +91,7 @@ export type WorkOrderMaterial = {
   id: string;
   kind: WorkOrderMaterialKind;
   value: string;
+  projectMaterialId?: string;
 };
 
 export type WorkOrderImportSource = {
@@ -201,6 +203,7 @@ export type WorkOrder = {
   name: string;
   description: string;
   projectId: string | null;
+  projectMaterialSelectionConfirmed: boolean;
   title: string;
   /** Legacy SQLite storage alias for workspace.path. Never derive it from materials. */
   repositoryPath: string;
@@ -241,9 +244,14 @@ export type CreateWorkOrderInput = {
   name?: string;
   description?: string;
   projectId?: string | null;
+  projectMaterialSelectionConfirmed?: boolean;
   repositoryPath?: string;
   workspace?: WorkOrderWorkspace | null;
-  materials?: Array<{ kind: WorkOrderMaterialKind; value: string }>;
+  materials?: Array<{
+    kind: WorkOrderMaterialKind;
+    value: string;
+    projectMaterialId?: string;
+  }>;
   sourceSessions?: WorkOrderImportSource[];
   importSource?: WorkOrderImportSource;
   goal?: string;
@@ -286,6 +294,8 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     name: title,
     description: goal,
     projectId: input.projectId?.trim() || null,
+    projectMaterialSelectionConfirmed:
+      input.projectMaterialSelectionConfirmed ?? false,
     title,
     repositoryPath,
     workspace,
@@ -293,6 +303,9 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
       id: crypto.randomUUID(),
       kind: material.kind,
       value: material.value.trim(),
+      ...(material.projectMaterialId
+        ? { projectMaterialId: material.projectMaterialId }
+        : {}),
     })),
     sourceSessions,
     currentSessionId: null,

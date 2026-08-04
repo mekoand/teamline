@@ -2459,11 +2459,328 @@ dialog::backdrop {
 }
 
 .project-row {
+  width: 100%;
   justify-content: space-between;
   gap: 20px;
   min-height: 58px;
   padding: 12px 4px;
   border-bottom: 1px solid var(--line);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.project-row:hover {
+  background: var(--panel-soft);
+}
+
+.project-row > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.project-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.project-create-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 420px) auto;
+  align-items: end;
+  gap: 10px 14px;
+  margin: -8px 0 24px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.project-create-form > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.project-create-form .inline-feedback {
+  grid-column: 1 / -1;
+}
+
+.project-detail-workspace {
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.project-detail-heading,
+.project-detail-heading dl,
+.project-goal-row {
+  display: flex;
+  align-items: center;
+}
+
+.project-detail-heading {
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 34px;
+}
+
+.project-detail-heading h1 {
+  margin-top: 6px;
+  font-size: 30px;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+}
+
+.project-detail-heading dl {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.project-detail-heading dl > div {
+  min-width: 84px;
+  display: grid;
+  gap: 3px;
+  padding: 11px 16px;
+}
+
+.project-detail-heading dl > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.project-detail-heading dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.project-detail-heading dd {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.project-section {
+  padding: 25px 0 30px;
+  border-top: 1px solid var(--line);
+}
+
+.project-section > .section-heading {
+  margin-bottom: 13px;
+}
+
+.project-empty-copy {
+  padding: 18px 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-goal-list {
+  display: grid;
+}
+
+.project-goal-row {
+  width: 100%;
+  min-height: 55px;
+  gap: 12px;
+  padding: 10px 3px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.project-goal-row:hover {
+  background: var(--panel-soft);
+}
+
+.project-goal-row > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+
+.project-goal-row small,
+.project-goal-row time {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.project-material-grid,
+.project-result-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.project-material-card,
+.project-result-card {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.project-material-card > span,
+.project-result-card > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.project-material-card strong,
+.project-result-card strong {
+  font-size: 12px;
+  text-wrap: balance;
+}
+
+.project-material-card code,
+.project-result-card p {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.project-result-card {
+  color: var(--text);
+  text-align: left;
+}
+
+.project-result-card:hover {
+  border-color: var(--faint);
+  background: var(--panel-soft);
+}
+
+.project-add-disclosure {
+  margin-top: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.project-add-disclosure > summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.project-material-form,
+.project-upload-form {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(180px, 1.3fr);
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.project-material-form > label:nth-of-type(n + 3),
+.project-material-form > button,
+.project-upload-form > label {
+  grid-column: 1 / -1;
+}
+
+.project-material-form > button,
+.project-upload-form > button {
+  width: max-content;
+}
+
+.project-upload-form {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.project-material-picker {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.project-material-picker[hidden] {
+  display: none;
+}
+
+.project-material-picker strong {
+  font-size: 12px;
+}
+
+.project-material-picker p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+#create-project-material-list,
+.goal-project-context fieldset {
+  display: grid;
+  gap: 5px;
+}
+
+.project-material-choice {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.project-material-choice input {
+  width: 15px;
+  height: 15px;
+}
+
+.project-material-choice span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.project-material-choice strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.project-material-choice small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.goal-project-context {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.goal-project-context form,
+.goal-project-context fieldset {
+  margin-top: 12px;
+}
+
+.goal-project-context fieldset {
+  padding: 0;
+  border: 0;
+}
+
+.goal-project-context legend {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.goal-project-context .full-button {
+  margin-top: 10px;
 }
 
 .primary-work-surface {
@@ -2657,6 +2974,49 @@ button {
     flex: 1;
     min-width: 0;
     padding-inline: 10px;
+  }
+
+  .project-create-form,
+  .project-material-form,
+  .project-upload-form,
+  .project-material-grid,
+  .project-result-list {
+    grid-template-columns: 1fr;
+  }
+
+  .project-create-form > div,
+  .project-create-form .inline-feedback,
+  .project-material-form > label,
+  .project-material-form > button,
+  .project-upload-form > label,
+  .project-upload-form > button {
+    grid-column: 1;
+  }
+
+  .project-detail-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .project-detail-heading h1 {
+    font-size: 27px;
+  }
+
+  .project-detail-heading dl {
+    width: 100%;
+  }
+
+  .project-detail-heading dl > div {
+    flex: 1;
+  }
+
+  .project-goal-row {
+    align-items: flex-start;
+  }
+
+  .project-goal-row time {
+    display: none;
   }
 
   .home-mobile-nav {
