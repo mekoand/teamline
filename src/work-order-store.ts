@@ -862,23 +862,10 @@ export class WorkOrderStore {
   ): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder) throw new Error("找不到这个目标");
-    if (!workOrderPriorities.includes(input.priority)) {
-      throw new Error("请选择有效的优先级");
+    if (workOrder.status === "delivered") {
+      throw new PlanLockedError("已完成目标不能修改资源设置");
     }
-    if (!workOrderPaces.includes(input.pace)) {
-      throw new Error("请选择有效的执行节奏");
-    }
-    if (typeof input.runWhenQuotaAvailable !== "boolean") {
-      throw new Error("额度充足时运行设置无效");
-    }
-    const resourcePlan: WorkOrderResourcePlan = {
-      priority: input.priority,
-      pace: input.pace,
-      runWhenQuotaAvailable: input.runWhenQuotaAvailable,
-      autoRunReason: input.runWhenQuotaAvailable
-        ? workOrder.resourcePlan.autoRunReason
-        : null,
-    };
+    const resourcePlan = updatedResourcePlan(workOrder, input);
     const now = new Date().toISOString();
     this.database
       .query(`
@@ -890,10 +877,56 @@ export class WorkOrderStore {
     return this.get(id)!;
   }
 
+  saveTargetResourceSettings(
+    id: string,
+    input: {
+      priority: WorkOrderPriority;
+      pace: WorkOrderPace;
+      runWhenQuotaAvailable: boolean;
+      maxRunMinutes?: number;
+    },
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    if (workOrder.status === "delivered") {
+      throw new PlanLockedError("已完成目标不能修改资源设置");
+    }
+    if (
+      input.maxRunMinutes !== undefined &&
+      (workOrder.runStatus !== null || workOrder.status !== "ready")
+    ) {
+      throw new PlanLockedError("只能在待运行时修改单轮运行上限");
+    }
+    if (
+      input.maxRunMinutes !== undefined &&
+      ![30, 60, 120, 240].includes(input.maxRunMinutes)
+    ) {
+      throw new Error("请选择有效的最长运行时间");
+    }
+    const resourcePlan = updatedResourcePlan(workOrder, input);
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET resource_plan_json = ?, max_run_minutes = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        JSON.stringify(resourcePlan),
+        input.maxRunMinutes ?? workOrder.maxRunMinutes,
+        now,
+        id,
+      );
+    return this.get(id)!;
+  }
+
   saveAutoRunReason(id: string, reason: string | null): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder) throw new Error("找不到这个目标");
-    const resourcePlan = { ...workOrder.resourcePlan, autoRunReason: reason };
+    const resourcePlan = {
+      ...workOrder.resourcePlan,
+      autoRunReason: workOrder.resourcePlan.runWhenQuotaAvailable ? reason : null,
+    };
     const now = new Date().toISOString();
     this.database
       .query(`
@@ -2975,6 +3008,25 @@ function validateResourcePlan(value: {
   ) {
     throw new Error("资源方案格式无法识别");
   }
+}
+
+function updatedResourcePlan(
+  workOrder: WorkOrder,
+  input: {
+    priority: WorkOrderPriority;
+    pace: WorkOrderPace;
+    runWhenQuotaAvailable: boolean;
+  },
+): WorkOrderResourcePlan {
+  validateResourcePlan(input);
+  return {
+    priority: input.priority,
+    pace: input.pace,
+    runWhenQuotaAvailable: input.runWhenQuotaAvailable,
+    autoRunReason: input.runWhenQuotaAvailable
+      ? workOrder.resourcePlan.autoRunReason
+      : null,
+  };
 }
 
 function mapCheckpointRow(row: CheckpointRow): WorkOrderCheckpoint {

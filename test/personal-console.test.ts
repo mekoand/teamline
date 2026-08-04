@@ -23,8 +23,7 @@ describe("personal console", () => {
     expect(page).toContain('id="work-order-workspace"');
     expect(page).toContain('id="context-panel"');
     expect(page).toContain('id="theme-toggle"');
-    expect(page).toContain('id="max-concurrency"');
-    expect(page).toContain('type="number" min="1" step="1"');
+    expect(page).not.toContain('id="max-concurrency"');
     expect(script).toContain('localStorage.getItem("teamline-theme")');
     expect(script).toContain('localStorage.setItem("teamline-theme"');
     expect(script).toContain('"/api/execution-settings"');
@@ -123,7 +122,7 @@ describe("personal console", () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const styles = await (await app.fetch(new Request("http://teamline.local/styles.css"))).text();
 
-    expect(styles).toContain(".concurrency-control > span");
+    expect(styles).toContain(".resource-concurrency-control > span");
     expect(styles).toContain("word-break: auto-phrase");
   });
 
@@ -167,6 +166,15 @@ describe("personal console", () => {
     );
     expect(script).toContain("resource-workspace");
     expect(script).toContain("workOrder.usage.message");
+    expect(script).toContain('id="max-concurrency"');
+    expect(script).toContain('id="goal-resource-form"');
+    expect(script).toContain("资源设置 ·");
+    expect(script).toContain('presentation.reason === "等待可用并发位置"');
+    expect(script).not.toContain(
+      'const queued = visibleStatus(workOrder, state.workOrders).status === "queued"',
+    );
+    expect(script).toContain("Codex 额度</span>");
+    expect(script).not.toContain("${runningCount} 项运行中</span>\n      </button>");
   });
 
   test("offers one local session import flow for Codex and Claude Code", async () => {
@@ -214,6 +222,23 @@ describe("personal console", () => {
     expect(script).not.toContain("不推测某个节点正在运行");
   });
 
+  test("presents a confirmed idle goal as waiting to run", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = store.create({ goal: "准备开始" });
+    store.savePlan(workOrder.id, [
+      { outcome: "完成目标", scope: "当前文件夹", verification: "检查结果" },
+    ]);
+    const app = createApp({ store });
+
+    const response = await app.fetch(new Request("http://teamline.local/api/console"));
+    const result = await response.json();
+
+    expect(result.workOrders[0]).toMatchObject({
+      userStatus: "queued",
+      statusReason: "等待选择工作空间",
+    });
+  });
+
   test("restores persisted work and exposes the six user-facing states", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-console-"));
     const databasePath = join(directory, "teamline.db");
@@ -221,6 +246,11 @@ describe("personal console", () => {
       const firstDatabase = new Database(databasePath, { create: true });
       const firstStore = new WorkOrderStore(firstDatabase);
       firstStore.create({ repositoryPath: "/tmp/planning", goal: "规划新委托" });
+
+      firstStore.savePlan(
+        firstStore.create({ repositoryPath: "/tmp/ready", goal: "可以开始的目标" }).id,
+        [{ outcome: "开始执行", scope: "src", verification: "人工检查" }],
+      );
 
       const running = firstStore.savePlan(
         firstStore.create({ repositoryPath: "/tmp/running", goal: "执行中的委托" }).id,
@@ -309,6 +339,7 @@ describe("personal console", () => {
         Object.fromEntries(workOrders.map((workOrder) => [workOrder.title, workOrder.userStatus])),
       ).toEqual({
         规划新委托: "planning",
+        可以开始的目标: "queued",
         执行中的委托: "running",
         正在停止: "running",
         正在验证: "running",

@@ -112,6 +112,7 @@ describe("resource API", () => {
           status: "planning",
           priority: "normal",
           pace: "balanced",
+          maxRunMinutes: 60,
           runWhenQuotaAvailable: false,
           autoRunReason: null,
           usage: {

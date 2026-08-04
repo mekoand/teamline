@@ -93,11 +93,11 @@ describe("Teamline CLI", () => {
     expect(await runCli(["list"], cli.dependencies)).toBe(0);
     expect(cli.stdout.join("\n")).toContain(created.id.slice(0, 8));
     expect(cli.stdout.join("\n")).toContain("当前：登录页稳定显示");
-    expect(cli.stdout.join("\n")).toContain("原因：待确认计划");
+    expect(cli.stdout.join("\n")).toContain("原因：可以开始运行");
 
     cli.stdout.length = 0;
     expect(await runCli(["show", created.id.slice(0, 8)], cli.dependencies)).toBe(0);
-    expect(cli.stdout.join("\n")).toContain("状态：待规划（待确认计划）");
+    expect(cli.stdout.join("\n")).toContain("状态：待运行（可以开始运行）");
     expect(cli.stdout.join("\n")).toContain(`工作空间：${realpathSync(workspacePath)}`);
     expect(cli.stdout.join("\n")).toContain("验收：相关测试通过");
 

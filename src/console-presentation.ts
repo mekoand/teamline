@@ -49,9 +49,29 @@ function presentStatus(
     return { userStatus: "review", statusReason: "待验收" };
   }
   if (workOrder.status === "interrupted") {
+    const externalStage = workOrder.plan?.stages.find(
+      (stage) => stage.executionMethod === "external" && stage.status === "response",
+    );
+    const failedVerification = workOrder.result?.verifications.some(
+      (verification) => verification.status === "failed",
+    );
+    const needsNodeConfirmation = workOrder.result?.verifications.some(
+      (verification) => verification.status === "not_configured",
+    );
     return {
       userStatus: "response",
-      statusReason: workOrder.runStatus === "failed" ? "执行失败" : "执行中断",
+      statusReason: externalStage
+        ? `待完成外部节点：${externalStage.outcome}`
+        : workOrder.currentSummary.includes("最长运行时间") ||
+            workOrder.currentSummary.includes("本轮上限")
+          ? "已达到本轮上限"
+          : failedVerification
+            ? "自动验证未通过"
+            : needsNodeConfirmation
+              ? "待确认当前节点结果"
+              : workOrder.runStatus === "failed"
+                ? "执行失败"
+                : "执行中断",
     };
   }
   if (workOrder.status === "running") {
@@ -77,6 +97,9 @@ function presentStatus(
         statusReason: `待完成外部节点：${externalStage.outcome}`,
       };
     }
+    if (!workOrder.workspace) {
+      return { userStatus: "queued", statusReason: "等待选择工作空间" };
+    }
     if (
       workOrder.resourcePlan.runWhenQuotaAvailable &&
       workOrder.resourcePlan.autoRunReason
@@ -88,7 +111,7 @@ function presentStatus(
     }
     return capacityReached
       ? { userStatus: "queued", statusReason: "等待可用并发位置" }
-      : { userStatus: "planning", statusReason: "待确认计划" };
+      : { userStatus: "queued", statusReason: "可以开始运行" };
   }
   return { userStatus: "planning", statusReason: "待生成计划" };
 }

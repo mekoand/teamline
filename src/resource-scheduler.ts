@@ -73,9 +73,37 @@ function blockingReason(
   capacityReached: boolean,
   now: Date,
 ): string | null {
-  if (workOrder.status !== "ready" || !workOrder.plan) return "等待确认计划";
-  if (workOrder.plan.confirmationRequired) return "计划等待确认";
+  if (workOrder.pendingClarification) return "等待补充关键信息";
+  if (workOrder.plan?.confirmationRequired) return "计划有变更，等待确认";
+  if (workOrder.status === "review") return "等待验收";
+  if (workOrder.status === "delivered") return "目标已完成";
+  if (workOrder.status === "running") return "当前正在运行";
   if (hasRunnableExternalStage(workOrder)) return "等待完成外部节点";
+  if (workOrder.status === "interrupted") {
+    if (
+      workOrder.currentSummary.includes("最长运行时间") ||
+      workOrder.currentSummary.includes("本轮上限")
+    ) {
+      return "已达到本轮上限，等待继续";
+    }
+    if (
+      workOrder.runStatus === "failed" &&
+      workOrder.result?.verifications.some(
+        (verification) => verification.status === "failed",
+      )
+    ) {
+      return "验证失败，等待处理后继续";
+    }
+    if (
+      workOrder.result?.verifications.some(
+        (verification) => verification.status === "not_configured",
+      )
+    ) {
+      return "等待确认当前节点结果";
+    }
+    return "需要响应后继续";
+  }
+  if (workOrder.status !== "ready" || !workOrder.plan) return "等待确认计划";
   if (!workOrder.workspace) return "等待选择工作空间";
   if (!hasRunnableStage(workOrder)) return "等待前置节点完成";
   if (!Number.isFinite(workOrder.maxRunMinutes) || workOrder.maxRunMinutes <= 0) {

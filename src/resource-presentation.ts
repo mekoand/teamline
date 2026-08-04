@@ -35,6 +35,7 @@ export function presentResources(
       status: workOrder.userStatus,
       priority: workOrder.resourcePlan.priority,
       pace: workOrder.resourcePlan.pace,
+      maxRunMinutes: workOrder.maxRunMinutes,
       runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
       autoRunReason: workOrder.resourcePlan.autoRunReason,
       usage: presentWorkOrderUsage(
@@ -109,7 +110,15 @@ function recommendation(
   if (workOrder.userStatus === "running") {
     return "保持观察，运行结束后再评估";
   }
-  if (workOrder.userStatus === "queued") return "等待当前运行结束";
+  if (
+    workOrder.userStatus === "queued" &&
+    workOrder.statusReason === "等待可用并发位置"
+  ) {
+    return "等待当前运行结束";
+  }
+  if (workOrder.statusReason === "等待选择工作空间") {
+    return "先选择工作空间，再安排运行";
+  }
   if (workOrder.userStatus === "response") {
     return "先处理这个目标需要的响应";
   }

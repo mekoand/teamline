@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp } from "../src/app";
+import { presentConsoleWorkOrders } from "../src/console-presentation";
 import type { CodexRunEvent, CodexRunner } from "../src/codex-runner";
 import type { CodexResourceSignal, ResourceProvider } from "../src/resource-provider";
 import { decideAutoRun } from "../src/resource-scheduler";
@@ -125,6 +126,191 @@ describe("work-order resource scheduling", () => {
     });
   });
 
+  test("saves target resource settings together without a partial update", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = ready(store, "保存目标资源设置");
+    const app = createApp({ store });
+
+    const saved = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/resource-settings`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          priority: "high",
+          pace: "saving",
+          runWhenQuotaAvailable: true,
+          maxRunMinutes: 120,
+        }),
+      }),
+    );
+    expect(saved.status).toBe(200);
+    expect(store.get(workOrder.id)).toMatchObject({
+      maxRunMinutes: 120,
+      resourcePlan: {
+        priority: "high",
+        pace: "saving",
+        runWhenQuotaAvailable: true,
+      },
+    });
+
+    const rejected = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/resource-settings`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          priority: "background",
+          pace: "fast",
+          runWhenQuotaAvailable: false,
+          maxRunMinutes: 15,
+        }),
+      }),
+    );
+    expect(rejected.status).toBe(400);
+    expect(store.get(workOrder.id)).toMatchObject({
+      maxRunMinutes: 120,
+      resourcePlan: {
+        priority: "high",
+        pace: "saving",
+        runWhenQuotaAvailable: true,
+      },
+    });
+  });
+
+  test("rechecks auto-run authorization after slow workspace preparation", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = enable(store, ready(store, "准备期间关闭自动运行").id);
+    let releasePreparation!: () => void;
+    let preparationStarted!: () => void;
+    const startedPreparing = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    const preparationReleased = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const starts: string[] = [];
+    const app = createApp({
+      store,
+      resourceProvider: availableResourceProvider(),
+      codexRunner: {
+        async start({ workOrder: started }) {
+          starts.push(started.id);
+          return {
+            interrupt() {},
+            events: (async function* (): AsyncGenerator<CodexRunEvent> {
+              await new Promise(() => {});
+            })(),
+          };
+        },
+        async resume() {
+          throw new Error("not used");
+        },
+      },
+      worktreeManager: {
+        async prepare(started) {
+          preparationStarted();
+          await preparationReleased;
+          return {
+            path: `/tmp/teamline-${started.id}`,
+            branch: `teamline/${started.id}`,
+            baseCommit: "0123456789abcdef",
+          };
+        },
+      },
+    });
+
+    const automaticStart = app.fetch(
+      new Request("http://teamline.local/api/resources/run-once", { method: "POST" }),
+    );
+    await startedPreparing;
+    const disabled = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/resource-settings`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          priority: "normal",
+          pace: "balanced",
+          runWhenQuotaAvailable: false,
+          maxRunMinutes: 60,
+        }),
+      }),
+    );
+    expect(disabled.status).toBe(200);
+    releasePreparation();
+    const result = await automaticStart.then((response) => response.json());
+
+    expect(result.startedWorkOrderId).toBeNull();
+    expect(starts).toEqual([]);
+    expect(store.get(workOrder.id)).toMatchObject({
+      status: "ready",
+      runStatus: null,
+      resourcePlan: { runWhenQuotaAvailable: false, autoRunReason: null },
+    });
+  });
+
+  test("does not clear a new plan confirmation while auto-run is preparing", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = enable(store, ready(store, "准备期间更新计划").id);
+    let releasePreparation!: () => void;
+    let preparationStarted!: () => void;
+    const startedPreparing = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    const preparationReleased = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const starts: string[] = [];
+    const app = createApp({
+      store,
+      resourceProvider: availableResourceProvider(),
+      codexRunner: {
+        async start({ workOrder: started }) {
+          starts.push(started.id);
+          return {
+            interrupt() {},
+            events: (async function* (): AsyncGenerator<CodexRunEvent> {
+              await new Promise(() => {});
+            })(),
+          };
+        },
+        async resume() {
+          throw new Error("not used");
+        },
+      },
+      worktreeManager: {
+        async prepare(started) {
+          preparationStarted();
+          await preparationReleased;
+          return {
+            path: `/tmp/teamline-${started.id}`,
+            branch: `teamline/${started.id}`,
+            baseCommit: "0123456789abcdef",
+          };
+        },
+      },
+    });
+
+    const automaticStart = app.fetch(
+      new Request("http://teamline.local/api/resources/run-once", { method: "POST" }),
+    );
+    await startedPreparing;
+    store.savePlan(
+      workOrder.id,
+      [{ outcome: "执行更新后的计划", scope: "src", verification: "运行测试" }],
+      { confirmationRequired: true },
+    );
+    releasePreparation();
+    const result = await automaticStart.then((response) => response.json());
+
+    expect(result.startedWorkOrderId).toBeNull();
+    expect(starts).toEqual([]);
+    expect(store.get(workOrder.id)).toMatchObject({
+      status: "ready",
+      runStatus: null,
+      plan: { version: 2, confirmationRequired: true },
+      resourcePlan: { autoRunReason: "计划有变更，等待确认" },
+    });
+  });
+
   test("keeps enabled work queued with a clear reason when a required condition is missing", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const draft = enable(store, store.create({ goal: "等待计划" }).id);
@@ -173,6 +359,86 @@ describe("work-order resource scheduling", () => {
     store.markStarted(active.id);
     decision = decideAutoRun(store.list(), availableQuota(), 1);
     expect(decision.reasons.get(noWorkspace.id)).toBe("等待可用并发位置");
+  });
+
+  test("stops automatic running at every response and acceptance boundary", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+
+    const changedPlan = store.create({ goal: "确认新计划" });
+    store.savePlan(
+      changedPlan.id,
+      [{ outcome: "执行新计划", scope: "src", verification: "检查" }],
+      { confirmationRequired: true },
+    );
+    enable(store, changedPlan.id);
+
+    const external = store.create({ goal: "等待外部节点" });
+    store.savePlan(external.id, [{
+      outcome: "完成外部设计",
+      scope: "设计工具",
+      verification: "用户确认",
+      executionMethod: "external",
+    }]);
+    enable(store, external.id);
+
+    const failed = enable(store, ready(store, "处理验证失败").id);
+    store.markStarted(failed.id);
+    const failedVerifying = store.beginResultProcessing(failed.id, "Codex 已结束");
+    store.recordVerificationFailure(failed.id, {
+      planVersion: failedVerifying.plan!.version,
+      git: { diffStat: "", statusShort: "" },
+      verifications: [{
+        stageId: failedVerifying.plan!.stages[0]!.id,
+        stageOutcome: failedVerifying.plan!.stages[0]!.outcome,
+        command: "bun test",
+        status: "failed",
+        exitCode: 1,
+        output: "failed",
+      }],
+      completedAt: new Date().toISOString(),
+    });
+
+    const review = enable(store, ready(store, "等待整体验收").id);
+    store.markStarted(review.id);
+    const reviewVerifying = store.beginResultProcessing(review.id, "Codex 已结束");
+    store.completeReview(review.id, {
+      planVersion: reviewVerifying.plan!.version,
+      git: { diffStat: "", statusShort: "" },
+      verifications: [{
+        stageId: reviewVerifying.plan!.stages[0]!.id,
+        stageOutcome: reviewVerifying.plan!.stages[0]!.outcome,
+        command: "bun test",
+        status: "passed",
+        exitCode: 0,
+        output: "passed",
+      }],
+      completedAt: new Date().toISOString(),
+    });
+
+    const limited = enable(store, ready(store, "达到单轮上限").id);
+    store.markStarted(limited.id);
+    store.recordInterrupted(
+      limited.id,
+      "已达到本轮最长运行时间（60 分钟），Codex 已停止；可以继续推进目标",
+    );
+
+    const decision = decideAutoRun(store.list(), availableQuota(), 2);
+    expect(decision.candidateId).toBeNull();
+    expect(decision.reasons.get(changedPlan.id)).toBe("计划有变更，等待确认");
+    expect(decision.reasons.get(external.id)).toBe("等待完成外部节点");
+    expect(decision.reasons.get(failed.id)).toBe("验证失败，等待处理后继续");
+    expect(decision.reasons.get(review.id)).toBe("等待验收");
+    expect(decision.reasons.get(limited.id)).toBe("已达到本轮上限，等待继续");
+
+    const presented = new Map(
+      presentConsoleWorkOrders(store.list()).map((workOrder) => [
+        workOrder.id,
+        workOrder.statusReason,
+      ]),
+    );
+    expect(presented.get(external.id)).toBe("待完成外部节点：完成外部设计");
+    expect(presented.get(failed.id)).toBe("自动验证未通过");
+    expect(presented.get(limited.id)).toBe("已达到本轮上限");
   });
 
   test("one check starts only the highest-priority work order and rechecks after that round", async () => {

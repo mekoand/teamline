@@ -80,8 +80,6 @@ function bindShellEvents() {
     applyTheme(state.theme);
   });
 
-  document.querySelector("#max-concurrency").addEventListener("change", saveMaxConcurrency);
-
   document.querySelector("#open-notifications").addEventListener("click", () => {
     renderNotificationShell();
     notificationDialog.showModal();
@@ -325,9 +323,6 @@ async function refreshConsole({
     state.notificationSettings = notificationState.settings;
     renderNotificationShell();
     void showPendingNativeNotifications();
-    document.querySelector("#max-concurrency").value = String(
-      executionSettings.maxConcurrency,
-    );
     void refreshResources({ checkAutoRun });
     state.autoRunCheckRequested = false;
     if (isProjectsView()) {
@@ -952,22 +947,17 @@ function renderResourceSummary() {
     });
     return;
   }
-  const { codex, runningCount } = state.resources;
+  const { codex } = state.resources;
   if (codex.status !== "available") {
     resourceSummaryElement.innerHTML = `
       <button type="button" data-open-resource-summary>
-        <strong>Codex ${resourceStatusLabel(codex.status)}</strong><span>${runningCount} 项运行中</span>
+        <span>Codex 额度</span><strong>${resourceStatusLabel(codex.status)}</strong>
       </button>`;
   } else {
-    const nextReset = [codex.shortWindow, codex.longWindow]
-      .filter(Boolean)
-      .sort((left, right) => Date.parse(left.resetsAt) - Date.parse(right.resetsAt))[0];
     resourceSummaryElement.innerHTML = `
       <button type="button" data-open-resource-summary>
-        <span>短周期 <strong>${formatRemaining(codex.shortWindow)}</strong></span>
-        <span>长期 <strong>${formatRemaining(codex.longWindow)}</strong></span>
-        <span>${nextReset ? `最近${formatReset(nextReset.resetsAt)}` : "重置时间不可用"}</span>
-        <span>${runningCount} 项运行中</span>
+        <span>Codex 额度</span>
+        <strong>短 ${formatRemaining(codex.shortWindow)} · 长 ${formatRemaining(codex.longWindow)}</strong>
       </button>`;
   }
   resourceSummaryElement.querySelector("button")?.addEventListener("click", () => {
@@ -991,6 +981,13 @@ function renderResourceWorkspace() {
       <section class="resource-overview">
         ${renderCodexResourceCard(resources.codex, resources.runningCount)}
         ${renderApiResourceCard(resources.openaiApi)}
+      </section>
+      <section class="resource-runtime-panel">
+        <div><p class="overline">运行设置</p><h2>本机并发</h2></div>
+        <label class="resource-concurrency-control" title="同时运行的目标上限">
+          <span>最大并发目标数</span>
+          <input id="max-concurrency" type="number" min="1" step="1" value="${state.executionSettings.maxConcurrency}" inputmode="numeric" aria-label="本机最大并发数" />
+        </label>
       </section>
       <section class="resource-orders-panel">
         <div class="section-heading compact">
@@ -1034,6 +1031,7 @@ function renderApiResourceCard(api) {
 }
 
 function renderResourceOrder(workOrder) {
+  const locked = workOrder.importOnly || workOrder.status === "completed";
   const usage = workOrder.usage.status === "available"
     ? formatUsage(workOrder.usage)
     : escapeHtml(workOrder.usage.message || "不可用");
@@ -1041,21 +1039,22 @@ function renderResourceOrder(workOrder) {
     <article class="resource-order-row">
       <div class="resource-order-title"><span class="status-dot ${workOrder.status}"></span><div><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></div></div>
       <dl>
-        ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}">${resourceOptions([
+        ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
           ["high", "优先推进"],
           ["normal", "正常推进"],
           ["background", "后台推进"],
         ], workOrder.priority)}</select></dd></div>
-        <div><dt>执行节奏</dt><dd><select data-resource-pace data-work-order-id="${escapeHtml(workOrder.id)}">${resourceOptions([
+        <div><dt>执行节奏</dt><dd><select data-resource-pace data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
           ["fast", "尽快完成"],
           ["balanced", "均匀推进"],
           ["saving", "节省额度"],
-        ], workOrder.pace)}</select></dd></div>`}
+        ], workOrder.pace)}</select></dd></div>
+        <div><dt>单轮上限</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>`}
         <div><dt>当前用量</dt><dd>${usage}</dd></div>
         <div><dt>运行建议</dt><dd>${escapeHtml(workOrder.recommendation)}</dd></div>
       </dl>
-      ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : `<label class="auto-run-toggle">
-        <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} />
+      ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : workOrder.status === "completed" ? '<p class="source-import-only">已完成目标保留当时的资源设置。</p>' : `<label class="auto-run-toggle">
+        <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} ${locked ? "disabled" : ""} />
         <span><strong>额度充足时运行</strong><small>${escapeHtml(workOrder.autoRunReason || "每次只开始一轮，并受本轮时长限制")}</small></span>
       </label>`}
     </article>`;
@@ -1068,6 +1067,7 @@ function resourceOptions(options, selected) {
 }
 
 function bindResourceEvents() {
+  document.querySelector("#max-concurrency")?.addEventListener("change", saveMaxConcurrency);
   document.querySelectorAll("[data-resource-priority], [data-resource-pace], [data-resource-auto-run]")
     .forEach((control) => control.addEventListener("change", () => saveResourcePlan(control.dataset.workOrderId)));
 }
@@ -1733,11 +1733,60 @@ function renderContext(workOrder) {
       ${stage ? renderContextTabContent(workOrder, stage) : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
       ${workOrder.importContext ? renderImportedSessionContext(workOrder) : ""}
       ${renderGoalProjectContext(workOrder)}
+      ${renderGoalResourceSettings(workOrder)}
       ${renderContextAction(workOrder)}
       ${renderContextSupport(workOrder)}
       <p class="inline-feedback" id="execution-feedback" role="status"></p>
       <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
+}
+
+function renderGoalResourceSettings(workOrder) {
+  if (isImportOnlyGoal(workOrder)) return "";
+  const resourceEditable = workOrder.status !== "delivered";
+  const runLimitEditable = workOrder.status === "ready" && workOrder.runStatus === null;
+  const plan = workOrder.resourcePlan;
+  const summary = `${resourcePriorityLabel(plan.priority)} · ${resourcePaceLabel(plan.pace)}`;
+  const autoRunCopy = plan.runWhenQuotaAvailable
+    ? plan.autoRunReason || "额度满足时自动开始下一轮"
+    : "当前不会自动运行";
+  return `
+    <details class="context-disclosure goal-resource-settings">
+      <summary>资源设置 · ${escapeHtml(summary)}</summary>
+      <form id="goal-resource-form">
+        <label><span>优先级</span><select name="priority" ${resourceEditable ? "" : "disabled"}>${resourceOptions([
+          ["high", "优先推进"],
+          ["normal", "正常推进"],
+          ["background", "后台推进"],
+        ], plan.priority)}</select></label>
+        <label><span>推进方式</span><select name="pace" ${resourceEditable ? "" : "disabled"}>${resourceOptions([
+          ["fast", "尽快完成"],
+          ["balanced", "均匀推进"],
+          ["saving", "节省额度"],
+        ], plan.pace)}</select></label>
+        <label><span>单轮最长运行</span><select name="maxRunMinutes" ${runLimitEditable ? "" : "disabled"}>
+          ${[30, 60, 120, 240]
+            .map((minutes) => `<option value="${minutes}" ${workOrder.maxRunMinutes === minutes ? "selected" : ""}>${formatRunLimit(minutes)}</option>`)
+            .join("")}
+        </select></label>
+        <label class="auto-run-toggle compact">
+          <input type="checkbox" name="runWhenQuotaAvailable" ${plan.runWhenQuotaAvailable ? "checked" : ""} ${resourceEditable ? "" : "disabled"} />
+          <span><strong>额度充足时运行</strong><small>${escapeHtml(autoRunCopy)}</small></span>
+        </label>
+        ${runLimitEditable ? "" : '<p class="muted">单轮上限只能在待运行时修改。</p>'}
+        ${resourceEditable
+          ? '<button class="secondary-button full-button" type="submit">保存资源设置</button>'
+          : '<p class="muted">已完成目标保留当时的资源设置。</p>'}
+      </form>
+    </details>`;
+}
+
+function resourcePriorityLabel(priority) {
+  return { high: "优先推进", normal: "正常推进", background: "后台推进" }[priority] || "正常推进";
+}
+
+function resourcePaceLabel(pace) {
+  return { fast: "尽快完成", balanced: "均匀推进", saving: "节省额度" }[pace] || "均匀推进";
 }
 
 function renderImportedSessionContext(workOrder) {
@@ -2056,27 +2105,23 @@ function renderContextAction(workOrder) {
     return `<section class="context-action"><p class="overline">下一步</p><strong>先完成外部节点</strong><p>请先处理“${escapeHtml(waitingExternalStage.outcome)}”，登记结果后再启动 Codex。</p></section>`;
   }
   if (workOrder.status === "ready" && !workOrder.runStatus) {
-    const queued = visibleStatus(workOrder, state.workOrders).status === "queued";
+    const presentation = visibleStatus(workOrder, state.workOrders);
+    const capacityBlocked =
+      presentation.status === "queued" &&
+      presentation.reason === "等待可用并发位置";
     const suggestedPath = workOrder.materials?.find(
       (material) => material.kind === "folder" || material.kind === "repository",
     )?.value ?? "";
     return `
       <section class="context-action">
         <p class="overline">下一步</p>
-        <label><span>本轮最长运行时间</span>
-          <select id="max-run-minutes">
-            ${[30, 60, 120, 240]
-              .map((minutes) => `<option value="${minutes}" ${workOrder.maxRunMinutes === minutes ? "selected" : ""}>${formatRunLimit(minutes)}</option>`)
-              .join("")}
-          </select>
-        </label>
         ${workOrder.workspace
           ? `<p class="workspace-choice"><strong>${workOrder.workspace.kind === "git" ? "Git 仓库" : "普通文件夹"}</strong><code>${escapeHtml(shortPath(workOrder.workspace.path))}</code></p>
-             <button class="primary-button full-button" id="start-work-order" type="button" ${queued ? "disabled" : ""}>${queued ? "等待当前目标结束" : "确认计划并启动"}</button>`
+             <button class="primary-button full-button" id="start-work-order" type="button" ${capacityBlocked ? "disabled" : ""}>${capacityBlocked ? "等待可用并发位置" : "确认计划并启动"}</button>`
           : `<form id="workspace-form">
                <label><span>执行前选择本地文件夹</span><input name="workspacePath" value="${escapeHtml(suggestedPath)}" placeholder="/Users/you/Projects/workspace" autocomplete="off" required /></label>
                <p>Git 仓库会使用独立执行工作区；普通文件夹会直接使用，不提供 Git 隔离、版本记录或回滚。</p>
-               <button class="primary-button full-button" id="select-workspace-and-start" type="submit" ${queued ? "disabled" : ""}>${queued ? "等待当前目标结束" : "选择文件夹并启动"}</button>
+               <button class="primary-button full-button" id="select-workspace-and-start" type="submit" ${capacityBlocked ? "disabled" : ""}>${capacityBlocked ? "等待可用并发位置" : "选择文件夹并启动"}</button>
              </form>`}
       </section>`;
   }
@@ -2311,19 +2356,29 @@ function bindRenderedEvents() {
     });
   });
 
-  document.querySelector("#max-run-minutes")?.addEventListener("change", async (event) => {
-    const select = event.currentTarget;
-    select.disabled = true;
+  document.querySelector("#goal-resource-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = event.submitter;
+    const data = new FormData(form);
+    setBusy(button, "正在保存…");
     try {
-      const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/execution-settings`, {
+      const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/resource-settings`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ maxRunMinutes: Number(select.value) }),
+        body: JSON.stringify({
+          priority: data.get("priority"),
+          pace: data.get("pace"),
+          runWhenQuotaAvailable: data.get("runWhenQuotaAvailable") === "on",
+          ...(data.has("maxRunMinutes")
+            ? { maxRunMinutes: Number(data.get("maxRunMinutes")) }
+            : {}),
+        }),
       });
-      await acceptWorkOrderResult(result.workOrder);
+      await acceptWorkOrderResult(result.workOrder, "资源设置已保存。");
     } catch (error) {
-      select.disabled = false;
-      setFeedback("execution-feedback", messageFrom(error, "无法保存最长运行时间。"), true);
+      resetBusy(button, "保存资源设置");
+      setFeedback("execution-feedback", messageFrom(error, "无法保存资源设置。"), true);
     }
   });
 

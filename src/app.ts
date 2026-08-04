@@ -437,8 +437,11 @@ export function createApp({
       );
       if (!response.ok) {
         const result = (await response.json()) as { error?: string };
-        const reason = result.error || "自动启动失败，等待重试";
-        store.saveAutoRunReason(decision.candidateId, reason);
+        const currentReason = store.get(decision.candidateId)?.resourcePlan.autoRunReason;
+        const reason = currentReason || result.error || "自动启动失败，等待重试";
+        if (!currentReason) {
+          store.saveAutoRunReason(decision.candidateId, reason);
+        }
         return { startedWorkOrderId: null, reason };
       }
       return { startedWorkOrderId: decision.candidateId, reason: null };
@@ -1129,6 +1132,50 @@ export function createApp({
                 { status: 500 },
               );
             }
+          }
+
+          let finalAutoRunDecision: ReturnType<typeof decideAutoRun> | null = null;
+          if (autoRunRequested) {
+            const snapshot = await readResourceSnapshot();
+            finalAutoRunDecision = decideAutoRun(
+              store.list().filter((candidate) => !isImportOnlyWorkOrder(candidate)),
+              snapshot.codex,
+              store.getExecutionSettings().maxConcurrency,
+            );
+            for (const [candidateId, reason] of finalAutoRunDecision.reasons) {
+              store.saveAutoRunReason(candidateId, reason);
+            }
+          }
+          const latest = store.get(id);
+          const otherReservations = new Set([
+            ...store.activeRunIds().filter((candidateId) => candidateId !== id),
+            ...[...startingWorkOrderIds].filter((candidateId) => candidateId !== id),
+          ]);
+          const finalRunnableStages = latest ? nextRunnableStages(latest) : [];
+          const startConditionsChanged =
+            !latest ||
+            latest.status !== "ready" ||
+            latest.runStatus !== null ||
+            !latest.plan ||
+            latest.plan.confirmationRequired === true ||
+            latest.plan.version !== workOrder.plan.version ||
+            !latest.workspace ||
+            latest.workspace.kind !== workOrder.workspace.kind ||
+            latest.workspace.path !== workOrder.workspace.path ||
+            finalRunnableStages.some((stage) => stage.executionMethod === "external") ||
+            !finalRunnableStages.some((stage) => stage.executionMethod === "codex") ||
+            otherReservations.size >= store.getExecutionSettings().maxConcurrency ||
+            (autoRunRequested && finalAutoRunDecision?.candidateId !== id);
+          if (startConditionsChanged) {
+            return Response.json(
+              {
+                code: "EXECUTION_CONDITIONS_CHANGED",
+                error: autoRunRequested
+                  ? "自动运行条件已变化，已停止本次启动"
+                  : "执行条件已变化，请确认后重新启动",
+              },
+              { status: 409 },
+            );
           }
 
           if (workspaceOwner(id, workspacePath!)) {
@@ -1997,6 +2044,61 @@ export function createApp({
       const resourcePlanMatch = url.pathname.match(
         /^\/api\/work-orders\/([^/]+)\/resource-plan$/,
       );
+      const resourceSettingsMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/resource-settings$/,
+      );
+      if (request.method === "PUT" && resourceSettingsMatch) {
+        const id = decodeURIComponent(resourceSettingsMatch[1]);
+        const existingWorkOrder = store.get(id);
+        if (!existingWorkOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
+            { status: 404 },
+          );
+        }
+        if (isImportOnlyWorkOrder(existingWorkOrder)) {
+          return importOnlyResponse();
+        }
+        if (planningWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_PLANNING_IN_PROGRESS", error: "正在整理计划，请稍候" },
+            { status: 409 },
+          );
+        }
+        try {
+          const body = (await request.json()) as {
+            priority?: WorkOrder["resourcePlan"]["priority"];
+            pace?: WorkOrder["resourcePlan"]["pace"];
+            runWhenQuotaAvailable?: boolean;
+            maxRunMinutes?: number;
+          };
+          if (
+            body.priority === undefined ||
+            body.pace === undefined ||
+            body.runWhenQuotaAvailable === undefined
+          ) {
+            throw new Error("请完整填写目标资源设置");
+          }
+          const workOrder = store.saveTargetResourceSettings(id, {
+            priority: body.priority,
+            pace: body.pace,
+            runWhenQuotaAvailable: body.runWhenQuotaAvailable,
+            ...(body.maxRunMinutes === undefined
+              ? {}
+              : { maxRunMinutes: body.maxRunMinutes }),
+          });
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_RESOURCE_SETTINGS",
+              error: error instanceof Error ? error.message : "无法保存资源设置",
+            },
+            { status: error instanceof PlanLockedError ? 409 : 400 },
+          );
+        }
+      }
       if (request.method === "PUT" && resourcePlanMatch) {
         const id = decodeURIComponent(resourcePlanMatch[1]);
         const existingWorkOrder = store.get(id);
@@ -2041,7 +2143,7 @@ export function createApp({
               code: "INVALID_RESOURCE_PLAN",
               error: error instanceof Error ? error.message : "无法保存资源安排",
             },
-            { status: 400 },
+            { status: error instanceof PlanLockedError ? 409 : 400 },
           );
         }
       }

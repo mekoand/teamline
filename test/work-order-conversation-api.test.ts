@@ -595,6 +595,6 @@ describe("work-order clarification and conversation", () => {
       observedAt,
     );
     expect(autoRun.candidateId).toBeNull();
-    expect(autoRun.reasons.get(created.id)).toBe("计划等待确认");
+    expect(autoRun.reasons.get(created.id)).toBe("计划有变更，等待确认");
   });
 });

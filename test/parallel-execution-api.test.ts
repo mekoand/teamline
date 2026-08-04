@@ -176,7 +176,7 @@ describe("parallel work order execution", () => {
       const availableWorkOrders = (await available.json()).workOrders;
       expect(
         availableWorkOrders.find((workOrder: { id: string }) => workOrder.id === ready.id),
-      ).toMatchObject({ userStatus: "planning", statusReason: "待确认计划" });
+      ).toMatchObject({ userStatus: "queued", statusReason: "可以开始运行" });
 
       const third = readyWorkOrder(store, "运行三");
       store.markStarted(third.id);
