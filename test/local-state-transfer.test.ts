@@ -92,6 +92,7 @@ describe("local Teamline state transfer", () => {
         kind: "codex_session" as const,
         id: "source-session-a",
         lastActiveAt: "2026-08-01T00:00:00.000Z",
+        lastReadAt: "2026-08-03T00:00:00.000Z",
         version: 1 as const,
       },
       {
@@ -106,6 +107,26 @@ describe("local Teamline state transfer", () => {
       description: "导出并恢复新的领域字段",
       projectId: project.id,
       sourceSessions,
+      importContext: {
+        status: "ready",
+        summary: "两个来源已整理",
+        currentState: "等待后续计划",
+        historicalStages: [{
+          id: "history",
+          outcome: "完成历史工作",
+          summary: "历史结果已确认",
+          status: "completed",
+          sourceSessionIds: ["source-session-a", "source-session-b"],
+        }],
+        artifacts: [{
+          id: "historical-result",
+          type: "file",
+          label: "历史成果",
+          location: "/tmp/history.md",
+        }],
+        organizedAt: "2026-08-03T00:00:00.000Z",
+        error: null,
+      },
     });
     sourceStore.database
       .query("UPDATE work_orders SET session_id = ? WHERE id = ?")
@@ -113,6 +134,18 @@ describe("local Teamline state transfer", () => {
 
     const sourceApp = createApp({ store: sourceStore });
     const bundle = await (await sourceApp.fetch(request("/api/local-state/export"))).json();
+    const danglingHistoryBundle = structuredClone(bundle);
+    danglingHistoryBundle.workOrders[0].importContext.historicalStages[0].sourceSessionIds = [
+      "not-owned-by-this-goal",
+    ];
+    const danglingHistoryResponse = await createApp({
+      store: new WorkOrderStore(new Database(":memory:")),
+    }).fetch(request("/api/local-state/restore/preview", { bundle: danglingHistoryBundle }));
+    expect(danglingHistoryResponse.status).toBe(400);
+    expect(await danglingHistoryResponse.json()).toMatchObject({
+      code: "INVALID_STATE_BUNDLE",
+      error: expect.stringContaining("来源会话"),
+    });
     expect(bundle).toMatchObject({
       version: 3,
       projectMaterials: [],
@@ -124,6 +157,16 @@ describe("local Teamline state transfer", () => {
           description: "导出并恢复新的领域字段",
           projectId: project.id,
           sourceSessions,
+          importContext: {
+            status: "ready",
+            summary: "两个来源已整理",
+            artifacts: [{
+              id: "historical-result",
+              type: "file",
+              label: "历史成果",
+              location: "/tmp/history.md",
+            }],
+          },
           currentSessionId: "current-execution-session",
         },
       ],
@@ -149,6 +192,16 @@ describe("local Teamline state transfer", () => {
       description: "从 V2 说明恢复",
       projectId: project.id,
       sourceSessions,
+      importContext: {
+        status: "ready",
+        summary: "两个来源已整理",
+        artifacts: [{
+          id: "historical-result",
+          type: "file",
+          label: "历史成果",
+          location: "/tmp/history.md",
+        }],
+      },
       currentSessionId: "current-execution-session",
       title: "从 V2 名称恢复",
       goal: "从 V2 说明恢复",
@@ -170,6 +223,7 @@ describe("local Teamline state transfer", () => {
     delete bundle.workOrders[0].projectId;
     delete bundle.workOrders[0].projectMaterialSelectionConfirmed;
     delete bundle.workOrders[0].sourceSessions;
+    delete bundle.workOrders[0].importContext;
     delete bundle.workOrders[0].currentSessionId;
 
     const targetStore = new WorkOrderStore(new Database(":memory:"));
@@ -191,6 +245,7 @@ describe("local Teamline state transfer", () => {
       projectId: null,
       sourceSessions: [bundle.workOrders[0].sessionReferences.imported],
       currentSessionId: bundle.workOrders[0].sessionReferences.active,
+      importContext: null,
     });
   });
 
@@ -215,6 +270,7 @@ describe("local Teamline state transfer", () => {
       delete workOrder.projectId;
       delete workOrder.projectMaterialSelectionConfirmed;
       delete workOrder.sourceSessions;
+      delete workOrder.importContext;
       delete workOrder.currentSessionId;
     }
 

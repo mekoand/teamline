@@ -54,7 +54,31 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
 
     const database = new Database(":memory:");
     cleanup.push(() => database.close());
-    const workOrder = new WorkOrderStore(database).create({ goal: "生成一份计划" });
+    const workOrder = new WorkOrderStore(database).create({
+      goal: "生成一份计划",
+      sourceSessions: [{
+        kind: "codex_session",
+        id: "source-session",
+        lastActiveAt: "2026-08-04T01:00:00.000Z",
+        lastReadAt: "2026-08-04T02:00:00.000Z",
+        version: 1,
+      }],
+      importContext: {
+        status: "ready",
+        summary: "历史工作已经完成需求确认",
+        currentState: "等待形成后续执行计划",
+        historicalStages: [{
+          id: "requirements",
+          outcome: "确认需求",
+          summary: "需求范围已经确定",
+          status: "completed",
+          sourceSessionIds: ["source-session"],
+        }],
+        artifacts: [],
+        organizedAt: "2026-08-04T02:00:00.000Z",
+        error: null,
+      },
+    });
 
     const result = await new CodexPlanGenerator(executablePath).generate(workOrder);
     const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
@@ -62,5 +86,8 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     expect(result.stages).toHaveLength(1);
     expect(argumentsUsed).toContain("--skip-git-repo-check");
     expect(argumentsUsed[argumentsUsed.indexOf("--cd") + 1]).toContain("teamline-plan-");
+    expect(argumentsUsed.at(-1)).toContain("历史工作已经完成需求确认");
+    expect(argumentsUsed.at(-1)).toContain("等待形成后续执行计划");
+    expect(argumentsUsed.at(-1)).not.toContain(".jsonl");
   });
 });

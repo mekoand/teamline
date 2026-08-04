@@ -171,11 +171,15 @@
         <div class="dialog-heading">
           <div>
             <p class="overline">导入会话</p>
-            <h2>选择 Codex 会话</h2>
+            <h2>导入为一个目标</h2>
           </div>
           <button type="button" class="icon-button" id="close-session-import" aria-label="关闭">×</button>
         </div>
-        <p class="dialog-description">只读取标题、文件夹和活动时间。导入后创建待确认的目标，不会启动原会话。</p>
+        <p class="dialog-description">选择服务于同一结果的会话。确认后会读取完整内容并整理历史，不会继续运行原会话。</p>
+        <div class="session-import-settings">
+          <label><span>目标名称</span><input id="session-import-name" name="name" autocomplete="off" required placeholder="例如：发布 Personal Beta" /></label>
+          <label><span>所属项目 <em>可选</em></span><select id="session-import-project" name="projectId"><option value="">暂不归入项目</option></select></label>
+        </div>
         <label class="session-search">
           <span>搜索会话</span>
           <input id="session-search" type="search" placeholder="标题或文件夹" autocomplete="off" />
@@ -187,7 +191,7 @@
         <p class="form-error" id="session-import-error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" class="secondary-button" id="cancel-session-import">取消</button>
-          <button type="submit" class="primary-button" id="submit-session-import">导入所选会话</button>
+          <button type="submit" class="primary-button" id="submit-session-import">导入目标</button>
         </div>
       </form>
     </dialog>

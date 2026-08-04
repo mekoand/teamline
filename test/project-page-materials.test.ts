@@ -414,6 +414,7 @@ describe("project page and project materials", () => {
         version: 2,
         workOrders: bundle.workOrders.map(({
           projectMaterialSelectionConfirmed: _projectMaterialSelectionConfirmed,
+          importContext: _importContext,
           ...workOrder
         }) => ({
           ...workOrder,

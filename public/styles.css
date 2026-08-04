@@ -1822,6 +1822,33 @@ dialog::backdrop {
   gap: 7px;
 }
 
+.session-import-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(180px, 0.65fr);
+  gap: 10px;
+  margin: 16px 0 12px;
+}
+
+.session-import-settings label {
+  display: grid;
+  gap: 7px;
+}
+
+.session-import-settings span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-import-settings input,
+.session-import-settings select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
 .session-search span,
 .session-goal span {
   color: var(--muted);
@@ -2237,6 +2264,21 @@ dialog::backdrop {
 
   .session-import-dialog .dialog-actions {
     flex-wrap: wrap;
+  }
+
+  .session-import-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .import-history-actions,
+  .source-session-entry > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .import-history-actions button,
+  .source-session-entry button {
+    width: 100%;
   }
 
   .notification-dialog {
@@ -2785,6 +2827,107 @@ dialog::backdrop {
 
 .primary-work-surface {
   min-height: 360px;
+}
+
+.import-history-surface {
+  display: flex;
+  flex-direction: column;
+}
+
+.import-summary {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.import-summary p,
+.import-stage-card p {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.65;
+}
+
+.import-stage-list {
+  display: grid;
+  gap: 8px;
+}
+
+.import-stage-card {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-soft);
+}
+
+.import-stage-card > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.import-stage-card small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.import-history-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 20px;
+}
+
+.source-session-context {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.source-session-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.source-session-entry {
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.source-session-entry > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.source-session-entry code {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.source-session-entry > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.source-session-entry .secondary-button,
+.source-session-entry .text-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.source-update-message {
+  margin: 10px 0 0;
+  color: var(--attention);
+  font-size: 11px;
 }
 
 .primary-surface-heading {

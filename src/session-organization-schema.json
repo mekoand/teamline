@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "description": { "type": "string" },
+    "summary": { "type": "string" },
+    "currentState": { "type": "string" },
+    "historicalStages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "outcome": { "type": "string" },
+          "summary": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["completed", "in_progress", "unknown"]
+          },
+          "sourceSessionIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["id", "outcome", "summary", "status", "sourceSessionIds"]
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["repository", "folder", "file", "image", "link"]
+          },
+          "label": { "type": "string" },
+          "location": { "type": "string" }
+        },
+        "required": ["id", "type", "label", "location"]
+      }
+    }
+  },
+  "required": ["description", "summary", "currentState", "historicalStages", "artifacts"]
+}

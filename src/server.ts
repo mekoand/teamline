@@ -11,6 +11,7 @@ import { LocalWorkOrderResultProcessor } from "./result-processor";
 import { createServerResourceProvider } from "./server-resources";
 import { GitCheckpointManager } from "./checkpoint-manager";
 import { LocalCodexSessionProvider } from "./codex-session-discovery";
+import { CodexSessionOrganizer } from "./session-organizer";
 
 const projectRoot = resolve(import.meta.dir, "..");
 const dataDirectory = resolve(process.env.TEAMLINE_DATA_DIR ?? join(projectRoot, ".teamline"));
@@ -30,6 +31,7 @@ const app = createApp({
   codexSessionProvider: new LocalCodexSessionProvider(
     resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
   ),
+  sessionOrganizer: new CodexSessionOrganizer(),
   projectRoot,
   dataDirectory,
 });

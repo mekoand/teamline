@@ -26,6 +26,7 @@ import {
   type WorkOrderPriority,
   type WorkOrderResourcePlan,
   type WorkOrderImportSource,
+  type WorkOrderImportContext,
   type WorkOrderWorkspace,
   workOrderPaces,
   workOrderPriorities,
@@ -41,6 +42,7 @@ type WorkOrderRow = {
   workspace_kind: "git" | "directory" | null;
   materials_json: string | null;
   source_sessions_json: string | null;
+  import_context_json: string | null;
   import_source_json: string | null;
   resource_plan_json: string | null;
   goal: string;
@@ -207,6 +209,7 @@ export class WorkOrderStore {
     this.addResourcePlanColumnToExistingDatabase();
     this.addClarificationColumnToExistingDatabase();
     this.addV2DomainColumnsToExistingDatabase();
+    this.addImportContextColumnToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
@@ -922,9 +925,9 @@ export class WorkOrderStore {
         INSERT INTO work_orders (
           id, title, project_id, project_materials_confirmed,
           repository_path, workspace_kind, materials_json,
-          source_sessions_json, import_source_json,
+          source_sessions_json, import_source_json, import_context_json,
           goal, acceptance, status, current_summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
@@ -936,6 +939,7 @@ export class WorkOrderStore {
         JSON.stringify(workOrder.materials),
         JSON.stringify(workOrder.sourceSessions),
         workOrder.importSource ? JSON.stringify(workOrder.importSource) : null,
+        workOrder.importContext ? JSON.stringify(workOrder.importContext) : null,
         workOrder.goal,
         workOrder.acceptance,
         workOrder.status,
@@ -945,6 +949,106 @@ export class WorkOrderStore {
       );
 
     return workOrder;
+  }
+
+  applySessionOrganization(
+    id: string,
+    input: {
+      description: string;
+      summary: string;
+      currentState: string;
+      historicalStages: WorkOrderImportContext["historicalStages"];
+      artifacts: PlanReference[];
+    },
+    observedSources: WorkOrderImportSource[],
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
+      throw new Error("这个目标没有可整理的来源会话");
+    }
+    const expectedIds = workOrder.sourceSessions.map((source) => source.id).sort();
+    const observedIds = observedSources.map((source) => source.id).sort();
+    if (JSON.stringify(expectedIds) !== JSON.stringify(observedIds)) {
+      throw new Error("来源会话已经变化，请刷新后重试");
+    }
+    const description = input.description.trim();
+    const summary = input.summary.trim();
+    const currentState = input.currentState.trim();
+    if (!description || !summary || !currentState) {
+      throw new Error("Codex 返回的会话整理结果不完整");
+    }
+    const historicalStages = normalizeImportedHistoricalStages(
+      input.historicalStages,
+      new Set(expectedIds),
+    );
+    const artifacts = normalizeReferences(input.artifacts);
+    const now = new Date().toISOString();
+    const sources = observedSources.map((source) => ({
+      ...source,
+      lastActiveAt: new Date(source.lastActiveAt).toISOString(),
+      lastReadAt: now,
+    }));
+    const importContext: WorkOrderImportContext = {
+      status: "ready",
+      summary,
+      currentState,
+      historicalStages,
+      artifacts,
+      organizedAt: now,
+      error: null,
+    };
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET goal = ?, source_sessions_json = ?, import_source_json = ?,
+            import_context_json = ?, current_summary = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        description,
+        JSON.stringify(sources),
+        JSON.stringify(sources[0] ?? null),
+        JSON.stringify(importContext),
+        currentState,
+        now,
+        id,
+      );
+    return this.get(id)!;
+  }
+
+  markSessionOrganizationFailed(id: string, message: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
+      throw new Error("这个目标没有可整理的来源会话");
+    }
+    const error = message.trim() || "Codex 暂时无法整理会话";
+    const importContext: WorkOrderImportContext = workOrder.importContext.status === "ready"
+      ? { ...workOrder.importContext, error }
+      : {
+          status: "failed",
+          summary: null,
+          currentState: null,
+          historicalStages: [],
+          artifacts: [],
+          organizedAt: null,
+          error,
+        };
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET import_context_json = ?, current_summary = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        JSON.stringify(importContext),
+        workOrder.importContext.status === "ready"
+          ? workOrder.currentSummary
+          : "来源会话尚未整理",
+        now,
+        id,
+      );
+    return this.get(id)!;
   }
 
   getProject(id: string): Project | null {
@@ -2283,6 +2387,18 @@ export class WorkOrderStore {
     })();
   }
 
+  private addImportContextColumnToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("import_context_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN import_context_json TEXT");
+    }
+  }
+
   private migrateDeliveredStatus(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -2453,6 +2569,7 @@ function mapRow(
       : null,
     materials: row.materials_json ? JSON.parse(row.materials_json) : [],
     sourceSessions,
+    importContext: normalizeImportContext(row.import_context_json),
     currentSessionId: row.session_id,
     importSource: sourceSessions[0] ?? null,
     resourcePlan: normalizeResourcePlan(row.resource_plan_json),
@@ -2501,11 +2618,89 @@ function normalizeImportSource(value: string | null): WorkOrderImportSource | nu
       kind: "codex_session",
       id: stored.id.trim(),
       lastActiveAt: new Date(stored.lastActiveAt).toISOString(),
+      ...(stored.lastReadAt === null
+        ? { lastReadAt: null }
+        : typeof stored.lastReadAt === "string" && Number.isFinite(Date.parse(stored.lastReadAt))
+          ? { lastReadAt: new Date(stored.lastReadAt).toISOString() }
+          : {}),
       version: 1,
     };
   } catch {
     return null;
   }
+}
+
+function normalizeImportContext(value: string | null): WorkOrderImportContext | null {
+  if (!value) return null;
+  try {
+    const stored = JSON.parse(value) as Partial<WorkOrderImportContext>;
+    if (
+      !["pending", "ready", "failed"].includes(stored.status ?? "") ||
+      (stored.summary !== null && typeof stored.summary !== "string") ||
+      (stored.currentState !== null && typeof stored.currentState !== "string") ||
+      (stored.organizedAt !== null &&
+        (typeof stored.organizedAt !== "string" || !Number.isFinite(Date.parse(stored.organizedAt)))) ||
+      (stored.error !== null && typeof stored.error !== "string")
+    ) {
+      return null;
+    }
+    const sourceIds = new Set<string>();
+    const historicalStages = normalizeImportedHistoricalStages(
+      stored.historicalStages ?? [],
+      sourceIds,
+      true,
+    );
+    return {
+      status: stored.status!,
+      summary: stored.summary ?? null,
+      currentState: stored.currentState ?? null,
+      historicalStages,
+      artifacts: normalizeReferences(stored.artifacts ?? []),
+      organizedAt: stored.organizedAt
+        ? new Date(stored.organizedAt).toISOString()
+        : null,
+      error: stored.error ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeImportedHistoricalStages(
+  value: unknown,
+  sourceIds: Set<string>,
+  allowUnknownSources = false,
+): WorkOrderImportContext["historicalStages"] {
+  if (!Array.isArray(value)) throw new Error("会话历史节点格式无效");
+  const stages = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("会话历史节点格式无效");
+    }
+    const stage = item as Partial<WorkOrderImportContext["historicalStages"][number]>;
+    if (
+      typeof stage.id !== "string" || !stage.id.trim() ||
+      typeof stage.outcome !== "string" || !stage.outcome.trim() ||
+      typeof stage.summary !== "string" || !stage.summary.trim() ||
+      !["completed", "in_progress", "unknown"].includes(stage.status ?? "") ||
+      !Array.isArray(stage.sourceSessionIds) ||
+      stage.sourceSessionIds.some((id) =>
+        typeof id !== "string" || !id.trim() || (!allowUnknownSources && !sourceIds.has(id.trim()))
+      )
+    ) {
+      throw new Error("会话历史节点格式无效");
+    }
+    return {
+      id: stage.id.trim(),
+      outcome: stage.outcome.trim(),
+      summary: stage.summary.trim(),
+      status: stage.status!,
+      sourceSessionIds: [...new Set(stage.sourceSessionIds.map((id) => id.trim()))],
+    };
+  });
+  if (new Set(stages.map((stage) => stage.id)).size !== stages.length) {
+    throw new Error("会话历史节点标识不能重复");
+  }
+  return stages;
 }
 
 function normalizeSourceSessions(

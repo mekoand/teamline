@@ -178,10 +178,14 @@ describe("personal console", () => {
     const createDialog = page.match(/<dialog id="create-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? "";
     expect(sidebar).not.toContain('id="open-session-import"');
     expect(createDialog).toContain('id="open-session-import"');
-    expect(page).toContain("不会启动原会话");
+    expect(page).toContain("不会继续运行原会话");
     expect(script).toContain('requestJson("/api/codex-sessions")');
     expect(script).toContain('requestJson("/api/codex-sessions/import"');
-    expect(script).toContain("data-session-goal");
+    expect(script).toContain("sessionSelectedIds");
+    expect(script).toContain("sessionIds");
+    expect(script).toContain("codex://threads/");
+    expect(script).toContain("复制 CLI 命令");
+    expect(script).not.toContain("data-session-goal");
   });
 
   test("keeps resource provenance secondary to quota and work-order allocation", async () => {

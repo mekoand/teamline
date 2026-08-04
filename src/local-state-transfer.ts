@@ -16,6 +16,7 @@ import {
   type WorkOrderCheckpoint,
   type WorkOrderConversationMessage,
   type WorkOrderImportSource,
+  type WorkOrderImportContext,
   type WorkOrderMaterial,
   type WorkOrderPlan,
   type WorkOrderResourcePlan,
@@ -63,6 +64,7 @@ type ExportedWorkOrder = {
   resourcePlan: WorkOrderResourcePlan;
   maxRunMinutes: number;
   sourceSessions: WorkOrderImportSource[];
+  importContext: WorkOrderImportContext | null;
   currentSessionId: string | null;
   sessionReferences: {
     imported: WorkOrderImportSource | null;
@@ -386,6 +388,7 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     resourcePlan: workOrder.resourcePlan,
     maxRunMinutes: workOrder.maxRunMinutes,
     sourceSessions: workOrder.sourceSessions,
+    importContext: workOrder.importContext,
     currentSessionId: workOrder.currentSessionId,
     sessionReferences: {
       imported: workOrder.importSource,
@@ -805,14 +808,15 @@ function insertWorkOrder(
       INSERT INTO work_orders (
         id, title, project_id, project_materials_confirmed,
         repository_path, workspace_kind, materials_json,
-        source_sessions_json, import_source_json, resource_plan_json, goal, acceptance, status,
+        source_sessions_json, import_source_json, import_context_json,
+        resource_plan_json, goal, acceptance, status,
         current_summary, plan_json, clarification_json, result_json,
         revision_note, worktree_path, execution_branch, base_commit, session_id,
         run_status, run_started_at, run_ended_at, run_pid, run_number,
         runtime_ms, runtime_updated_at, max_run_minutes, last_error,
         created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
         NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?, ?, ?
       )
     `)
@@ -828,6 +832,7 @@ function insertWorkOrder(
       source.sourceSessions[0]
         ? JSON.stringify(source.sourceSessions[0])
         : null,
+      source.importContext ? JSON.stringify(source.importContext) : null,
       JSON.stringify(resourcePlan),
       source.description,
       source.acceptance,
@@ -1083,10 +1088,11 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   exactKeys(
     item,
     version === 3
-      ? [...legacyKeys, "name", "description", "projectId", "projectMaterialSelectionConfirmed", "sourceSessions", "currentSessionId"]
+      ? [...legacyKeys, "name", "description", "projectId", "projectMaterialSelectionConfirmed", "sourceSessions", "importContext", "currentSessionId"]
       : version === 2
       ? [...legacyKeys, "name", "description", "projectId", "sourceSessions", "currentSessionId"]
       : legacyKeys,
+    version === 3,
   );
   const id = nonempty(item.id);
   const title = nonempty(item.title);
@@ -1109,6 +1115,18 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   const sourceSessions = version === 1
     ? sessionReferences.imported ? [sessionReferences.imported] : []
     : array(item.sourceSessions, parseSessionSource, 20);
+  const importContext = version === 3 && item.importContext !== undefined
+    ? parseImportContext(item.importContext)
+    : null;
+  if (importContext) {
+    const sourceSessionIds = new Set(sourceSessions.map((source) => source.id));
+    const danglingSourceId = importContext.historicalStages
+      .flatMap((stage) => stage.sourceSessionIds)
+      .find((sourceId) => !sourceSessionIds.has(sourceId));
+    if (danglingSourceId) {
+      throw new InvalidStateBundleError("会话历史节点引用了不属于当前目标的来源会话");
+    }
+  }
   const currentSessionId = version === 1
     ? sessionReferences.active
     : nullableString(item.currentSessionId);
@@ -1138,6 +1156,7 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
     resourcePlan,
     maxRunMinutes,
     sourceSessions,
+    importContext,
     currentSessionId,
     sessionReferences,
     executionMap,
@@ -1201,7 +1220,7 @@ function parseSessionReferences(value: unknown): ExportedWorkOrder["sessionRefer
 
 function parseSessionSource(value: unknown): WorkOrderImportSource {
   const source = object(value, "会话来源格式无法识别");
-  exactKeys(source, ["kind", "id", "lastActiveAt", "version"]);
+  exactKeys(source, ["kind", "id", "lastActiveAt", "lastReadAt", "version"], true);
   if (source.kind !== "codex_session" || source.version !== 1) {
     throw new InvalidStateBundleError("会话来源格式无法识别");
   }
@@ -1209,7 +1228,44 @@ function parseSessionSource(value: unknown): WorkOrderImportSource {
     kind: "codex_session",
     id: nonempty(source.id),
     lastActiveAt: dateString(source.lastActiveAt),
+    ...(source.lastReadAt === null
+      ? { lastReadAt: null }
+      : source.lastReadAt === undefined
+        ? {}
+        : { lastReadAt: dateString(source.lastReadAt) }),
     version: 1,
+  };
+}
+
+function parseImportContext(value: unknown): WorkOrderImportContext | null {
+  if (value === null) return null;
+  const context = object(value, "会话整理结果格式无法识别");
+  exactKeys(context, [
+    "status", "summary", "currentState", "historicalStages", "artifacts",
+    "organizedAt", "error",
+  ]);
+  const historicalStages = array(context.historicalStages, (item) => {
+    const stage = object(item, "会话历史节点格式无法识别");
+    exactKeys(stage, ["id", "outcome", "summary", "status", "sourceSessionIds"]);
+    return {
+      id: nonempty(stage.id),
+      outcome: nonempty(stage.outcome),
+      summary: nonempty(stage.summary),
+      status: oneOf(stage.status, ["completed", "in_progress", "unknown"] as const),
+      sourceSessionIds: array(stage.sourceSessionIds, nonempty, 20),
+    };
+  }, 10_000);
+  if (new Set(historicalStages.map((stage) => stage.id)).size !== historicalStages.length) {
+    throw new InvalidStateBundleError("会话历史节点标识不能重复");
+  }
+  return {
+    status: oneOf(context.status, ["pending", "ready", "failed"] as const),
+    summary: nullableString(context.summary),
+    currentState: nullableString(context.currentState),
+    historicalStages,
+    artifacts: array(context.artifacts, parseReference, 10_000),
+    organizedAt: context.organizedAt === null ? null : dateString(context.organizedAt),
+    error: nullableString(context.error),
   };
 }
 
@@ -1279,7 +1335,10 @@ function parseReference(value: unknown): PlanReference {
   exactKeys(reference, ["id", "type", "label", "location"]);
   return {
     id: nonempty(reference.id),
-    type: oneOf(reference.type, workOrderMaterialKinds),
+    type: oneOf(
+      reference.type,
+      ["repository", "folder", "file", "image", "link"] as const,
+    ),
     label: nonempty(reference.label),
     location: nonempty(reference.location),
   };

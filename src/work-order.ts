@@ -98,7 +98,26 @@ export type WorkOrderImportSource = {
   kind: "codex_session";
   id: string;
   lastActiveAt: string;
+  lastReadAt?: string | null;
   version: 1;
+};
+
+export type ImportedHistoricalStage = {
+  id: string;
+  outcome: string;
+  summary: string;
+  status: "completed" | "in_progress" | "unknown";
+  sourceSessionIds: string[];
+};
+
+export type WorkOrderImportContext = {
+  status: "pending" | "ready" | "failed";
+  summary: string | null;
+  currentState: string | null;
+  historicalStages: ImportedHistoricalStage[];
+  artifacts: PlanReference[];
+  organizedAt: string | null;
+  error: string | null;
 };
 
 export type WorkOrderWorkspace = {
@@ -210,6 +229,7 @@ export type WorkOrder = {
   workspace: WorkOrderWorkspace | null;
   materials: WorkOrderMaterial[];
   sourceSessions: WorkOrderImportSource[];
+  importContext: WorkOrderImportContext | null;
   currentSessionId: string | null;
   importSource: WorkOrderImportSource | null;
   resourcePlan: WorkOrderResourcePlan;
@@ -253,6 +273,7 @@ export type CreateWorkOrderInput = {
     projectMaterialId?: string;
   }>;
   sourceSessions?: WorkOrderImportSource[];
+  importContext?: WorkOrderImportContext | null;
   importSource?: WorkOrderImportSource;
   goal?: string;
   acceptance?: string;
@@ -308,6 +329,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
         : {}),
     })),
     sourceSessions,
+    importContext: input.importContext ?? null,
     currentSessionId: null,
     importSource: sourceSessions[0] ?? null,
     resourcePlan: {
@@ -319,7 +341,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     goal,
     acceptance,
     status: "draft",
-    currentSummary: "等待生成计划",
+    currentSummary: input.importContext ? "正在整理来源会话" : "等待生成计划",
     plan: null,
     pendingClarification: null,
     conversation: [],
@@ -363,6 +385,11 @@ function normalizeSourceSession(value: unknown): WorkOrderImportSource {
     kind: "codex_session",
     id,
     lastActiveAt,
+    ...(source.lastReadAt === null
+      ? { lastReadAt: null }
+      : typeof source.lastReadAt === "string" && Number.isFinite(Date.parse(source.lastReadAt))
+        ? { lastReadAt: new Date(source.lastReadAt).toISOString() }
+        : {}),
     version: 1,
   };
 }

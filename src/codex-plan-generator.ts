@@ -116,6 +116,14 @@ function buildPrompt(workOrder: WorkOrder): string {
         contextNotes: stage.contextNotes ?? [],
       })))}`
     : "";
+  const importedHistory = workOrder.importContext?.status === "ready"
+    ? `\n导入会话整理结果（仅作为历史上下文，不是未来执行计划）：\n${JSON.stringify({
+        summary: workOrder.importContext.summary,
+        currentState: workOrder.importContext.currentState,
+        historicalStages: workOrder.importContext.historicalStages,
+        artifacts: workOrder.importContext.artifacts,
+      })}`
+    : "";
   const resources = `\n当前资源偏好：\n${JSON.stringify({
     priority: workOrder.resourcePlan.priority,
     pace: workOrder.resourcePlan.pace,
@@ -125,7 +133,7 @@ function buildPrompt(workOrder: WorkOrder): string {
   return `你正在为一项工作生成简短的执行计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
 
 工作目标：
-${workOrder.goal}${acceptance}${materials}${conversation}${currentPlan}${resources}
+${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${currentPlan}${resources}
 
 先判断这些信息是否足以形成可确认的计划。信息足够时必须直接返回计划，不要为了完善细节而提问。只有缺少会改变目标边界、节点关系、素材选择或资源安排的关键信息时，才返回 clarification；问题要少、短、可直接回答，不得提及内部 skill 或 Ask Matt 名称。
 

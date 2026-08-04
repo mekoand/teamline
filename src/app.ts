@@ -41,6 +41,7 @@ import type {
   CodexSessionProvider,
   DiscoveredCodexSession,
 } from "./codex-session-discovery";
+import type { SessionOrganizer } from "./session-organizer";
 import {
   assertStateBundleSize,
   InvalidStateBundleError,
@@ -70,6 +71,8 @@ type AppDependencies = {
   ) => () => void;
   autoRunRetryMs?: number;
   codexSessionProvider?: CodexSessionProvider;
+  sessionOrganizer?: SessionOrganizer;
+  sessionOrganizationTimeoutMs?: number;
   dataDirectory?: string;
 };
 
@@ -101,10 +104,13 @@ export function createApp({
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
   codexSessionProvider,
+  sessionOrganizer,
+  sessionOrganizationTimeoutMs = 5 * 60 * 1000,
   dataDirectory = join(projectRoot, ".teamline"),
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const planningWorkOrderIds = new Set<string>();
+  const organizingWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
@@ -202,6 +208,67 @@ export function createApp({
     );
     scheduleAutoRunCheck();
     return { outcome: "plan" as const, workOrder: saved };
+  };
+  const organizeImportedWorkOrder = async (id: string) => {
+    const workOrder = store.get(id);
+    if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
+      throw new Error("这个目标没有可整理的来源会话");
+    }
+    if (organizingWorkOrderIds.has(id)) {
+      throw new Error("来源会话正在整理，请稍候");
+    }
+    organizingWorkOrderIds.add(id);
+    try {
+      if (!codexSessionProvider || !sessionOrganizer) {
+        const failed = store.markSessionOrganizationFailed(
+          id,
+          !codexSessionProvider
+            ? "Codex 会话发现服务尚未配置"
+            : "Codex 会话整理服务尚未配置",
+        );
+        return { outcome: "failed" as const, workOrder: failed };
+      }
+      try {
+        const discovered = await codexSessionProvider.discover();
+        const candidates = new Map(discovered.sessions.map((session) => [session.id, session]));
+        const sessions = workOrder.sourceSessions.map((source) => {
+          const candidate = candidates.get(source.id);
+          if (!candidate || !candidate.sourcePath || candidate.availability === "unavailable") {
+            throw new Error(`来源会话“${source.id}”当前不可用`);
+          }
+          return { ...candidate, sourcePath: candidate.sourcePath };
+        });
+        const controller = new AbortController();
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const organization = await Promise.race([
+          sessionOrganizer.organize({ name: workOrder.name, sessions }, controller.signal),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => {
+              controller.abort();
+              reject(new Error("会话整理超时，请重试"));
+            }, sessionOrganizationTimeoutMs);
+          }),
+        ]).finally(() => clearTimeout(timeout));
+        const observedSources = sessions.map((session) => ({
+          kind: "codex_session" as const,
+          id: session.id,
+          lastActiveAt: session.lastActiveAt,
+          version: 1 as const,
+        }));
+        return {
+          outcome: "ready" as const,
+          workOrder: store.applySessionOrganization(id, organization, observedSources),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Codex 暂时无法整理会话";
+        return {
+          outcome: "failed" as const,
+          workOrder: store.markSessionOrganizationFailed(id, message),
+        };
+      }
+    } finally {
+      organizingWorkOrderIds.delete(id);
+    }
   };
   const finishReason = (id: string) => {
     const reason = stopReasons.get(id);
@@ -722,68 +789,81 @@ export function createApp({
         }
         try {
           const body = (await request.json()) as {
-            sessions?: Array<{ id?: string; goal?: string }>;
+            name?: string;
+            projectId?: string | null;
+            sessionIds?: string[];
           };
-          const requested = normalizeSessionImports(body.sessions);
+          const name = body.name?.trim() ?? "";
+          if (!name) throw new Error("请填写目标名称");
+          const sessionIds = normalizeSessionIds(body.sessionIds);
+          const projectId = body.projectId?.trim() || null;
+          if (projectId && !store.getProject(projectId)) throw new Error("找不到所选项目");
           const discovered = await codexSessionProvider.discover();
           const candidates = new Map(discovered.sessions.map((session) => [session.id, session]));
-          for (const request of requested) {
-            const candidate = candidates.get(request.id);
+          const selected = sessionIds.map((id) => {
+            const candidate = candidates.get(id);
             if (!candidate) throw new Error("选中的 Codex 会话已经不可用，请刷新后重试");
             if (!candidate.sourcePath || candidate.availability === "unavailable") {
               throw new Error(`“${candidate.title}”的来源文件不可用，无法导入`);
             }
-          }
-
-          const imported: WorkOrder[] = [];
-          const existing: WorkOrder[] = [];
-          for (const request of requested) {
-            const candidate = candidates.get(request.id)!;
             const duplicate = findImportedSession(store.list(), candidate.id);
             if (duplicate) {
-              existing.push(duplicate);
-              continue;
+              throw new Error(`“${candidate.title}”已经属于目标“${duplicate.name}”`);
             }
-            const materials: Array<{ kind: WorkOrderMaterialKind; value: string }> = [
-              ...(candidate.workspacePath
-                ? [{ kind: "folder" as const, value: candidate.workspacePath }]
-                : []),
-              { kind: "file", value: candidate.sourcePath! },
-            ];
-            const workOrder = store.create({
-              goal: request.goal,
-              materials,
-              importSource: {
+            return candidate;
+          });
+          const commonWorkspacePath = sharedSessionWorkspace(selected);
+          const workOrder = store.create({
+            name,
+            description: name,
+            projectId,
+            workspace: commonWorkspacePath
+              ? {
+                  kind: isGitRepository(commonWorkspacePath) ? "git" : "directory",
+                  path: commonWorkspacePath,
+                }
+              : null,
+            sourceSessions: selected.map((candidate) => ({
                 kind: "codex_session",
                 id: candidate.id,
                 lastActiveAt: candidate.lastActiveAt,
+                lastReadAt: null,
                 version: 1,
-              },
-            });
-            const planned = store.savePlan(workOrder.id, [
-              {
-                outcome: request.goal,
-                scope: candidate.workspacePath
-                  ? `继续处理 ${candidate.projectLabel} 中与本会话相关的工作`
-                  : "确认需要继续处理的文件和工作范围",
-                verification: "确认目标、完成要求和后续执行安排",
-                materials: materials.map((material) => ({
-                  id: crypto.randomUUID(),
-                  type: material.kind,
-                  label: material.kind === "file" ? "Codex 会话" : candidate.projectLabel,
-                  location: material.value,
-                })),
-              },
-            ]);
-            imported.push(planned);
-          }
-          return Response.json({ imported, existing }, { status: 201 });
+              })),
+            importContext: {
+              status: "pending",
+              summary: null,
+              currentState: null,
+              historicalStages: [],
+              artifacts: [],
+              organizedAt: null,
+              error: null,
+            },
+          });
+          const result = await organizeImportedWorkOrder(workOrder.id);
+          return Response.json(result, { status: 201 });
         } catch (error) {
           return Response.json(
             {
               code: "INVALID_CODEX_SESSION_IMPORT",
               error: error instanceof Error ? error.message : "无法导入 Codex 会话",
             },
+            { status: 400 },
+          );
+        }
+      }
+
+      const organizeImportMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/import-context\/organize$/,
+      );
+      if (request.method === "POST" && organizeImportMatch) {
+        try {
+          return Response.json(
+            await organizeImportedWorkOrder(decodeURIComponent(organizeImportMatch[1])),
+          );
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : "无法整理来源会话" },
             { status: 400 },
           );
         }
@@ -1890,8 +1970,10 @@ export function createApp({
             { status: 404 },
           );
         }
+        const sourceStatus = await inspectSourceSessions(workOrder, codexSessionProvider);
         return Response.json({
           workOrder: await withRecoverySite(workOrder, checkpointManager),
+          ...(sourceStatus ? { sourceStatus } : {}),
         });
       }
 
@@ -2450,24 +2532,91 @@ function safeUploadName(value: string): string {
   return normalized.slice(0, 120) || "附件";
 }
 
-function normalizeSessionImports(
-  sessions: Array<{ id?: string; goal?: string }> | undefined,
-): Array<{ id: string; goal: string }> {
-  if (!Array.isArray(sessions) || sessions.length === 0) {
+function normalizeSessionIds(sessionIds: string[] | undefined): string[] {
+  if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
     throw new Error("请选择至少一个 Codex 会话");
   }
-  if (sessions.length > 20) throw new Error("一次最多导入 20 个 Codex 会话");
-  const normalized = sessions.map((session) => ({
-    id: session?.id?.trim() ?? "",
-    goal: session?.goal?.trim() ?? "",
-  }));
-  if (normalized.some((session) => !session.id || !session.goal)) {
-    throw new Error("请为每个选中的会话确认目标");
+  if (sessionIds.length > 20) throw new Error("一次最多选择 20 个 Codex 会话");
+  const normalized = sessionIds.map((id) => typeof id === "string" ? id.trim() : "");
+  if (normalized.some((id) => !id)) {
+    throw new Error("选中的 Codex 会话无效");
   }
-  if (new Set(normalized.map((session) => session.id)).size !== normalized.length) {
+  if (new Set(normalized).size !== normalized.length) {
     throw new Error("请勿重复选择同一个 Codex 会话");
   }
   return normalized;
+}
+
+function sharedSessionWorkspace(sessions: DiscoveredCodexSession[]): string | null {
+  if (sessions.length === 0 || sessions.some((session) => !session.workspacePath)) return null;
+  const paths = new Set(sessions.map((session) => session.workspacePath));
+  return paths.size === 1 ? sessions[0]!.workspacePath : null;
+}
+
+async function inspectSourceSessions(
+  workOrder: WorkOrder,
+  provider?: CodexSessionProvider,
+): Promise<{
+  status: "available" | "partial" | "unavailable";
+  message: string;
+  checkedAt: string;
+  hasUpdates: boolean;
+  sessions: Array<{
+    id: string;
+    availability: DiscoveredCodexSession["availability"] | "unavailable";
+    latestActiveAt: string | null;
+    updateAvailable: boolean;
+  }>;
+} | null> {
+  if (workOrder.sourceSessions.length === 0) return null;
+  const checkedAt = new Date().toISOString();
+  if (!provider) {
+    return unavailableSourceStatus(workOrder, checkedAt, "Codex 会话发现服务尚未配置");
+  }
+  try {
+    const discovery = await provider.discover();
+    const candidates = new Map(discovery.sessions.map((session) => [session.id, session]));
+    const sessions = workOrder.sourceSessions.map((source) => {
+      const candidate = candidates.get(source.id);
+      const updateAvailable = Boolean(
+        candidate && Date.parse(candidate.lastActiveAt) > Date.parse(source.lastActiveAt),
+      );
+      return {
+        id: source.id,
+        availability: candidate?.availability ?? "unavailable" as const,
+        latestActiveAt: candidate?.lastActiveAt ?? null,
+        updateAvailable,
+      };
+    });
+    return {
+      status: discovery.status,
+      message: discovery.message,
+      checkedAt,
+      hasUpdates: sessions.some((session) => session.updateAvailable),
+      sessions,
+    };
+  } catch {
+    return unavailableSourceStatus(workOrder, checkedAt, "暂时无法检查来源会话");
+  }
+}
+
+function unavailableSourceStatus(
+  workOrder: WorkOrder,
+  checkedAt: string,
+  message: string,
+) {
+  return {
+    status: "unavailable" as const,
+    message,
+    checkedAt,
+    hasUpdates: false,
+    sessions: workOrder.sourceSessions.map((source) => ({
+      id: source.id,
+      availability: "unavailable" as const,
+      latestActiveAt: null,
+      updateAvailable: false,
+    })),
+  };
 }
 
 function matchesSessionSearch(session: DiscoveredCodexSession, query: string): boolean {

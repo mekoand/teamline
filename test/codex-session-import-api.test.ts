@@ -51,6 +51,24 @@ const discovery: CodexSessionDiscoveryResult = {
   ],
 };
 
+const sessionOrganizer = {
+  async organize() {
+    return {
+      description: "完成设置页面重构",
+      summary: "设置页面已经完成主要重构",
+      currentState: "等待确认后续验证",
+      historicalStages: [{
+        id: "refactor",
+        outcome: "重构设置页面",
+        summary: "主要结构已经调整",
+        status: "completed" as const,
+        sourceSessionIds: ["session-a"],
+      }],
+      artifacts: [],
+    };
+  },
+};
+
 describe("Codex session import API", () => {
   test("lists searchable metadata without exposing the source file path", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
@@ -72,12 +90,13 @@ describe("Codex session import API", () => {
     expect(JSON.stringify(body)).not.toContain("/tmp/codex/session-a.jsonl");
   });
 
-  test("imports only selected sessions as unstarted work orders with a draft execution map", async () => {
+  test("imports only selected sessions as one unstarted goal without a future execution plan", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     let starts = 0;
     const app = createApp({
       store,
       codexSessionProvider: provider(discovery),
+      sessionOrganizer,
       codexRunner: {
         async start() { starts += 1; throw new Error("must not start"); },
         async resume() { throw new Error("must not resume"); },
@@ -89,58 +108,55 @@ describe("Codex session import API", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          sessions: [{ id: "session-a", goal: "完成设置页面重构" }],
+          name: "完成设置页面重构",
+          sessionIds: ["session-a"],
         }),
       }),
     );
     const body = await response.json();
 
     expect(response.status).toBe(201);
-    expect(body.imported).toHaveLength(1);
-    expect(body.existing).toEqual([]);
+    expect(body.outcome).toBe("ready");
     expect(store.list()).toHaveLength(1);
     expect(store.list()[0]).toMatchObject({
-      goal: "完成设置页面重构",
+      name: "完成设置页面重构",
       importSource: {
         kind: "codex_session",
         id: "session-a",
         lastActiveAt: "2026-08-03T02:00:00.000Z",
         version: 1,
       },
-      workspace: null,
-      status: "ready",
+      workspace: { kind: "directory", path: "/tmp/project-a" },
+      status: "draft",
       runStatus: null,
       sessionId: null,
-      plan: {
-        version: 1,
-        stages: [{ outcome: "完成设置页面重构", status: "planning" }],
+      plan: null,
+      importContext: {
+        status: "ready",
+        summary: "设置页面已经完成主要重构",
       },
     });
-    expect(store.list()[0]?.materials).toEqual([
-      { id: expect.any(String), kind: "folder", value: "/tmp/project-a" },
-      { id: expect.any(String), kind: "file", value: "/tmp/codex/session-a.jsonl" },
-    ]);
+    expect(store.list()[0]?.materials).toEqual([]);
     expect(store.list().some((workOrder) => workOrder.title.includes("产品文档"))).toBe(false);
     expect(starts).toBe(0);
   });
 
   test("does not duplicate a session that was already imported", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const app = createApp({ store, codexSessionProvider: provider(discovery) });
+    const app = createApp({ store, codexSessionProvider: provider(discovery), sessionOrganizer });
     const request = () =>
       app.fetch(new Request("http://teamline.local/api/codex-sessions/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessions: [{ id: "session-a", goal: "完成设置页面重构" }] }),
+        body: JSON.stringify({ name: "完成设置页面重构", sessionIds: ["session-a"] }),
       }));
 
     expect((await request()).status).toBe(201);
     const second = await request();
     const body = await second.json();
 
-    expect(second.status).toBe(201);
-    expect(body.imported).toEqual([]);
-    expect(body.existing).toHaveLength(1);
+    expect(second.status).toBe(400);
+    expect(body.error).toContain("已经属于目标");
     expect(store.list()).toHaveLength(1);
   });
 
@@ -164,7 +180,7 @@ describe("Codex session import API", () => {
         },
       ],
     });
-    const app = createApp({ store, codexSessionProvider: provider(discovery) });
+    const app = createApp({ store, codexSessionProvider: provider(discovery), sessionOrganizer });
 
     const response = await app.fetch(
       new Request("http://teamline.local/api/codex-sessions?q=session-b"),
@@ -194,7 +210,7 @@ describe("Codex session import API", () => {
       new Request("http://teamline.local/api/codex-sessions/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessions: [{ id: "session-a", goal: "完成设置页面重构" }] }),
+        body: JSON.stringify({ name: "完成设置页面重构", sessionIds: ["session-a"] }),
       }),
     );
 
@@ -212,16 +228,20 @@ describe("Codex session import API", () => {
     try {
       const firstDatabase = new Database(databasePath, { create: true });
       const firstStore = new WorkOrderStore(firstDatabase);
-      const app = createApp({ store: firstStore, codexSessionProvider: provider(discovery) });
+      const app = createApp({
+        store: firstStore,
+        codexSessionProvider: provider(discovery),
+        sessionOrganizer,
+      });
       const response = await app.fetch(
         new Request("http://teamline.local/api/codex-sessions/import", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sessions: [{ id: "session-a", goal: "完成设置页面重构" }] }),
+          body: JSON.stringify({ name: "完成设置页面重构", sessionIds: ["session-a"] }),
         }),
       );
       expect(response.status).toBe(201);
-      const workOrderId = (await response.json()).imported[0].id;
+      const workOrderId = (await response.json()).workOrder.id;
       firstDatabase.close();
 
       const reopenedDatabase = new Database(databasePath);
@@ -230,6 +250,7 @@ describe("Codex session import API", () => {
         kind: "codex_session",
         id: "session-a",
         lastActiveAt: "2026-08-03T02:00:00.000Z",
+        lastReadAt: expect.any(String),
         version: 1,
       });
       reopenedDatabase.close();
@@ -240,13 +261,13 @@ describe("Codex session import API", () => {
 
   test("rejects unavailable sessions before writing anything", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const app = createApp({ store, codexSessionProvider: provider(discovery) });
+    const app = createApp({ store, codexSessionProvider: provider(discovery), sessionOrganizer });
 
     const response = await app.fetch(
       new Request("http://teamline.local/api/codex-sessions/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessions: [{ id: "session-gone", goal: "继续工作" }] }),
+        body: JSON.stringify({ name: "继续工作", sessionIds: ["session-gone"] }),
       }),
     );
 
