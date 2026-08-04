@@ -1,3 +1,11 @@
+# Platform Independence Is the Goal, While Personal Kernel v0 Validates a macOS Runner
+
+Teamline's architectural goal is an operating-system-independent model for goals, plans, authorization, checkpoints, and recovery, separated from host capabilities such as process control, filesystems, and credentials. Both the local web interface and any future online control plane operate real work through an execution host rather than controlling a user's computer directly from the browser. Personal kernel v0 implements and validates only an Apple Silicon macOS execution host. Future Linux, Windows, or hosted execution enters through host adapters. Only validation on a second platform should determine whether the core model needs to change; the current phase does not build a complete cross-platform matrix in advance.
+
+---
+
+## 中文
+
 # 目标控制核心以平台无关为目标而个人内核 v0 只验证 macOS 执行端
 
 Teamline 以不依赖操作系统的目标、计划、授权、检查点与恢复模型为架构目标，并把它们同进程控制、文件系统和凭据等主机能力分开；本地网页和未来在线控制面都通过执行端控制实际工作，而不是从浏览器直接操作用户电脑。个人内核 v0 只实现并验证 Apple Silicon macOS 执行端，未来 Linux、Windows 或托管执行端通过主机适配进入；是否需要调整核心模型必须由第二个平台验证，当前阶段不提前建设完整跨平台矩阵。

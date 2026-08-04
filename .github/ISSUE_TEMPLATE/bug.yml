@@ -1,0 +1,59 @@
+name: Bug report / Bug 报告
+description: Report behavior that does not work as expected / 报告不符合预期的行为
+title: ""
+labels:
+  - "type:bug"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. English or Chinese is welcome; do not write the same content twice.
+
+        感谢反馈问题。可以使用英文或中文填写，不需要重复翻译。请先删除 Token、用户名、完整本地路径和其他敏感信息。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened / 发生了什么
+      description: Describe the current behavior and its effect. / 请说明当前表现以及带来的影响。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+      description: What should have happened instead? / 正常情况下应该发生什么？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Provide the smallest sequence that reproduces the problem. / 请提供能够复现问题的最短步骤。
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Teamline version / Teamline 版本
+      placeholder: v2.0 or commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 运行环境
+      description: Include the macOS version, Mac chip, Bun version, and Codex version when relevant. / 请填写 macOS、Mac 芯片、Bun 版本，以及相关时的 Codex 版本。
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context / 补充信息
+      description: Add a cropped screenshot or a short, sanitized log when useful. Do not upload a complete Codex session. / 可以补充裁剪后的截图或简短脱敏日志，请勿上传完整 Codex 会话。
+    validations:
+      required: false

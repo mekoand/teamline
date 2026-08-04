@@ -1,30 +1,126 @@
 # Teamline
 
-Teamline 是面向个人的本地 AI 工作控制台。它用目标组织编码、产品设计、文档协作和调研等工作，并把数据保存在本机。
+<p align="center">
+  <img src="public/teamline-logo.png" alt="Teamline" width="240">
+</p>
 
-## 本地运行
+<p align="center">A local control console for running AI work as clear, reviewable goals.</p>
 
-需要 [Bun](https://bun.sh/)。项目目前没有第三方依赖。
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> ·
+  v2.0 ·
+  Early access · Apple Silicon macOS
+</p>
+
+Teamline gives AI work a place outside the chat window. It turns a goal into a plan, runs each AI stage as a separate Codex execution, keeps the current state visible, and collects the result for review.
+
+Teamline's control service and interface run on your Mac, and Teamline does not require an account. Goals, plans, execution records, and references are stored in the local Teamline data directory; uploaded materials are copied into that directory. When Teamline organizes imported sessions, generates a plan, or executes a goal, the local Codex installation may send the necessary session, goal, material, or workspace content to OpenAI under the user's Codex configuration and data settings.
+
+![A three-stage goal in Teamline](docs/images/teamline-progress.jpg)
+
+## What Teamline does
+
+- Creates goals for coding, product design, documentation, research, and other work with a clear outcome.
+- Generates an editable plan before execution begins.
+- Imports one or more local Codex sessions into a single goal, then continues the work in a new session.
+- Runs AI stages one at a time. Each stage has its own Codex execution, result, and validation step.
+- Shows progress as a timeline or node graph without exposing every raw tool call by default.
+- Collects generated files, completion summaries, and validation results for review.
+- Tracks Codex availability and lets each goal choose a priority, pace, and run-time limit.
+- Organizes goals into lightweight projects with referenced or uploaded materials.
+
+## How it works
+
+1. Create a goal or import existing Codex sessions.
+2. Generate, edit, and confirm the plan.
+3. Choose a Git repository or regular folder and start the goal.
+4. Follow each execution stage, respond when needed, and review the final result.
+
+Teamline runs stages serially inside one goal. Different goals can run in parallel up to the local concurrency limit.
+
+## Product views
+
+### Review the actual result
+
+The result view brings the completion summary, changed files, and validation results together before final acceptance.
+
+![Result review with generated files and validation](docs/images/teamline-results.jpg)
+
+### Manage local AI resources
+
+The resource view shows the currently available Codex signal and the run preferences attached to each goal. Usage and cost are only shown when Teamline can read and attribute them reliably.
+
+![Codex availability and goal resource settings](docs/images/teamline-resources.jpg)
+
+## Current status
+
+Teamline is in early access. The current product version is `v2.0`.
+
+The supported setup is:
+
+- Apple Silicon macOS
+- [Bun](https://bun.sh/)
+- A locally installed and signed-in Codex CLI
+- Local browser interface and CLI
+
+There is no packaged installer yet. Windows, Linux, hosted accounts, and full execution support for tools other than Codex are not currently available.
+
+## Run from source
 
 ```bash
+git clone https://github.com/mekoand/teamline.git
+cd teamline
 bun run dev
 ```
 
-然后打开 <http://127.0.0.1:4310>。
+Open <http://127.0.0.1:4310>.
 
-## 命令行入口
+Teamline stores its local database under `.teamline/` by default. Set `TEAMLINE_DATA_DIR` to use another location.
 
-保持本地服务运行后，可以在准备目标的目录中使用 CLI：
+Run the test suite with:
 
 ```bash
-bun run cli -- create "修复登录页偶发的空白" --acceptance "相关测试通过"
-bun run cli -- list
-bun run cli -- show <目标 ID 或唯一前缀>
-bun run cli -- interrupt <目标 ID 或唯一前缀>
-bun run cli -- continue <目标 ID 或唯一前缀>
-bun run cli -- open <目标 ID 或唯一前缀>
+bun test
 ```
 
-安装或链接这个包后，也可以直接使用 `teamline` 命令。CLI 与网页连接同一个本地服务和 SQLite 数据；它只承担创建、查询、中断、继续和打开网页这些日常入口。计划编辑、执行图和资源安排仍在网页中完成。
+## CLI
 
-个人版 v0 的实现范围见 [`docs/specs/personal-v0.md`](docs/specs/personal-v0.md)。下一版的产品范围和任务拆分见 [`docs/specs/personal-v2.md`](docs/specs/personal-v2.md)。
+Keep the local service running, then use the CLI from the directory related to your goal:
+
+```bash
+bun run cli -- create "Fix the intermittent blank login page" --acceptance "Relevant tests pass"
+bun run cli -- list
+bun run cli -- show <goal-id-or-prefix>
+bun run cli -- interrupt <goal-id-or-prefix>
+bun run cli -- continue <goal-id-or-prefix>
+bun run cli -- open <goal-id-or-prefix>
+```
+
+Planning, the execution graph, result review, and resource settings remain in the browser interface.
+
+## Roadmap
+
+The next product directions are:
+
+- Easier installation and updates
+- More AI tool integrations
+- Team collaboration
+
+These are directions, not release commitments or dates.
+
+## Documentation
+
+- [Personal V2 specification](docs/specs/personal-v2.md)
+- [Personal v0 specification](docs/specs/personal-v0.md)
+- [Architecture decision records](docs/adr/)
+- [Product hypothesis](PRODUCT-HYPOTHESIS.md)
+
+The longer specifications and product hypothesis are currently maintained in Chinese. ADRs include English and the original Chinese text.
+
+## Contributing
+
+Bug reports and feature requests can be written in English or Chinese. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

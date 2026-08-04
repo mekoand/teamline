@@ -1,3 +1,11 @@
+# Rule Authoring Is Distributed and Resolution Is Centralized
+
+Rules remain maintained by their authoritative sources: the console owns team governance rules, repositories own repository rules, and tools own tool rules. The console does not copy and co-edit them. When a goal plan is confirmed, it reads all applicable rules, preserves their source and version, and creates an immutable effective rule set for that goal. If a rule source changes later, the console marks the current goal as potentially stale but does not silently alter the authorized execution constraints.
+
+---
+
+## 中文
+
 # 规则分散维护、集中解析并在执行时固化
 
 规则继续由各自的权威来源维护：团队级治理规则由控制台维护，仓库规则由仓库维护，工具规则由工具维护。控制台不复制并共同编辑这些规则，而是在工作目标确认计划时读取所有适用规则，保留来源和版本，生成该目标不可变的生效规则集。规则来源随后发生变化时，控制台提示当前目标可能过期，但不静默改变已经授权的执行约束。

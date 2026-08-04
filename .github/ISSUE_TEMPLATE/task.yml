@@ -1,0 +1,59 @@
+name: Implementation task / 实施任务
+description: Create a focused task after its product direction is clear / 为已经明确方向的工作创建任务
+title: ""
+labels:
+  - "type:task"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form records a focused implementation task. It does not add `ready-for-agent` automatically.
+
+        这个表单用于记录已经拆解的实施任务，但不会自动添加 `ready-for-agent`。
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal / 目标
+      description: State the outcome and why it matters. / 说明要达到的结果以及为什么需要它。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / 范围
+      description: List the changes included in this task. / 列出本任务包含的改动。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria / 验收标准
+      description: Use a short checklist of observable outcomes. / 使用简短清单描述可以直接检查的结果。
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope / 不包含
+      description: State what this task intentionally does not change. / 说明本次明确不处理什么。
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / 依赖
+      description: Use `None` or direct references such as `Depends on #123`. / 没有依赖时填写 `None`，否则直接引用 Issue。
+      placeholder: None
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / 相关背景
+      description: Link the related specification, ADR, bug, or parent issue. / 引用相关的规格、ADR、Bug 或父 Issue。
+    validations:
+      required: false
