@@ -827,10 +827,21 @@ export function createApp({
             404,
           );
         }
+        const enabling = identityStateMatch[2] === "enable";
+        if (
+          !enabling &&
+          executionIdentityEnvironment?.getLoginStatus(id).status === "in_progress"
+        ) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_LOGIN_IN_PROGRESS",
+            "Codex 登录正在进行中，暂时不能停用这个账号",
+            409,
+          );
+        }
         try {
           const identity = store.setExecutionIdentityEnabled(
             id,
-            identityStateMatch[2] === "enable",
+            enabling,
           );
           return Response.json({
             identity: presentExecutionIdentity(

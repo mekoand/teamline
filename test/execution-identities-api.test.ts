@@ -500,6 +500,24 @@ exit 2
       expect.objectContaining({ code: "EXECUTION_IDENTITY_LOGIN_IN_PROGRESS" }),
     );
 
+    const disableDuringLoginResponse = await app.fetch(
+      new Request(
+        `http://teamline.local/api/execution-identities/${created.identity.id}/disable`,
+        { method: "POST" },
+      ),
+    );
+    expect(disableDuringLoginResponse.status).toBe(409);
+    expect(await disableDuringLoginResponse.json()).toEqual(
+      expect.objectContaining({ code: "EXECUTION_IDENTITY_LOGIN_IN_PROGRESS" }),
+    );
+    expect(store.getExecutionIdentity(created.identity.id)?.status).toBe("enabled");
+    expect(await (await app.fetch(new Request(loginUrl))).json()).toEqual({
+      login: {
+        status: "in_progress",
+        startedAt: "2026-08-05T04:01:00.000Z",
+      },
+    });
+
     fake.loginOperations.set(created.identity.id, {
       status: "completed",
       startedAt: "2026-08-05T04:01:00.000Z",
@@ -558,6 +576,16 @@ exit 2
     expect(unavailableResponse.status).toBe(503);
     expect(await unavailableResponse.json()).toEqual(
       expect.objectContaining({ code: "IDENTITY_ENVIRONMENT_UNAVAILABLE" }),
+    );
+    const disableWithoutEnvironmentResponse = await unavailable.fetch(
+      new Request(
+        `http://teamline.local/api/execution-identities/${id}/disable`,
+        { method: "POST" },
+      ),
+    );
+    expect(disableWithoutEnvironmentResponse.status).toBe(200);
+    expect((await disableWithoutEnvironmentResponse.json()).identity).toEqual(
+      expect.objectContaining({ status: "disabled" }),
     );
 
     const fake = fakeEnvironment();
