@@ -170,6 +170,10 @@ describe("personal console", () => {
       'const [{ workOrders }, resources] = await Promise.all',
     );
     expect(script).toContain("resource-workspace");
+    expect(script).toContain("renderCodexAccountQuota");
+    expect(script).toContain('backupStatus === "available"');
+    expect(script).toContain('backupStatus === "unknown"');
+    expect(script).toContain('available: "额度可读取"');
     expect(script).toContain("workOrder.usage.message");
     expect(script).toContain('id="max-concurrency"');
     expect(script).toContain('id="goal-resource-form"');

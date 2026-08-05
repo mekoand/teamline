@@ -5,9 +5,71 @@ import type {
   ResourceProviderSnapshot,
   WorkOrderUsage,
 } from "./resource-provider";
+import { presentExecutionIdentity, type ExecutionIdentity } from "./execution-identity";
 import type { WorkOrder } from "./work-order";
 
 const RESOURCE_SIGNAL_FUTURE_TOLERANCE_MS = 60_000;
+export const DEFAULT_BACKUP_REMAINING_THRESHOLD_PERCENT = 10;
+
+export type IdentityQuotaObservation = {
+  identity: ExecutionIdentity;
+  signal: CodexResourceSignal;
+};
+
+export function presentIdentityQuota(
+  observations: IdentityQuotaObservation[],
+  defaultIdentityId: string | null,
+  now = new Date(),
+  remainingThreshold = DEFAULT_BACKUP_REMAINING_THRESHOLD_PERCENT,
+) {
+  return observations.map(({ identity, signal }) => {
+    const presentedIdentity = presentExecutionIdentity(identity, defaultIdentityId);
+    const current = identity.id === defaultIdentityId;
+    const complete = quotaSignalIsCompleteAndCurrent(signal, now);
+    const aboveThreshold = presentedIdentity.executable && complete && [signal.shortWindow!, signal.longWindow!]
+      .every((window) => 100 - window.usedPercent > remainingThreshold);
+    const backupStatus = current
+      ? "current"
+      : !presentedIdentity.executable || !complete
+        ? "unknown"
+        : aboveThreshold
+          ? "available"
+          : "insufficient";
+    return {
+      identity: presentedIdentity,
+      quota: signal,
+      backupStatus,
+      backupLabel: current
+        ? "当前账号"
+        : backupStatus === "available"
+          ? "备用账号可用"
+          : backupStatus === "insufficient"
+            ? "备用账号额度不足"
+            : "备用账号额度未知",
+    };
+  });
+}
+
+function quotaSignalIsCompleteAndCurrent(
+  signal: CodexResourceSignal,
+  now: Date,
+): boolean {
+  if (signal.status !== "available" || !signal.shortWindow || !signal.longWindow) {
+    return false;
+  }
+  const observedAt = Date.parse(signal.observedAt);
+  const nowMs = now.getTime();
+  if (
+    !Number.isFinite(observedAt) ||
+    nowMs - observedAt > RESOURCE_SIGNAL_STALE_AFTER_MS ||
+    observedAt - nowMs > RESOURCE_SIGNAL_FUTURE_TOLERANCE_MS
+  ) {
+    return false;
+  }
+  return [signal.shortWindow, signal.longWindow].every(
+    (window) => Date.parse(window.resetsAt) > nowMs,
+  );
+}
 
 export function presentResources(
   snapshot: ResourceProviderSnapshot,

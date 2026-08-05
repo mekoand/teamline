@@ -33,10 +33,18 @@ import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
 import { projectMaterialKinds, type ProjectMaterialKind } from "./project";
 import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
 import {
+  codexSignalAt,
+  RESOURCE_SIGNAL_STALE_AFTER_MS,
   unavailableResourceSnapshot,
+  type CodexIdentityResourceProvider,
+  type CodexResourceSignal,
   type ResourceProvider,
 } from "./resource-provider";
-import { presentResources } from "./resource-presentation";
+import {
+  presentIdentityQuota,
+  presentResources,
+  type IdentityQuotaObservation,
+} from "./resource-presentation";
 import { decideAutoRun } from "./resource-scheduler";
 import type {
   CodexSessionProvider,
@@ -67,6 +75,7 @@ type AppDependencies = {
     delayMs: number,
   ) => () => void;
   resourceProvider?: ResourceProvider;
+  identityResourceProvider?: CodexIdentityResourceProvider;
   checkpointManager?: CheckpointManager;
   autoRunRetryScheduler?: (
     callback: () => void,
@@ -114,6 +123,7 @@ export function createApp({
   resultProcessor,
   runTimeoutScheduler = scheduleTimeout,
   resourceProvider,
+  identityResourceProvider,
   checkpointManager,
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
@@ -133,6 +143,7 @@ export function createApp({
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
   const stopReasons = new Map<string, string>();
+  let latestIdentityQuota: IdentityQuotaObservation[] = [];
   const localStateTransfer = new LocalStateTransfer(store);
   const codexDiscoverySource = (executionIdentityId?: string | null) => {
     const identityId = executionIdentityId || store.getSystemExecutionIdentityId();
@@ -432,18 +443,65 @@ export function createApp({
     return { run, fallback, executionIdentityId: executionIdentity.id };
   };
 
+  const refreshIdentityQuota = async (systemSignal: CodexResourceSignal) => {
+    if (!identityResourceProvider) {
+      latestIdentityQuota = [];
+      return;
+    }
+    const now = new Date();
+    const identities = store
+      .listExecutionIdentities()
+      .filter((identity) => identity.status === "enabled");
+    latestIdentityQuota = await Promise.all(
+      identities.map(async (identity) => {
+        const previous = store.getExecutionIdentityQuotaSnapshot(identity.id);
+        let signal: CodexResourceSignal;
+        try {
+          signal = identity.homeKind === "system"
+            ? systemSignal
+            : await identityResourceProvider.read(identity);
+          if (signal.status === "error" && previous) {
+            signal = failedIdentityQuotaSignal(previous.signal, now);
+          }
+          if (["available", "unavailable"].includes(signal.status)) {
+            store.saveExecutionIdentityQuotaSnapshot(identity.id, signal);
+          }
+          signal = codexSignalAt(signal, now, RESOURCE_SIGNAL_STALE_AFTER_MS);
+        } catch {
+          signal = previous
+            ? failedIdentityQuotaSignal(previous.signal, now)
+            : identityQuotaErrorSignal(now);
+        }
+        return { identity, signal };
+      }),
+    );
+  };
+
   const readResourceSnapshot = async () => {
+    let snapshot;
     try {
-      return resourceProvider
-        ? await resourceProvider.read()
-        : unavailableResourceSnapshot();
+      const systemIdentity = store.getExecutionIdentity(
+        store.getSystemExecutionIdentityId(),
+      );
+      const systemCodexDisabled = Boolean(
+        identityResourceProvider && systemIdentity?.status !== "enabled",
+      );
+      snapshot = !resourceProvider
+        ? unavailableResourceSnapshot()
+        : systemCodexDisabled
+          ? resourceProvider.readWithoutCodex
+            ? await resourceProvider.readWithoutCodex()
+            : unavailableResourceSnapshot("系统 Codex 账号未启用")
+          : await resourceProvider.read();
     } catch {
-      return unavailableResourceSnapshot(
+      snapshot = unavailableResourceSnapshot(
         "Codex 额度读取失败，请稍后重试",
         new Date().toISOString(),
         "error",
       );
     }
+    await refreshIdentityQuota(snapshot.codex);
+    return snapshot;
   };
   const runAutoRunOnce = () => {
     if (autoRunCheckInFlight) return autoRunCheckInFlight;
@@ -1275,13 +1333,32 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/resources") {
         const snapshot = await readResourceSnapshot();
-        return Response.json(
-          presentResources(
-            snapshot,
-            store.list(),
-            store.getExecutionSettings().maxConcurrency,
-          ),
+        const defaultIdentityId = store.getDefaultExecutionIdentityId();
+        const displayedSnapshot = identityResourceProvider
+          ? {
+              ...snapshot,
+              codex:
+                latestIdentityQuota.find(
+                  ({ identity }) => identity.id === defaultIdentityId,
+                )?.signal ?? snapshot.codex,
+            }
+          : snapshot;
+        const resources = presentResources(
+          displayedSnapshot,
+          store.list(),
+          store.getExecutionSettings().maxConcurrency,
         );
+        return Response.json({
+          ...resources,
+          ...(identityResourceProvider
+            ? {
+                codexAccounts: presentIdentityQuota(
+                  latestIdentityQuota,
+                  defaultIdentityId,
+                ),
+              }
+            : {}),
+        });
       }
 
       if (request.method === "POST" && url.pathname === "/api/resources/run-once") {
@@ -3385,6 +3462,31 @@ function executionIdentityForRun(
   const identity = store.getExecutionIdentity(identityId);
   if (!identity) throw new Error("找不到目标绑定的 Codex 账号");
   return identity;
+}
+
+function identityQuotaErrorSignal(now: Date): CodexResourceSignal {
+  return {
+    status: "error",
+    source: "codex-app-server",
+    observedAt: now.toISOString(),
+    message: "Codex 额度读取失败，上次可用数据未被修改",
+    shortWindow: null,
+    longWindow: null,
+  };
+}
+
+function failedIdentityQuotaSignal(
+  previous: CodexResourceSignal,
+  now: Date,
+): CodexResourceSignal {
+  return {
+    status: "stale",
+    source: "codex-app-server",
+    observedAt: previous.observedAt,
+    message: "本次额度读取失败，上次数据已保留，等待重新读取",
+    shortWindow: null,
+    longWindow: null,
+  };
 }
 
 function importOnlyResponse(): Response {

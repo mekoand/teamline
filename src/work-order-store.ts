@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import type { CodexResourceSignal } from "./resource-provider";
 import {
   executionIdentityLoginStates,
   type ExecutionIdentity,
@@ -149,6 +150,20 @@ type ExecutionIdentityRow = {
   removed_at: string | null;
 };
 
+type ExecutionIdentityQuotaRow = {
+  execution_identity_id: string;
+  signal_json: string;
+  observed_at: string;
+  updated_at: string;
+};
+
+export type ExecutionIdentityQuotaSnapshot = {
+  executionIdentityId: string;
+  signal: CodexResourceSignal;
+  observedAt: string;
+  updatedAt: string;
+};
+
 export type LocalNotificationKind =
   | "response"
   | "review"
@@ -281,6 +296,7 @@ export class WorkOrderStore {
     this.createExecutionIdentityTable();
     this.ensureDefaultExecutionIdentity();
     this.addExecutionIdentityBindingColumns();
+    this.createExecutionIdentityQuotaTable();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_order_checkpoints (
         id TEXT PRIMARY KEY,
@@ -883,6 +899,63 @@ export class WorkOrderStore {
       }
     })();
     return this.getExecutionIdentity(id)!;
+  }
+
+  getExecutionIdentityQuotaSnapshot(
+    executionIdentityId: string,
+  ): ExecutionIdentityQuotaSnapshot | null {
+    const row = this.database
+      .query<ExecutionIdentityQuotaRow, [string]>(`
+        SELECT execution_identity_id, signal_json, observed_at, updated_at
+        FROM execution_identity_quota_snapshots
+        WHERE execution_identity_id = ?
+      `)
+      .get(executionIdentityId);
+    if (!row) return null;
+    try {
+      return {
+        executionIdentityId: row.execution_identity_id,
+        signal: JSON.parse(row.signal_json) as CodexResourceSignal,
+        observedAt: row.observed_at,
+        updatedAt: row.updated_at,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  saveExecutionIdentityQuotaSnapshot(
+    executionIdentityId: string,
+    signal: CodexResourceSignal,
+  ): ExecutionIdentityQuotaSnapshot {
+    if (!this.getExecutionIdentity(executionIdentityId)) {
+      throw new Error("找不到这个 Codex 账号");
+    }
+    if (
+      signal.source !== "codex-app-server" ||
+      !Number.isFinite(Date.parse(signal.observedAt))
+    ) {
+      throw new Error("Codex 额度数据无效");
+    }
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        INSERT INTO execution_identity_quota_snapshots (
+          execution_identity_id, signal_json, observed_at, updated_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(execution_identity_id) DO UPDATE SET
+          signal_json = excluded.signal_json,
+          observed_at = excluded.observed_at,
+          updated_at = excluded.updated_at
+        WHERE excluded.observed_at >= execution_identity_quota_snapshots.observed_at
+      `)
+      .run(
+        executionIdentityId,
+        JSON.stringify(signal),
+        signal.observedAt,
+        now,
+      );
+    return this.getExecutionIdentityQuotaSnapshot(executionIdentityId)!;
   }
 
   getExecutionMapView(): "map" | "list" {
@@ -2731,6 +2804,18 @@ export class WorkOrderStore {
       );
       CREATE INDEX IF NOT EXISTS execution_identities_status
       ON execution_identities(tool, identity_status, created_at);
+    `);
+  }
+
+  private createExecutionIdentityQuotaTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS execution_identity_quota_snapshots (
+        execution_identity_id TEXT PRIMARY KEY,
+        signal_json TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (execution_identity_id) REFERENCES execution_identities(id)
+      )
     `);
   }
 
