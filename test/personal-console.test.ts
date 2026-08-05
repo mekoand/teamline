@@ -89,9 +89,18 @@ describe("personal console", () => {
     expect(script).toContain('data-label="当前节点"');
     expect(script).toContain('data-label="状态"');
     expect(script).toContain('data-label="下一步"');
-    expect(script).toContain("identities.length <= 1");
+    expect(script).toContain("new Set(identities.map((identity) => identity.id)).size <= 1");
     expect(styles).toContain(".home-project-groups");
     expect(styles).toContain(".goal-account-tag");
+  });
+
+  test("keeps removed account labels on historical goals", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain("new Set(identities.map((identity) => identity.id)).size <= 1");
+    expect(script).toContain('identity.status === "removed" ? " · 已移除"');
+    expect(script).not.toContain('state.executionIdentities.identities.filter(\n    (identity) => identity.status !== "removed"');
   });
 
   test("uses stepped 390px navigation with explicit return paths and balanced Chinese wrapping", async () => {
@@ -231,6 +240,12 @@ describe("personal console", () => {
     expect(script).toContain("/login`");
     expect(script).toContain('current.login.status === "in_progress"');
     expect(script).toContain('result.login.status === "completed"');
+    expect(script).toContain("identityLoginChecks: new Set()");
+    expect(script).toContain("resumeIdentityLoginChecks()");
+    expect(script).toContain("recoverIdentityLoginState");
+    expect(script).toContain('identity.status === "enabled"');
+    expect(script).toContain('if (identity.loginState === "ready")');
+    expect(script).toContain("refreshIdentityAfterLogin");
     expect(script).toContain("/refresh`");
     expect(styles).toContain(".topbar-quota-popover");
     expect(styles).toContain(".identity-actions");

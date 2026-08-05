@@ -47,6 +47,7 @@ const state = {
   executionIdentities: { defaultIdentityId: null, currentIdentityId: null, identities: [] },
   identityLoginStates: {},
   identityLoginTimers: new Map(),
+  identityLoginChecks: new Set(),
   resourceError: "",
   resourceRefreshInFlight: false,
   autoRunCheckRequested: true,
@@ -337,6 +338,7 @@ async function refreshConsole({
     state.workOrders = workOrders;
     state.projects = projectState.projects;
     state.executionIdentities = executionIdentityState;
+    resumeIdentityLoginChecks();
     state.executionSettings = executionSettings;
     state.notifications = notificationState.notifications;
     state.unreadNotificationCount = notificationState.unreadCount;
@@ -832,12 +834,12 @@ function homeNextStep(workOrder, presentation) {
 }
 
 function homeAccountLabel(workOrder) {
-  const identities = state.executionIdentities.identities.filter(
-    (identity) => identity.status !== "removed",
-  );
-  if (identities.length <= 1) return "";
+  const identities = state.executionIdentities.identities;
+  if (new Set(identities.map((identity) => identity.id)).size <= 1) return "";
   const id = workOrder.executionIdentityId ?? state.executionIdentities.defaultIdentityId;
-  return identities.find((identity) => identity.id === id)?.label ?? "未选账号";
+  const identity = identities.find((candidate) => candidate.id === id);
+  if (!identity) return "未选账号";
+  return `${identity.label}${identity.status === "removed" ? " · 已移除" : ""}`;
 }
 
 function renderProjectsWorkspace() {
@@ -1300,6 +1302,7 @@ async function createAndLoginIdentity(event) {
     return;
   }
   try {
+    state.identityLoginChecks.add(identity.id);
     const result = await requestJson(
       `/api/execution-identities/${encodeURIComponent(identity.id)}/login`,
       {
@@ -1324,6 +1327,7 @@ async function startIdentityLogin(id) {
   const button = document.querySelector(`[data-login-identity="${CSS.escape(id)}"]`);
   setBusy(button, "正在检查…");
   try {
+    state.identityLoginChecks.add(id);
     const current = await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/login`);
     if (current.login.status === "in_progress") {
       state.identityLoginStates[id] = current.login;
@@ -1332,12 +1336,12 @@ async function startIdentityLogin(id) {
       return;
     }
     if (current.login.status === "completed") {
-      await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/refresh`, {
-        method: "POST",
-      });
-      delete state.identityLoginStates[id];
-      await refreshConsole({ polling: true, checkAutoRun: false });
-      return;
+      const identity = await refreshIdentityAfterLogin(id);
+      if (identity.loginState === "ready") {
+        delete state.identityLoginStates[id];
+        await refreshConsole({ polling: true, checkAutoRun: false });
+        return;
+      }
     }
     const result = await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/login`, {
       method: "POST",
@@ -1352,6 +1356,66 @@ async function startIdentityLogin(id) {
     state.identityLoginStates[id] = { status: "failed", error: messageFrom(error, "无法开始登录") };
     renderConsole();
   }
+}
+
+function resumeIdentityLoginChecks() {
+  state.executionIdentities.identities
+    .filter(
+      (identity) =>
+        identity.homeKind === "managed" &&
+        identity.status === "enabled" &&
+        ["signed_out", "expired"].includes(identity.loginState) &&
+        !state.identityLoginChecks.has(identity.id),
+    )
+    .forEach((identity) => {
+      state.identityLoginChecks.add(identity.id);
+      void recoverIdentityLoginState(identity.id);
+    });
+}
+
+async function recoverIdentityLoginState(id) {
+  try {
+    const { login } = await requestJson(
+      `/api/execution-identities/${encodeURIComponent(id)}/login`,
+    );
+    state.identityLoginStates[id] = login;
+    if (login.status === "in_progress") {
+      scheduleIdentityLoginPoll(id);
+      if (isResourceView()) renderConsole();
+      return;
+    }
+    if (login.status === "completed") {
+      const identity = await refreshIdentityAfterLogin(id);
+      if (identity.loginState === "ready") {
+        delete state.identityLoginStates[id];
+      } else {
+        state.identityLoginStates[id] = {
+          status: "failed",
+          error: "登录已结束，但账号仍未就绪，请重新登录",
+        };
+      }
+      await refreshConsole({ polling: true, checkAutoRun: false });
+      return;
+    }
+    if (isResourceView()) renderConsole();
+  } catch (error) {
+    state.identityLoginStates[id] = {
+      status: "failed",
+      error: messageFrom(error, "无法恢复登录状态"),
+    };
+    if (isResourceView()) renderConsole();
+  }
+}
+
+async function refreshIdentityAfterLogin(id) {
+  const { identity } = await requestJson(
+    `/api/execution-identities/${encodeURIComponent(id)}/refresh`,
+    { method: "POST" },
+  );
+  state.executionIdentities.identities = state.executionIdentities.identities.map(
+    (candidate) => candidate.id === id ? identity : candidate,
+  );
+  return identity;
 }
 
 function scheduleIdentityLoginPoll(id) {
@@ -1369,10 +1433,15 @@ async function pollIdentityLogin(id) {
       return;
     }
     if (result.login.status === "completed") {
-      await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/refresh`, {
-        method: "POST",
-      });
-      delete state.identityLoginStates[id];
+      const identity = await refreshIdentityAfterLogin(id);
+      if (identity.loginState === "ready") {
+        delete state.identityLoginStates[id];
+      } else {
+        state.identityLoginStates[id] = {
+          status: "failed",
+          error: "登录已结束，但账号仍未就绪，请重新登录",
+        };
+      }
       await refreshConsole({ polling: true, checkAutoRun: false });
       return;
     }
