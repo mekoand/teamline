@@ -64,7 +64,10 @@ import {
   RestorePreviewStaleError,
 } from "./local-state-transfer";
 import { presentExecutionIdentity, type ExecutionIdentity } from "./execution-identity";
-import type { ExecutionIdentityEnvironment } from "./execution-identity-environment";
+import {
+  ExecutionIdentityLoginInProgressError,
+  type ExecutionIdentityEnvironment,
+} from "./execution-identity-environment";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -943,6 +946,121 @@ export function createApp({
           return executionIdentityErrorResponse(
             "EXECUTION_IDENTITY_REFRESH_FAILED",
             error instanceof Error ? error.message : "无法读取 Codex 账号状态",
+            503,
+          );
+        }
+      }
+
+      const identityLoginMatch = url.pathname.match(
+        /^\/api\/execution-identities\/([^/]+)\/login$/,
+      );
+      if (
+        (request.method === "GET" || request.method === "POST") &&
+        identityLoginMatch
+      ) {
+        const id = decodeURIComponent(identityLoginMatch[1]);
+        const identity = store.getExecutionIdentity(id);
+        if (!identity) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_NOT_FOUND",
+            "找不到这个 Codex 账号",
+            404,
+          );
+        }
+        if (!executionIdentityEnvironment) {
+          return executionIdentityErrorResponse(
+            "IDENTITY_ENVIRONMENT_UNAVAILABLE",
+            "Codex 账号环境尚未配置",
+            503,
+          );
+        }
+        if (request.method === "GET") {
+          return Response.json({
+            login: executionIdentityEnvironment.getLoginStatus(id),
+          });
+        }
+        if (identity.status !== "enabled") {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_DISABLED",
+            "这个 Codex 账号当前不可用",
+            409,
+          );
+        }
+        if (identity.homeKind !== "managed") {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_LOGIN_UNSUPPORTED",
+            "系统 Codex 账号请使用 Codex 自身的登录状态",
+            409,
+          );
+        }
+        if (identity.loginState !== "signed_out" && identity.loginState !== "expired") {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_ALREADY_AUTHENTICATED",
+            "这个 Codex 账号已有登录状态，请先刷新账号状态",
+            409,
+          );
+        }
+        if (
+          store.activeRunIds().some(
+            (workOrderId) => {
+              const runningIdentityId = store.get(workOrderId)?.executionIdentityId;
+              return runningIdentityId === id || runningIdentityId == null;
+            },
+          ) || [...startingExecutionIdentityIds.values()].includes(id)
+        ) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_BUSY",
+            "请等待这个账号的所有运行节点结束后再登录",
+            409,
+          );
+        }
+        if (!request.headers.get("content-type")?.startsWith("application/json")) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_LOGIN_CONFIRMATION_REQUIRED",
+            "请确认启动 Codex 登录",
+            400,
+          );
+        }
+        let body: { confirm?: boolean };
+        try {
+          body = (await request.json()) as { confirm?: boolean };
+        } catch {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_LOGIN_CONFIRMATION_REQUIRED",
+            "请确认启动 Codex 登录",
+            400,
+          );
+        }
+        if (body.confirm !== true) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_LOGIN_CONFIRMATION_REQUIRED",
+            "请确认启动 Codex 登录",
+            400,
+          );
+        }
+        try {
+          const login = await executionIdentityEnvironment.startLogin(identity);
+          return Response.json(
+            {
+              login,
+              identity: presentExecutionIdentity(
+                identity,
+                store.getDefaultExecutionIdentityId(),
+              ),
+            },
+            { status: 202 },
+          );
+        } catch (error) {
+          if (error instanceof ExecutionIdentityLoginInProgressError) {
+            return executionIdentityErrorResponse(
+              "EXECUTION_IDENTITY_LOGIN_IN_PROGRESS",
+              error.message,
+              409,
+            );
+          }
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_LOGIN_FAILED",
+            error instanceof Error ? error.message : "无法启动 Codex 登录流程",
             503,
           );
         }
