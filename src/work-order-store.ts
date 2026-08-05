@@ -716,6 +716,29 @@ export class WorkOrderStore {
     return identity;
   }
 
+  getCurrentExecutionIdentityId(): string | null {
+    const value = this.database
+      .query<{ value: string }, []>(`
+        SELECT value FROM local_preferences
+        WHERE key = 'current-codex-execution-identity-id'
+      `)
+      .get()?.value;
+    const identity = value ? this.getExecutionIdentity(value) : null;
+    return identity && identity.status !== "removed" ? identity.id : null;
+  }
+
+  setCurrentExecutionIdentityId(id: string): ExecutionIdentity {
+    const identity = this.requireUsableExecutionIdentity(id);
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('current-codex-execution-identity-id', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(identity.id, new Date().toISOString());
+    return identity;
+  }
+
   getSystemExecutionIdentityId(): string | null {
     return this.database
       .query<{ id: string }, []>(`
@@ -868,6 +891,8 @@ export class WorkOrderStore {
     if (identity.homeKind === "system") {
       throw new Error("系统 Codex 账号只能停用，不能由 Teamline 删除");
     }
+    const wasDefault = this.getDefaultExecutionIdentityId() === id;
+    const wasCurrent = this.getCurrentExecutionIdentityId() === id;
     const now = new Date().toISOString();
     this.database.transaction(() => {
       this.database
@@ -880,7 +905,7 @@ export class WorkOrderStore {
           WHERE id = ?
         `)
         .run(now, now, id);
-      if (this.getDefaultExecutionIdentityId() === id) {
+      if (wasDefault) {
         const replacement = this.database
           .query<{ id: string }, [string]>(`
             SELECT id FROM execution_identities
@@ -896,6 +921,11 @@ export class WorkOrderStore {
             .query("DELETE FROM local_preferences WHERE key = 'default-codex-execution-identity-id'")
             .run();
         }
+      }
+      if (wasCurrent) {
+        this.database
+          .query("DELETE FROM local_preferences WHERE key = 'current-codex-execution-identity-id'")
+          .run();
       }
     })();
     return this.getExecutionIdentity(id)!;
@@ -1267,6 +1297,39 @@ export class WorkOrderStore {
         WHERE id = ?
       `)
       .run(JSON.stringify(resourcePlan), now, id);
+    return this.get(id)!;
+  }
+
+  saveSchedulingWaitReason(id: string, reason: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    const nextStage = workOrder.plan ? nextRunnableCodexStage(workOrder.plan) : null;
+    const plan = workOrder.plan && nextStage
+      ? {
+          ...workOrder.plan,
+          stages: workOrder.plan.stages.map((stage) =>
+            stage.id === nextStage.id ? { ...stage, statusReason: reason } : stage
+          ),
+        }
+      : workOrder.plan;
+    const resourcePlan = {
+      ...workOrder.resourcePlan,
+      autoRunReason: workOrder.resourcePlan.runWhenQuotaAvailable ? reason : null,
+    };
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET plan_json = ?, resource_plan_json = ?, current_summary = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        plan ? JSON.stringify(plan) : null,
+        JSON.stringify(resourcePlan),
+        reason,
+        now,
+        id,
+      );
     return this.get(id)!;
   }
 

@@ -736,6 +736,7 @@ describe("work-order resource scheduling", () => {
       const store = new WorkOrderStore(new Database(":memory:"));
       store.saveMaxConcurrency(1);
       const active = ready(store, "占用唯一并发");
+      store.bindExecutionIdentity(active.id);
       store.markStarted(active.id);
       const waiting = store.create({
         workspace: { kind: "directory", path: workspace },
@@ -789,5 +790,72 @@ describe("work-order resource scheduling", () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  test("uses the current account and that account's own quota when choosing work", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const managedId = "72222222-2222-4222-8222-222222222222";
+    store.createManagedExecutionIdentity({
+      id: managedId,
+      label: "备用",
+      managedHomePath: "/tmp/teamline-managed-scheduler",
+    });
+    store.recordExecutionIdentityObservation(managedId, {
+      loginState: "ready",
+      capabilities: ["sessions"],
+    });
+    const system = enable(store, ready(store, "系统账号工作").id);
+    const alternate = enable(store, ready(store, "备用账号工作").id);
+    store.bindExecutionIdentity(system.id, "codex-system-default");
+    store.bindExecutionIdentity(alternate.id, managedId);
+    store.setCurrentExecutionIdentityId("codex-system-default");
+    const identities = new Set(["codex-system-default", managedId]);
+    const quotas = new Map([
+      ["codex-system-default", availableQuota()],
+      [managedId, availableQuota()],
+    ]);
+
+    let decision = decideAutoRun(store.list(), availableQuota(), 2, new Date(), {
+      currentExecutionIdentityId: store.getCurrentExecutionIdentityId(),
+      defaultExecutionIdentityId: store.getDefaultExecutionIdentityId(),
+      executableExecutionIdentityIds: identities,
+      quotaByExecutionIdentityId: quotas,
+    });
+    expect(decision.candidateId).toBe(system.id);
+    expect(decision.reasons.get(alternate.id)).toBe("等待账号");
+
+    store.setCurrentExecutionIdentityId(managedId);
+    quotas.set(managedId, {
+      ...availableQuota(),
+      shortWindow: { ...availableQuota().shortWindow!, usedPercent: 90 },
+    });
+    decision = decideAutoRun(store.list(), availableQuota(), 2, new Date(), {
+      currentExecutionIdentityId: managedId,
+      defaultExecutionIdentityId: store.getDefaultExecutionIdentityId(),
+      executableExecutionIdentityIds: identities,
+      quotaByExecutionIdentityId: quotas,
+    });
+    expect(decision.candidateId).toBeNull();
+    expect(decision.reasons.get(system.id)).toBe("等待账号");
+    expect(decision.reasons.get(alternate.id)).toBe("额度不足，等待可用额度");
+
+    store.saveResourcePlan(alternate.id, {
+      priority: "normal",
+      pace: "fast",
+      runWhenQuotaAvailable: true,
+    });
+    quotas.set(managedId, {
+      ...availableQuota(),
+      status: "stale",
+      shortWindow: null,
+      longWindow: null,
+    });
+    decision = decideAutoRun(store.list(), availableQuota(), 2, new Date(), {
+      currentExecutionIdentityId: managedId,
+      defaultExecutionIdentityId: store.getDefaultExecutionIdentityId(),
+      executableExecutionIdentityIds: identities,
+      quotaByExecutionIdentityId: quotas,
+    });
+    expect(decision.candidateId).toBe(alternate.id);
   });
 });

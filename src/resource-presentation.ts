@@ -19,12 +19,13 @@ export type IdentityQuotaObservation = {
 export function presentIdentityQuota(
   observations: IdentityQuotaObservation[],
   defaultIdentityId: string | null,
+  currentIdentityId: string | null,
   now = new Date(),
   remainingThreshold = DEFAULT_BACKUP_REMAINING_THRESHOLD_PERCENT,
 ) {
   return observations.map(({ identity, signal }) => {
     const presentedIdentity = presentExecutionIdentity(identity, defaultIdentityId);
-    const current = identity.id === defaultIdentityId;
+    const current = identity.id === currentIdentityId;
     const complete = quotaSignalIsCompleteAndCurrent(signal, now);
     const aboveThreshold = presentedIdentity.executable && complete && [signal.shortWindow!, signal.longWindow!]
       .every((window) => 100 - window.usedPercent > remainingThreshold);

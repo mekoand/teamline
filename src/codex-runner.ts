@@ -18,6 +18,13 @@ export type CodexRunEvent =
       exitCode: number;
       message: string;
       resumeUnavailable?: boolean;
+      endState?:
+        | "completed"
+        | "transient_failure"
+        | "needs_response"
+        | "authentication_required"
+        | "permission_required"
+        | "failed";
     };
 
 export type ContinuationContext = {
@@ -185,19 +192,41 @@ async function* readRunEvents(
       type: "exit",
       exitCode,
       message: "Codex 已正常结束，等待结果处理",
+      endState: "completed",
     };
     return;
   }
 
+  const failureDetails = [stderr, ...diagnostics].join("\n");
   yield {
     type: "exit",
     exitCode,
     message: codexFailureMessage(stderr),
+    endState: classifyFailureEndState(failureDetails),
     resumeUnavailable:
       resuming &&
       !receivedValidEvent &&
-      isUnavailableSessionFailure([stderr, ...diagnostics].join("\n")),
+      isUnavailableSessionFailure(failureDetails),
   };
+}
+
+function classifyFailureEndState(
+  details: string,
+): Exclude<NonNullable<Extract<CodexRunEvent, { type: "exit" }>["endState"]>, "completed"> {
+  const normalized = details.toLocaleLowerCase();
+  if (/(?:unauthorized|authentication|not logged in|login required|\b401\b)/.test(normalized)) {
+    return "authentication_required";
+  }
+  if (/(?:permission denied|operation not permitted|\b403\b)/.test(normalized)) {
+    return "permission_required";
+  }
+  if (
+    /(?:timed? out|timeout|connection (?:reset|closed|refused)|network error|temporarily unavailable|service unavailable|socket hang up|\beconn(?:reset|refused)\b)/
+      .test(normalized)
+  ) {
+    return "transient_failure";
+  }
+  return "failed";
 }
 
 type ParsedRunLine = {

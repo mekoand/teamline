@@ -16,19 +16,28 @@ export type ConsoleWorkOrder = WorkOrder & {
 export function presentConsoleWorkOrders(
   workOrders: WorkOrder[],
   maxConcurrency = 2,
+  currentExecutionIdentityId: string | null = null,
+  defaultExecutionIdentityId: string | null = null,
 ): ConsoleWorkOrder[] {
   const activeCount = workOrders.filter((workOrder) =>
     ["running", "stopping", "verifying"].includes(workOrder.runStatus ?? ""),
   ).length;
   return workOrders.map((workOrder) => ({
     ...workOrder,
-    ...presentStatus(workOrder, activeCount >= maxConcurrency),
+    ...presentStatus(
+      workOrder,
+      activeCount >= maxConcurrency,
+      currentExecutionIdentityId,
+      defaultExecutionIdentityId,
+    ),
   }));
 }
 
 function presentStatus(
   workOrder: WorkOrder,
   capacityReached: boolean,
+  currentExecutionIdentityId: string | null,
+  defaultExecutionIdentityId: string | null,
 ): Pick<ConsoleWorkOrder, "userStatus" | "statusReason"> {
   if (workOrder.pendingClarification) {
     return { userStatus: "response", statusReason: "待补充关键信息" };
@@ -99,6 +108,15 @@ function presentStatus(
     }
     if (!workOrder.workspace) {
       return { userStatus: "queued", statusReason: "等待选择工作空间" };
+    }
+    const targetExecutionIdentityId =
+      workOrder.executionIdentityId ?? defaultExecutionIdentityId;
+    if (
+      currentExecutionIdentityId &&
+      targetExecutionIdentityId &&
+      currentExecutionIdentityId !== targetExecutionIdentityId
+    ) {
+      return { userStatus: "queued", statusReason: "等待账号" };
     }
     if (
       workOrder.resourcePlan.runWhenQuotaAvailable &&

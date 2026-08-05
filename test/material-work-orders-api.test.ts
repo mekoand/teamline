@@ -596,6 +596,7 @@ describe("material work orders API", () => {
       store.savePlan(active.id, [
         { outcome: "完成", scope: "文档", verification: "人工检查" },
       ]);
+      store.bindExecutionIdentity(active.id);
       store.saveDirectWorkspace(active.id, realpathSync(workspacePath));
       store.markStarted(active.id);
 
@@ -608,6 +609,7 @@ describe("material work orders API", () => {
       expect(await startResponse.json()).toMatchObject({ code: "WORKSPACE_IN_USE" });
 
       store.saveDirectWorkspace(waiting.id, workspaceAlias);
+      store.bindExecutionIdentity(waiting.id);
       store.markStarted(waiting.id);
       store.recordInterrupted(waiting.id);
       const continueResponse = await app.fetch(
