@@ -1091,6 +1091,7 @@ function renderResourceSummary() {
       </div>
     </details>`;
   resourceSummaryElement.querySelector("[data-open-resource-summary]")?.addEventListener("click", () => {
+    resourceSummaryElement.querySelector(".topbar-quota-control")?.removeAttribute("open");
     history.pushState({}, "", "/resources");
     renderConsole();
   });

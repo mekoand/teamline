@@ -216,6 +216,7 @@ describe("personal console", () => {
     ]);
 
     expect(script).toContain('class="topbar-quota-control"');
+    expect(script).toContain('removeAttribute("open")');
     expect(script).toContain('renderQuotaWindow("5 小时"');
     expect(script).toContain('renderQuotaWindow("周额度"');
     expect(script).toContain("Array.isArray(resources.codexAccounts)");
