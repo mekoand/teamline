@@ -70,6 +70,60 @@ const sessionOrganizer = {
 };
 
 describe("Codex session import API", () => {
+  test("binds managed-home discoveries to their originating identity", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const managedId = "55555555-5555-4555-8555-555555555555";
+    store.createManagedExecutionIdentity({
+      id: managedId,
+      label: "备用",
+      managedHomePath: `/managed-codex/${managedId}`,
+    });
+    store.recordExecutionIdentityObservation(managedId, {
+      loginState: "ready",
+      capabilities: ["sessions"],
+    });
+    const app = createApp({
+      store,
+      codexSessionProvider: provider({ ...discovery, sessions: [] }),
+      codexSessionProviderForIdentity: (identity) =>
+        identity.id === managedId ? provider(discovery) : undefined,
+      sessionOrganizer,
+    });
+
+    const listedResponse = await app.fetch(new Request(
+      `http://teamline.local/api/codex-sessions?executionIdentityId=${managedId}`,
+    ));
+    expect(listedResponse.status).toBe(200);
+    const listed = await listedResponse.json();
+    expect(listed.executionIdentityId).toBe(managedId);
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "session-a" }));
+
+    const importedResponse = await app.fetch(new Request(
+      "http://teamline.local/api/codex-sessions/import",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "备用账号目标",
+          sessionIds: ["session-a"],
+          executionIdentityId: managedId,
+        }),
+      },
+    ));
+    expect(importedResponse.status).toBe(201);
+    const imported = (await importedResponse.json()).workOrder;
+    expect(imported).toMatchObject({
+      executionIdentityId: managedId,
+      sourceSessions: [
+        expect.objectContaining({
+          id: "session-a",
+          executionIdentityId: managedId,
+        }),
+      ],
+    });
+    expect(imported.sourceSessions[0].openInCodex).toBeUndefined();
+  });
+
   test("lists searchable metadata without exposing the source file path", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     store.create({ goal: "现有设置工作", materials: [{ kind: "folder", value: "/tmp/project-a" }] });
@@ -251,6 +305,8 @@ describe("Codex session import API", () => {
         id: "session-a",
         lastActiveAt: "2026-08-03T02:00:00.000Z",
         lastReadAt: expect.any(String),
+        executionIdentityId: "codex-system-default",
+        openInCodex: true,
         version: 1,
       });
       reopenedDatabase.close();

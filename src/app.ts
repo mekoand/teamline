@@ -51,7 +51,7 @@ import {
   RestorePreviewMissingError,
   RestorePreviewStaleError,
 } from "./local-state-transfer";
-import { presentExecutionIdentity } from "./execution-identity";
+import { presentExecutionIdentity, type ExecutionIdentity } from "./execution-identity";
 import type { ExecutionIdentityEnvironment } from "./execution-identity-environment";
 
 type AppDependencies = {
@@ -74,6 +74,9 @@ type AppDependencies = {
   ) => () => void;
   autoRunRetryMs?: number;
   codexSessionProvider?: CodexSessionProvider;
+  codexSessionProviderForIdentity?: (
+    identity: ExecutionIdentity,
+  ) => SessionProvider | undefined;
   claudeCodeSessionProvider?: SessionProvider;
   sessionOrganizer?: SessionOrganizer;
   sessionOrganizationTimeoutMs?: number;
@@ -84,6 +87,7 @@ type AppDependencies = {
 
 type NextStageRun = {
   run: StartedCodexRun;
+  executionIdentityId: string;
   fallback?: () => Promise<StartedCodexRun | null>;
 };
 
@@ -114,6 +118,7 @@ export function createApp({
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
   codexSessionProvider,
+  codexSessionProviderForIdentity,
   claudeCodeSessionProvider,
   sessionOrganizer,
   sessionOrganizationTimeoutMs = 5 * 60 * 1000,
@@ -129,6 +134,23 @@ export function createApp({
   const runTimeouts = new Map<string, () => void>();
   const stopReasons = new Map<string, string>();
   const localStateTransfer = new LocalStateTransfer(store);
+  const codexDiscoverySource = (executionIdentityId?: string | null) => {
+    const identityId = executionIdentityId || store.getSystemExecutionIdentityId();
+    const identity = identityId ? store.getExecutionIdentity(identityId) : null;
+    if (!identity || identity.status === "removed") {
+      throw new Error("找不到会话来源对应的 Codex 账号");
+    }
+    const provider = codexSessionProviderForIdentity?.(identity) ??
+      (identity.homeKind === "system" ? codexSessionProvider : undefined);
+    return { identity, provider };
+  };
+  const sessionProviderForSource = (
+    kind: WorkOrderImportSource["kind"],
+    executionIdentityId?: string | null,
+  ): SessionProvider | undefined =>
+    kind === "claude_code_session"
+      ? claudeCodeSessionProvider
+      : codexDiscoverySource(executionIdentityId).provider;
   let autoRunCheckInFlight:
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
@@ -238,7 +260,10 @@ export function createApp({
       const sourceKinds = new Set(workOrder.sourceSessions.map((source) => source.kind));
       const sourceKind = workOrder.sourceSessions[0]!.kind;
       const sourceProvider = sourceKinds.size === 1
-        ? sessionProviderForKind(sourceKind, codexSessionProvider, claudeCodeSessionProvider)
+        ? sessionProviderForSource(
+            sourceKind,
+            workOrder.sourceSessions[0]?.executionIdentityId,
+          )
         : undefined;
       if (!sourceProvider || !sessionOrganizer) {
         const failed = store.markSessionOrganizationFailed(
@@ -277,12 +302,19 @@ export function createApp({
             }, sessionOrganizationTimeoutMs);
           }),
         ]).finally(() => clearTimeout(timeout));
-        const observedSources = sessions.map((session) => ({
-          kind: sourceKind,
-          id: session.id,
-          lastActiveAt: session.lastActiveAt,
-          version: 1 as const,
-        }));
+        const observedSources = sessions.map((session) => {
+          const original = workOrder.sourceSessions.find((source) => source.id === session.id)!;
+          return {
+            kind: sourceKind,
+            id: session.id,
+            lastActiveAt: session.lastActiveAt,
+            ...(original.executionIdentityId
+              ? { executionIdentityId: original.executionIdentityId }
+              : {}),
+            ...(original.openInCodex === true ? { openInCodex: true } : {}),
+            version: 1 as const,
+          };
+        });
         return {
           outcome: "ready" as const,
           workOrder: store.applySessionOrganization(id, organization, observedSources),
@@ -340,6 +372,8 @@ export function createApp({
     workspacePath: string,
   ): Promise<NextStageRun | null> => {
     if (!codexRunner) return null;
+    const bound = store.bindExecutionIdentity(id);
+    const executionIdentity = executionIdentityForRun(store, bound, Boolean(bound.sessionId));
     const started = store.markNextStageStarted(id);
     const scopedWorkOrder = codexRunWorkOrder(started);
     let run: StartedCodexRun;
@@ -350,6 +384,7 @@ export function createApp({
           workOrder: scopedWorkOrder,
           workspacePath,
           sessionId: started.sessionId,
+          executionIdentity,
         });
         fallback = async () => {
           if (store.get(id)?.runStatus === "stopping") return null;
@@ -360,6 +395,7 @@ export function createApp({
           return codexRunner.start({
             workOrder: codexRunWorkOrder(store.get(id)!),
             workspacePath,
+            executionIdentity,
             continuation: await continuationContext(store, id, workspacePath),
           });
         };
@@ -367,6 +403,7 @@ export function createApp({
         run = await codexRunner.start({
           workOrder: scopedWorkOrder,
           workspacePath,
+          executionIdentity,
           continuation: await continuationContext(store, id, workspacePath),
         });
       }
@@ -392,7 +429,7 @@ export function createApp({
     }
     store.recordRunPid(id, run.pid ?? null);
     startRunTimeout(id);
-    return { run, fallback };
+    return { run, fallback, executionIdentityId: executionIdentity.id };
   };
 
   const readResourceSnapshot = async () => {
@@ -600,6 +637,26 @@ export function createApp({
           return executionIdentityErrorResponse(
             "INVALID_EXECUTION_IDENTITY_STATE",
             error instanceof Error ? error.message : "无法修改 Codex 账号状态",
+            409,
+          );
+        }
+      }
+
+      const defaultIdentityMatch = url.pathname.match(
+        /^\/api\/execution-identities\/([^/]+)\/default$/,
+      );
+      if (request.method === "POST" && defaultIdentityMatch) {
+        const id = decodeURIComponent(defaultIdentityMatch[1]);
+        try {
+          const identity = store.setDefaultExecutionIdentityId(id);
+          return Response.json({
+            identity: presentExecutionIdentity(identity, identity.id),
+            defaultIdentityId: identity.id,
+          });
+        } catch (error) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_UNAVAILABLE",
+            error instanceof Error ? error.message : "无法设为默认 Codex 账号",
             409,
           );
         }
@@ -996,11 +1053,26 @@ export function createApp({
         ["/api/sessions", "/api/codex-sessions"].includes(url.pathname)
       ) {
         const sourceKind = sessionSourceKindFromRequest(url);
-        const sourceProvider = sessionProviderForKind(
-          sourceKind,
-          codexSessionProvider,
-          claudeCodeSessionProvider,
-        );
+        const requestedIdentityId = url.searchParams.get("executionIdentityId")?.trim() || null;
+        let sourceProvider: SessionProvider | undefined;
+        let sourceIdentity: ExecutionIdentity | null = null;
+        try {
+          if (sourceKind === "codex_session") {
+            const source = codexDiscoverySource(requestedIdentityId);
+            sourceProvider = source.provider;
+            sourceIdentity = source.identity;
+          } else {
+            sourceProvider = claudeCodeSessionProvider;
+          }
+        } catch (error) {
+          return Response.json(
+            {
+              code: "SESSION_SOURCE_IDENTITY_NOT_FOUND",
+              error: error instanceof Error ? error.message : "找不到会话来源账号",
+            },
+            { status: 404 },
+          );
+        }
         if (!sourceProvider) {
           return Response.json({
             status: "unavailable",
@@ -1014,7 +1086,13 @@ export function createApp({
         const sessions = result.sessions
           .filter((session) => matchesSessionSearch(session, query))
           .map((session) => presentSession(session, workOrders, sourceKind));
-        return Response.json({ ...result, sourceKind, sourceLabel: sourceKindLabel(sourceKind), sessions });
+        return Response.json({
+          ...result,
+          sourceKind,
+          sourceLabel: sourceKindLabel(sourceKind),
+          executionIdentityId: sourceIdentity?.id ?? null,
+          sessions,
+        });
       }
 
       if (
@@ -1026,27 +1104,23 @@ export function createApp({
         if (url.pathname === "/api/codex-sessions/import") {
           sourceProvider = codexSessionProvider;
         }
-        if (!sourceProvider && url.pathname === "/api/codex-sessions/import") {
-          return Response.json(
-            { code: "CODEX_SESSION_DISCOVERY_UNAVAILABLE", error: "Codex 会话发现服务尚未配置" },
-            { status: 503 },
-          );
-        }
         try {
           const body = (await request.json()) as {
             name?: string;
             projectId?: string | null;
             sessionIds?: string[];
             source?: string;
+            executionIdentityId?: string | null;
           };
           if (url.pathname === "/api/sessions/import") {
             sourceKind = parseSessionSourceKind(body.source);
-            sourceProvider = sessionProviderForKind(
-              sourceKind,
-              codexSessionProvider,
-              claudeCodeSessionProvider,
-            );
           }
+          const sourceIdentity = sourceKind === "codex_session"
+            ? codexDiscoverySource(body.executionIdentityId?.trim() || null).identity
+            : null;
+          sourceProvider = sourceKind === "codex_session"
+            ? codexDiscoverySource(sourceIdentity!.id).provider
+            : claudeCodeSessionProvider;
           if (!sourceProvider) {
             return Response.json(
               {
@@ -1078,6 +1152,7 @@ export function createApp({
             return candidate;
           });
           const commonWorkspacePath = sharedSessionWorkspace(selected);
+          const sourceExecutionIdentityId = sourceIdentity?.id ?? null;
           const workOrder = store.create({
             name,
             description: name,
@@ -1093,8 +1168,15 @@ export function createApp({
                 id: candidate.id,
                 lastActiveAt: candidate.lastActiveAt,
                 lastReadAt: null,
+                ...(sourceExecutionIdentityId
+                  ? {
+                      executionIdentityId: sourceExecutionIdentityId,
+                      openInCodex: sourceIdentity?.homeKind === "system",
+                    }
+                  : {}),
                 version: 1,
               })),
+            executionIdentityId: sourceExecutionIdentityId,
             importContext: {
               status: "pending",
               summary: null,
@@ -1204,6 +1286,39 @@ export function createApp({
 
       if (request.method === "POST" && url.pathname === "/api/resources/run-once") {
         return Response.json(await runAutoRunOnce());
+      }
+
+      const goalIdentityMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/execution-identity$/,
+      );
+      if (request.method === "POST" && goalIdentityMatch) {
+        const id = decodeURIComponent(goalIdentityMatch[1]);
+        if (!store.get(id)) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as {
+            executionIdentityId?: string;
+            confirm?: boolean;
+          };
+          if (body.confirm !== true) throw new Error("请确认切换这个目标的 Codex 账号");
+          const workOrder = store.switchExecutionIdentity(
+            id,
+            body.executionIdentityId?.trim() ?? "",
+          );
+          return Response.json({ workOrder });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "EXECUTION_IDENTITY_SWITCH_REJECTED",
+              error: error instanceof Error ? error.message : "无法切换 Codex 账号",
+            },
+            { status: 409 },
+          );
+        }
       }
 
       const startMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)\/start$/);
@@ -1394,6 +1509,22 @@ export function createApp({
           } else if (workOrder.workspace.kind === "directory" && !reusingWorkspace) {
             store.saveDirectWorkspace(id, workspacePath!);
           }
+          let executionIdentity: ExecutionIdentity;
+          try {
+            executionIdentity = executionIdentityForRun(
+              store,
+              store.get(id)!,
+              reusingWorkspace && Boolean(store.get(id)!.sessionId),
+            );
+          } catch (error) {
+            return Response.json(
+              {
+                code: "EXECUTION_IDENTITY_UNAVAILABLE",
+                error: error instanceof Error ? error.message : "Codex 账号不可用",
+              },
+              { status: 409 },
+            );
+          }
           let startedWorkOrder;
           try {
             startedWorkOrder = reusingWorkspace
@@ -1442,6 +1573,7 @@ export function createApp({
                 workOrder: codexRunWorkOrder(startedWorkOrder),
                 workspacePath: workspacePath!,
                 sessionId: startedWorkOrder.sessionId,
+                executionIdentity,
               });
               fallback = async () => {
                 if (store.get(id)?.runStatus === "stopping") return null;
@@ -1452,6 +1584,7 @@ export function createApp({
                 return codexRunner.start({
                   workOrder: codexRunWorkOrder(store.get(id)!),
                   workspacePath: workspacePath!,
+                  executionIdentity,
                   continuation: await continuationContext(store, id, workspacePath!),
                 });
               };
@@ -1459,6 +1592,7 @@ export function createApp({
               run = await codexRunner.start({
                 workOrder: codexRunWorkOrder(startedWorkOrder),
                 workspacePath: workspacePath!,
+                executionIdentity,
                 continuation: reusingWorkspace
                   ? await continuationContext(store, id, workspacePath!)
                   : undefined,
@@ -1480,6 +1614,7 @@ export function createApp({
           activeRuns.set(id, run);
           startRunTimeout(id);
           void consumeRunEvents(store, id, run, activeRuns, {
+            executionIdentityId: executionIdentity.id,
             resultProcessor,
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
@@ -1628,6 +1763,22 @@ export function createApp({
         }
         startingWorkspacePaths.set(id, workspacePath);
         try {
+          let executionIdentity: ExecutionIdentity;
+          try {
+            executionIdentity = executionIdentityForRun(
+              store,
+              workOrder,
+              Boolean(workOrder.sessionId),
+            );
+          } catch (error) {
+            return Response.json(
+              {
+                code: "EXECUTION_IDENTITY_MISMATCH",
+                error: error instanceof Error ? error.message : "Codex 账号与会话不匹配",
+              },
+              { status: 409 },
+            );
+          }
           const continued = store.markContinued(id);
           let run;
           try {
@@ -1636,10 +1787,12 @@ export function createApp({
                   workOrder: codexRunWorkOrder(continued),
                   workspacePath,
                   sessionId: workOrder.sessionId,
+                  executionIdentity,
                 })
               : await codexRunner.start({
                   workOrder: codexRunWorkOrder(continued),
                   workspacePath,
+                  executionIdentity,
                   continuation: await continuationContext(
                     store,
                     id,
@@ -1658,6 +1811,7 @@ export function createApp({
           activeRuns.set(id, run);
           startRunTimeout(id);
           void consumeRunEvents(store, id, run, activeRuns, {
+            executionIdentityId: executionIdentity.id,
             resultProcessor,
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
@@ -1682,6 +1836,7 @@ export function createApp({
                     return codexRunner.start({
                       workOrder: codexRunWorkOrder(store.get(id)!),
                       workspacePath,
+                      executionIdentity,
                       continuation: context,
                     });
                   }
@@ -1794,6 +1949,18 @@ export function createApp({
           }
 
           const currentStage = recoveryStage(workOrder, checkpoint);
+          let executionIdentity: ExecutionIdentity;
+          try {
+            executionIdentity = executionIdentityForRun(store, workOrder);
+          } catch (error) {
+            return Response.json(
+              {
+                code: "EXECUTION_IDENTITY_UNAVAILABLE",
+                error: error instanceof Error ? error.message : "Codex 账号不可用",
+              },
+              { status: 409 },
+            );
+          }
           const reexecuted = store.markReexecuted(id);
           store.recordProgress(
             id,
@@ -1806,6 +1973,7 @@ export function createApp({
             run = await codexRunner.start({
               workOrder: codexRunWorkOrder(reexecuted),
               workspacePath: resolvedWorkspace.path,
+              executionIdentity,
               continuation: {
                 ...(await continuationContext(store, id, resolvedWorkspace.path)),
                 reexecuteStage: currentStage
@@ -1825,6 +1993,7 @@ export function createApp({
           activeRuns.set(id, run);
           startRunTimeout(id);
           void consumeRunEvents(store, id, run, activeRuns, {
+            executionIdentityId: executionIdentity.id,
             resultProcessor,
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
@@ -2441,15 +2610,20 @@ export function createApp({
           );
         }
         const sourceKind = workOrder.sourceSessions[0]?.kind;
+        let sourceProvider: SessionProvider | undefined;
+        try {
+          sourceProvider = sourceKind
+            ? sessionProviderForSource(
+                sourceKind,
+                workOrder.sourceSessions[0]?.executionIdentityId,
+              )
+            : undefined;
+        } catch {
+          sourceProvider = undefined;
+        }
         const sourceStatus = await inspectSourceSessions(
           workOrder,
-          sourceKind
-            ? sessionProviderForKind(
-                sourceKind,
-                codexSessionProvider,
-                claudeCodeSessionProvider,
-              )
-            : undefined,
+          sourceProvider,
         );
         return Response.json({
           workOrder: await withRecoverySite(workOrder, checkpointManager),
@@ -2584,6 +2758,7 @@ async function consumeRunEvents(
   run: StartedCodexRun,
   activeRuns: Map<string, StartedCodexRun>,
   options: {
+    executionIdentityId?: string;
     fallback?: () => Promise<StartedCodexRun | null>;
     resultProcessor?: WorkOrderResultProcessor;
     clearRunTimeout?: () => void;
@@ -2597,7 +2772,7 @@ async function consumeRunEvents(
   try {
     for await (const event of run.events) {
       if (event.type === "session") {
-        store.recordSession(workOrderId, event.sessionId);
+        store.recordSession(workOrderId, event.sessionId, options.executionIdentityId);
       } else if (event.type === "progress") {
         const visibleMessage = event.message.replace(stageProgressPattern, "").trim();
         if (visibleMessage) {
@@ -2654,6 +2829,7 @@ async function consumeRunEvents(
             }
           }
           void consumeRunEvents(store, workOrderId, fallbackRun, activeRuns, {
+            executionIdentityId: options.executionIdentityId,
             resultProcessor: options.resultProcessor,
             checkpointManager: options.checkpointManager,
             clearRunTimeout: options.clearRunTimeout,
@@ -2687,6 +2863,7 @@ async function consumeRunEvents(
                   activeRuns.set(workOrderId, next.run);
                   void consumeRunEvents(store, workOrderId, next.run, activeRuns, {
                     ...options,
+                    executionIdentityId: next.executionIdentityId,
                     fallback: next.fallback,
                   });
                   return;
@@ -3186,20 +3363,28 @@ function sessionSourceKindFromRequest(url: URL): WorkOrderImportSource["kind"] {
   return parseSessionSourceKind(url.searchParams.get("source") ?? undefined);
 }
 
-function sessionProviderForKind(
-  kind: WorkOrderImportSource["kind"],
-  codexProvider?: SessionProvider,
-  claudeCodeProvider?: SessionProvider,
-): SessionProvider | undefined {
-  return kind === "claude_code_session" ? claudeCodeProvider : codexProvider;
-}
-
 function sourceKindLabel(kind: WorkOrderImportSource["kind"]): string {
   return kind === "claude_code_session" ? "Claude Code" : "Codex";
 }
 
 function isImportOnlyWorkOrder(workOrder: WorkOrder): boolean {
   return workOrder.sourceSessions[0]?.kind === "claude_code_session";
+}
+
+function executionIdentityForRun(
+  store: WorkOrderStore,
+  workOrder: WorkOrder,
+  willResume = false,
+): ExecutionIdentity {
+  const bound = store.bindExecutionIdentity(workOrder.id);
+  const identityId = bound.executionIdentityId;
+  if (!identityId) throw new Error("请先选择可用的 Codex 账号");
+  if (willResume && bound.sessionId && bound.sessionIdentityId !== identityId) {
+    throw new Error("保存的 Codex 会话属于另一个账号，不能直接恢复");
+  }
+  const identity = store.getExecutionIdentity(identityId);
+  if (!identity) throw new Error("找不到目标绑定的 Codex 账号");
+  return identity;
 }
 
 function importOnlyResponse(): Response {

@@ -387,11 +387,11 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     materials: workOrder.materials,
     resourcePlan: workOrder.resourcePlan,
     maxRunMinutes: workOrder.maxRunMinutes,
-    sourceSessions: workOrder.sourceSessions,
+    sourceSessions: workOrder.sourceSessions.map(exportSessionSource),
     importContext: workOrder.importContext,
     currentSessionId: workOrder.currentSessionId,
     sessionReferences: {
-      imported: workOrder.importSource,
+      imported: workOrder.importSource ? exportSessionSource(workOrder.importSource) : null,
       active: workOrder.sessionId,
     },
     executionMap: workOrder.plan,
@@ -411,6 +411,16 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     createdAt: workOrder.createdAt,
     updatedAt: workOrder.updatedAt,
   }) as ExportedWorkOrder;
+}
+
+function exportSessionSource(source: WorkOrderImportSource): WorkOrderImportSource {
+  return {
+    kind: source.kind,
+    id: source.id,
+    lastActiveAt: source.lastActiveAt,
+    ...(source.lastReadAt !== undefined ? { lastReadAt: source.lastReadAt } : {}),
+    version: 1,
+  };
 }
 
 function redactObject<T>(value: T): T {

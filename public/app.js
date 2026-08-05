@@ -1809,7 +1809,13 @@ function renderImportedSessionContext(workOrder) {
       ${context.error ? `<p class="form-error">${escapeHtml(context.error)}</p>` : ""}
       <div class="source-session-list">
         ${workOrder.sourceSessions.map((source, index) => renderSessionEntry(source, `来源 ${index + 1}`)).join("")}
-        ${currentSessionId ? renderSessionEntry({ kind: "codex_session", id: currentSessionId }, "当前执行会话") : ""}
+        ${currentSessionId ? renderSessionEntry({
+          kind: "codex_session",
+          id: currentSessionId,
+          openInCodex: workOrder.sourceSessions.some(
+            (source) => source.id === currentSessionId && source.openInCodex === true,
+          ),
+        }, "当前执行会话") : ""}
       </div>
       <button class="secondary-button full-button" data-reorganize-sessions type="button">${context.status === "ready" ? "重新整理来源" : "重试整理"}</button>
       <p class="inline-feedback" id="session-entry-feedback" role="status"></p>
@@ -1818,14 +1824,15 @@ function renderImportedSessionContext(workOrder) {
 
 function renderSessionEntry(source, label) {
   const codexSource = source.kind === "codex_session";
+  const canOpenInCodex = codexSource && source.openInCodex === true;
   return `
     <article class="source-session-entry">
       <span>${escapeHtml(label)} · ${sourceKindLabel(source.kind)}</span>
       <code>${escapeHtml(source.id)}</code>
       <div>
-        ${codexSource ? `<button class="secondary-button" type="button" data-open-codex-session="${escapeHtml(source.id)}">在 Codex 打开</button>` : '<span class="source-import-only">仅导入与状态整理</span>'}
+        ${canOpenInCodex ? `<button class="secondary-button" type="button" data-open-codex-session="${escapeHtml(source.id)}">在 Codex 打开</button>` : `<span class="source-import-only">${codexSource ? "可在 Teamline 中查看和继续" : "仅导入与状态整理"}</span>`}
         <button class="text-button" type="button" data-copy-session-id="${escapeHtml(source.id)}">复制 ID</button>
-        ${codexSource ? `<button class="text-button" type="button" data-copy-session-cli="${escapeHtml(source.id)}">复制 CLI 命令</button>` : ""}
+        ${canOpenInCodex ? `<button class="text-button" type="button" data-copy-session-cli="${escapeHtml(source.id)}">复制 CLI 命令</button>` : ""}
       </div>
     </article>`;
 }

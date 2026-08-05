@@ -34,6 +34,7 @@ import {
   type WorkOrderResourcePlan,
   type WorkOrderImportSource,
   type WorkOrderImportContext,
+  type SessionHandoff,
   type WorkOrderWorkspace,
   workOrderPaces,
   workOrderPriorities,
@@ -64,6 +65,9 @@ type WorkOrderRow = {
   execution_branch: string | null;
   base_commit: string | null;
   session_id: string | null;
+  execution_identity_id: string | null;
+  session_identity_id: string | null;
+  session_handoff_json: string | null;
   run_status: WorkOrder["runStatus"];
   run_started_at: string | null;
   run_ended_at: string | null;
@@ -276,6 +280,7 @@ export class WorkOrderStore {
     `);
     this.createExecutionIdentityTable();
     this.ensureDefaultExecutionIdentity();
+    this.addExecutionIdentityBindingColumns();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_order_checkpoints (
         id TEXT PRIMARY KEY,
@@ -687,6 +692,77 @@ export class WorkOrderStore {
       .get()?.value;
     const identity = value ? this.getExecutionIdentity(value) : null;
     return identity && identity.status !== "removed" ? identity.id : null;
+  }
+
+  setDefaultExecutionIdentityId(id: string): ExecutionIdentity {
+    const identity = this.requireUsableExecutionIdentity(id);
+    this.saveDefaultExecutionIdentityId(identity.id, new Date().toISOString());
+    return identity;
+  }
+
+  getSystemExecutionIdentityId(): string | null {
+    return this.database
+      .query<{ id: string }, []>(`
+        SELECT id FROM execution_identities
+        WHERE home_kind = 'system' AND identity_status <> 'removed'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      `)
+      .get()?.id ?? null;
+  }
+
+  bindExecutionIdentity(id: string, requestedIdentityId?: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    if (workOrder.executionIdentityId) {
+      this.requireUsableExecutionIdentity(workOrder.executionIdentityId);
+      return workOrder;
+    }
+    const identityId = requestedIdentityId ?? this.getDefaultExecutionIdentityId();
+    if (!identityId) throw new Error("请先选择可用的 Codex 账号");
+    this.requireUsableExecutionIdentity(identityId);
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET execution_identity_id = ?, updated_at = ?
+        WHERE id = ? AND execution_identity_id IS NULL
+      `)
+      .run(identityId, now, id);
+    return this.get(id)!;
+  }
+
+  switchExecutionIdentity(id: string, executionIdentityId: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    if (["running", "stopping", "verifying"].includes(workOrder.runStatus ?? "")) {
+      throw new Error("请等待当前节点结束后再切换账号");
+    }
+    const identity = this.requireUsableExecutionIdentity(executionIdentityId);
+    if (workOrder.executionIdentityId === identity.id) return workOrder;
+    const currentStage = workOrder.plan?.stages.find((stage) =>
+      ["running", "response"].includes(stage.status),
+    ) ?? workOrder.plan?.stages.find((stage) => stage.status !== "completed") ?? null;
+    const handoff: SessionHandoff | null = workOrder.executionIdentityId
+      ? {
+          fromExecutionIdentityId: workOrder.executionIdentityId,
+          previousSessionId: workOrder.sessionId,
+          summary: workOrder.currentSummary,
+          currentStageId: currentStage?.id ?? null,
+          currentStageOutcome: currentStage?.outcome ?? null,
+          createdAt: new Date().toISOString(),
+        }
+      : null;
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET execution_identity_id = ?, session_id = NULL,
+            session_identity_id = NULL, session_handoff_json = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(identity.id, handoff ? JSON.stringify(handoff) : null, now, id);
+    return this.get(id)!;
   }
 
   createManagedExecutionIdentity(input: {
@@ -1132,6 +1208,26 @@ export class WorkOrderStore {
 
   create(input: CreateWorkOrderInput): WorkOrder {
     const workOrder = createWorkOrder(input);
+    const sourceIdentityIds = new Set(
+      workOrder.sourceSessions
+        .map((source) => source.executionIdentityId)
+        .filter((identityId): identityId is string => Boolean(identityId)),
+    );
+    if (sourceIdentityIds.size > 1) {
+      throw new Error("一个目标的来源会话必须来自同一个 Codex 账号");
+    }
+    const sourceIdentityId = [...sourceIdentityIds][0] ?? null;
+    if (
+      workOrder.executionIdentityId &&
+      sourceIdentityId &&
+      workOrder.executionIdentityId !== sourceIdentityId
+    ) {
+      throw new Error("目标账号与来源会话账号不匹配");
+    }
+    if (sourceIdentityId && !this.getExecutionIdentity(sourceIdentityId)) {
+      throw new Error("找不到来源会话对应的 Codex 账号");
+    }
+    workOrder.executionIdentityId ??= sourceIdentityId;
     if (workOrder.projectId && !this.getProject(workOrder.projectId)) {
       throw new Error("找不到所选项目");
     }
@@ -1151,8 +1247,9 @@ export class WorkOrderStore {
           id, title, project_id, project_materials_confirmed,
           repository_path, workspace_kind, materials_json,
           source_sessions_json, import_source_json, import_context_json,
-          goal, acceptance, status, current_summary, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          execution_identity_id, goal, acceptance, status, current_summary,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
@@ -1165,6 +1262,7 @@ export class WorkOrderStore {
         JSON.stringify(workOrder.sourceSessions),
         workOrder.importSource ? JSON.stringify(workOrder.importSource) : null,
         workOrder.importContext ? JSON.stringify(workOrder.importContext) : null,
+        workOrder.executionIdentityId,
         workOrder.goal,
         workOrder.acceptance,
         workOrder.status,
@@ -1901,6 +1999,7 @@ export class WorkOrderStore {
         UPDATE work_orders
         SET status = 'running', current_summary = 'Codex 已启动', plan_json = ?,
             run_status = 'running', session_id = ${resetSession ? "NULL" : "session_id"},
+            session_identity_id = ${resetSession ? "NULL" : "session_identity_id"},
             run_pid = NULL,
             run_number = run_number + 1,
             run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
@@ -1962,7 +2061,7 @@ export class WorkOrderStore {
         UPDATE work_orders
         SET status = 'running', current_summary = '正在从最近阶段重新执行',
             run_status = 'running', run_number = run_number + 1,
-            session_id = NULL, run_pid = NULL, plan_json = ?,
+            session_id = NULL, session_identity_id = NULL, run_pid = NULL, plan_json = ?,
             run_started_at = ?, run_ended_at = NULL, runtime_updated_at = ?,
             last_error = NULL, updated_at = ?
         WHERE id = ?
@@ -2031,9 +2130,19 @@ export class WorkOrderStore {
     return interrupted;
   }
 
-  recordSession(id: string, sessionId: string): void {
+  recordSession(id: string, sessionId: string, executionIdentityId?: string): void {
+    const existing = this.get(id);
+    const workOrder = existing?.executionIdentityId
+      ? existing
+      : this.bindExecutionIdentity(id);
+    const boundIdentityId = workOrder?.executionIdentityId;
+    const sessionIdentityId = executionIdentityId ?? boundIdentityId;
+    if (!boundIdentityId || !sessionIdentityId || sessionIdentityId !== boundIdentityId) {
+      throw new Error("Codex 会话与目标账号不匹配");
+    }
     this.appendRunEvent(id, "session", "Codex 会话已连接", {
       sessionId,
+      sessionIdentityId,
       summary: "Codex 会话已连接",
       category: "lifecycle",
     });
@@ -2486,6 +2595,7 @@ export class WorkOrderStore {
     message: string,
     options: {
       sessionId?: string;
+      sessionIdentityId?: string;
       summary: string;
       ended?: boolean;
       failed?: boolean;
@@ -2526,6 +2636,8 @@ export class WorkOrderStore {
         .query(`
           UPDATE work_orders
           SET status = ?, current_summary = ?, session_id = COALESCE(?, session_id),
+              session_identity_id = COALESCE(?, session_identity_id),
+              session_handoff_json = CASE WHEN ? IS NULL THEN session_handoff_json ELSE NULL END,
               run_status = ?, run_ended_at = ?, run_pid = ?,
               runtime_ms = ?, runtime_updated_at = ?,
               last_error = ?, updated_at = ?
@@ -2534,6 +2646,8 @@ export class WorkOrderStore {
         .run(
           status,
           options.preserveSummary ? row.current_summary : options.summary,
+          options.sessionId ?? null,
+          options.sessionIdentityId ?? null,
           options.sessionId ?? null,
           runStatus,
           options.ended ? nowIso : null,
@@ -2664,6 +2778,87 @@ export class WorkOrderStore {
     const identity = this.getExecutionIdentity(id);
     if (!identity) throw new Error("找不到这个 Codex 账号");
     return identity;
+  }
+
+  private requireUsableExecutionIdentity(id: string): ExecutionIdentity {
+    const identity = this.requireExecutionIdentity(id);
+    if (identity.status !== "enabled") throw new Error("这个 Codex 账号当前不可用");
+    if (
+      identity.loginState !== "ready" &&
+      !(identity.homeKind === "system" && identity.loginState === "unknown")
+    ) {
+      throw new Error("这个 Codex 账号尚未登录");
+    }
+    return identity;
+  }
+
+  private addExecutionIdentityBindingColumns(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("execution_identity_id")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN execution_identity_id TEXT");
+    }
+    if (!columns.has("session_identity_id")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN session_identity_id TEXT");
+    }
+    if (!columns.has("session_handoff_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN session_handoff_json TEXT");
+    }
+    const defaultIdentityId = this.getDefaultExecutionIdentityId();
+    if (defaultIdentityId) {
+      this.database
+        .query(`
+          UPDATE work_orders
+          SET execution_identity_id = ?,
+              session_identity_id = CASE
+                WHEN session_id IS NOT NULL THEN ?
+                ELSE session_identity_id
+              END
+          WHERE session_id IS NOT NULL AND execution_identity_id IS NULL
+        `)
+        .run(defaultIdentityId, defaultIdentityId);
+    }
+    const systemIdentityId = this.getSystemExecutionIdentityId();
+    if (systemIdentityId) {
+      const imported = this.database
+        .query<{
+          id: string;
+          source_sessions_json: string | null;
+          import_source_json: string | null;
+          execution_identity_id: string | null;
+        }, []>(`
+          SELECT id, source_sessions_json, import_source_json, execution_identity_id
+          FROM work_orders
+          WHERE source_sessions_json IS NOT NULL OR import_source_json IS NOT NULL
+        `)
+        .all();
+      const save = this.database.query(`
+        UPDATE work_orders
+        SET source_sessions_json = ?, import_source_json = ?,
+            execution_identity_id = COALESCE(execution_identity_id, ?)
+        WHERE id = ?
+      `);
+      for (const row of imported) {
+        const sources = legacyCodexSourcesWithIdentity(
+          row.source_sessions_json,
+          row.import_source_json,
+          systemIdentityId,
+        );
+        if (!sources) continue;
+        save.run(
+          row.source_sessions_json === null
+            ? null
+            : JSON.stringify(sources.sourceSessions),
+          sources.importSource ? JSON.stringify(sources.importSource) : null,
+          systemIdentityId,
+          row.id,
+        );
+      }
+    }
   }
 
   private addExecutionColumnsToExistingDatabase(): void {
@@ -3071,6 +3266,9 @@ function mapRow(
     sourceSessions,
     importContext: normalizeImportContext(row.import_context_json),
     currentSessionId: row.session_id,
+    executionIdentityId: row.execution_identity_id,
+    sessionIdentityId: row.session_identity_id,
+    sessionHandoff: normalizeSessionHandoff(row.session_handoff_json),
     importSource: sourceSessions[0] ?? null,
     resourcePlan: normalizeResourcePlan(row.resource_plan_json),
     goal: row.goal,
@@ -3100,6 +3298,75 @@ function mapRow(
   };
 }
 
+function normalizeSessionHandoff(value: string | null): SessionHandoff | null {
+  if (!value) return null;
+  try {
+    const handoff = JSON.parse(value) as Partial<SessionHandoff>;
+    if (
+      typeof handoff.fromExecutionIdentityId !== "string" ||
+      typeof handoff.summary !== "string" ||
+      typeof handoff.createdAt !== "string"
+    ) {
+      return null;
+    }
+    return {
+      fromExecutionIdentityId: handoff.fromExecutionIdentityId,
+      previousSessionId:
+        typeof handoff.previousSessionId === "string" ? handoff.previousSessionId : null,
+      summary: handoff.summary,
+      currentStageId:
+        typeof handoff.currentStageId === "string" ? handoff.currentStageId : null,
+      currentStageOutcome:
+        typeof handoff.currentStageOutcome === "string" ? handoff.currentStageOutcome : null,
+      createdAt: handoff.createdAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function legacyCodexSourcesWithIdentity(
+  sourceSessionsJson: string | null,
+  importSourceJson: string | null,
+  systemIdentityId: string,
+): {
+  sourceSessions: Array<Record<string, unknown>>;
+  importSource: Record<string, unknown> | null;
+} | null {
+  try {
+    const storedSources = sourceSessionsJson === null
+      ? null
+      : JSON.parse(sourceSessionsJson);
+    const storedImport = importSourceJson === null
+      ? null
+      : JSON.parse(importSourceJson);
+    const sourceSessions = Array.isArray(storedSources)
+      ? storedSources
+      : storedImport && typeof storedImport === "object"
+        ? [storedImport]
+        : [];
+    let changed = false;
+    const annotate = (source: unknown): Record<string, unknown> => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+      const value = source as Record<string, unknown>;
+      if (value.kind !== "codex_session" || value.executionIdentityId) return value;
+      changed = true;
+      return {
+        ...value,
+        executionIdentityId: systemIdentityId,
+        openInCodex: true,
+      };
+    };
+    const annotatedSources = sourceSessions.map(annotate);
+    const annotatedImport = storedImport ? annotate(storedImport) : null;
+    return changed
+      ? { sourceSessions: annotatedSources, importSource: annotatedImport }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeImportSource(value: string | null): WorkOrderImportSource | null {
   if (!value) return null;
   try {
@@ -3123,6 +3390,13 @@ function normalizeImportSource(value: string | null): WorkOrderImportSource | nu
         : typeof stored.lastReadAt === "string" && Number.isFinite(Date.parse(stored.lastReadAt))
           ? { lastReadAt: new Date(stored.lastReadAt).toISOString() }
           : {}),
+      ...(typeof stored.executionIdentityId === "string" && stored.executionIdentityId.trim()
+        ? { executionIdentityId: stored.executionIdentityId.trim() }
+        : {}),
+      ...(stored.openInCodex === true ||
+      (stored.kind === "codex_session" && !stored.executionIdentityId)
+        ? { openInCodex: true }
+        : {}),
       version: 1,
     };
   } catch {

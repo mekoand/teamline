@@ -283,11 +283,12 @@ describe("interrupt and continue API", () => {
       await waitFor(() => store.get(created.id)?.runStatus === "completed");
 
       expect(resumeRequests).toEqual([
-        {
+        expect.objectContaining({
           workOrder: expect.objectContaining({ id: created.id, runNumber: 2 }),
           workspacePath,
           sessionId: "session-saved",
-        },
+          executionIdentity: expect.objectContaining({ id: "codex-system-default" }),
+        }),
       ]);
       expect(store.get(created.id)!.runtimeMs).toBeGreaterThanOrEqual(firstRuntime);
       const eventsResponse = await app.fetch(
