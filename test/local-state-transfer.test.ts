@@ -258,7 +258,9 @@ describe("local Teamline state transfer", () => {
     later.id = "later-v1-goal";
     later.title = "较晚的 V1 目标";
     later.goal = "共享同一旧来源";
-    later.createdAt = "2026-08-05T00:00:00.000Z";
+    later.createdAt = new Date(
+      Date.parse(bundle.workOrders[0].createdAt) + 1_000,
+    ).toISOString();
     later.updatedAt = later.createdAt;
     bundle.workOrders.push(later);
     bundle.version = 1;

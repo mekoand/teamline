@@ -13,9 +13,11 @@ import { GitCheckpointManager } from "./checkpoint-manager";
 import { LocalCodexSessionProvider } from "./codex-session-discovery";
 import { LocalClaudeCodeSessionProvider } from "./claude-code-session-discovery";
 import { CodexSessionOrganizer } from "./session-organizer";
+import { LocalCodexIdentityEnvironment } from "./execution-identity-environment";
 
 const projectRoot = resolve(import.meta.dir, "..");
 const dataDirectory = resolve(process.env.TEAMLINE_DATA_DIR ?? join(projectRoot, ".teamline"));
+const systemCodexHome = resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"));
 mkdirSync(dataDirectory, { recursive: true });
 
 const store = new WorkOrderStore(new Database(join(dataDirectory, "teamline.db"), { create: true }));
@@ -29,15 +31,20 @@ const app = createApp({
   resultProcessor: new LocalWorkOrderResultProcessor(),
   resourceProvider: createServerResourceProvider(),
   checkpointManager: new GitCheckpointManager(),
-  codexSessionProvider: new LocalCodexSessionProvider(
-    resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex")),
-  ),
+  codexSessionProvider: new LocalCodexSessionProvider(systemCodexHome),
   claudeCodeSessionProvider: new LocalClaudeCodeSessionProvider(
     resolve(process.env.CLAUDE_CODE_PROJECTS_DIR ?? join(homedir(), ".claude", "projects")),
   ),
   sessionOrganizer: new CodexSessionOrganizer(),
   projectRoot,
   dataDirectory,
+  executionIdentityEnvironment: new LocalCodexIdentityEnvironment(
+    join(dataDirectory, "codex-identities"),
+    {
+      executable: process.env.TEAMLINE_CODEX_PATH,
+      systemHome: systemCodexHome,
+    },
+  ),
 });
 
 const server = Bun.serve({

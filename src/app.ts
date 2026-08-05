@@ -51,6 +51,8 @@ import {
   RestorePreviewMissingError,
   RestorePreviewStaleError,
 } from "./local-state-transfer";
+import { presentExecutionIdentity } from "./execution-identity";
+import type { ExecutionIdentityEnvironment } from "./execution-identity-environment";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -76,6 +78,7 @@ type AppDependencies = {
   sessionOrganizer?: SessionOrganizer;
   sessionOrganizationTimeoutMs?: number;
   dataDirectory?: string;
+  executionIdentityEnvironment?: ExecutionIdentityEnvironment;
   openLocalArtifact?: (path: string, reveal: boolean) => Promise<void>;
 };
 
@@ -115,6 +118,7 @@ export function createApp({
   sessionOrganizer,
   sessionOrganizationTimeoutMs = 5 * 60 * 1000,
   dataDirectory = join(projectRoot, ".teamline"),
+  executionIdentityEnvironment,
   openLocalArtifact = openLocalArtifactWithSystem,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
@@ -489,6 +493,200 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/health") {
         return Response.json({ ok: true });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/execution-identities") {
+        const defaultIdentityId = store.getDefaultExecutionIdentityId();
+        return Response.json({
+          defaultIdentityId,
+          identities: store
+            .listExecutionIdentities()
+            .map((identity) => presentExecutionIdentity(identity, defaultIdentityId)),
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/execution-identities") {
+        if (!executionIdentityEnvironment) {
+          return executionIdentityErrorResponse(
+            "IDENTITY_ENVIRONMENT_UNAVAILABLE",
+            "Codex 账号环境尚未配置",
+            503,
+          );
+        }
+        const id = crypto.randomUUID();
+        let environmentCreated = false;
+        try {
+          const body = (await request.json()) as { label?: string };
+          const environment = await executionIdentityEnvironment.create(id);
+          environmentCreated = true;
+          const identity = store.createManagedExecutionIdentity({
+            id,
+            label: body.label ?? "",
+            managedHomePath: environment.managedHomePath,
+          });
+          return Response.json(
+            {
+              identity: presentExecutionIdentity(
+                identity,
+                store.getDefaultExecutionIdentityId(),
+              ),
+            },
+            { status: 201 },
+          );
+        } catch (error) {
+          if (environmentCreated) {
+            await executionIdentityEnvironment.remove(id).catch(() => undefined);
+          }
+          return executionIdentityErrorResponse(
+            "INVALID_EXECUTION_IDENTITY",
+            error instanceof Error ? error.message : "无法添加 Codex 账号",
+            400,
+          );
+        }
+      }
+
+      const identityMatch = url.pathname.match(/^\/api\/execution-identities\/([^/]+)$/);
+      if (request.method === "PATCH" && identityMatch) {
+        const id = decodeURIComponent(identityMatch[1]);
+        if (!store.getExecutionIdentity(id)) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_NOT_FOUND",
+            "找不到这个 Codex 账号",
+            404,
+          );
+        }
+        try {
+          const body = (await request.json()) as { label?: string };
+          const identity = store.renameExecutionIdentity(id, body.label ?? "");
+          return Response.json({
+            identity: presentExecutionIdentity(
+              identity,
+              store.getDefaultExecutionIdentityId(),
+            ),
+          });
+        } catch (error) {
+          return executionIdentityErrorResponse(
+            "INVALID_EXECUTION_IDENTITY",
+            error instanceof Error ? error.message : "无法修改 Codex 账号",
+            400,
+          );
+        }
+      }
+
+      const identityStateMatch = url.pathname.match(
+        /^\/api\/execution-identities\/([^/]+)\/(enable|disable)$/,
+      );
+      if (request.method === "POST" && identityStateMatch) {
+        const id = decodeURIComponent(identityStateMatch[1]);
+        if (!store.getExecutionIdentity(id)) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_NOT_FOUND",
+            "找不到这个 Codex 账号",
+            404,
+          );
+        }
+        try {
+          const identity = store.setExecutionIdentityEnabled(
+            id,
+            identityStateMatch[2] === "enable",
+          );
+          return Response.json({
+            identity: presentExecutionIdentity(
+              identity,
+              store.getDefaultExecutionIdentityId(),
+            ),
+          });
+        } catch (error) {
+          return executionIdentityErrorResponse(
+            "INVALID_EXECUTION_IDENTITY_STATE",
+            error instanceof Error ? error.message : "无法修改 Codex 账号状态",
+            409,
+          );
+        }
+      }
+
+      const identityRefreshMatch = url.pathname.match(
+        /^\/api\/execution-identities\/([^/]+)\/refresh$/,
+      );
+      if (request.method === "POST" && identityRefreshMatch) {
+        const id = decodeURIComponent(identityRefreshMatch[1]);
+        const identity = store.getExecutionIdentity(id);
+        if (!identity) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_NOT_FOUND",
+            "找不到这个 Codex 账号",
+            404,
+          );
+        }
+        if (identity.status !== "enabled") {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_DISABLED",
+            "这个 Codex 账号当前不可用",
+            409,
+          );
+        }
+        if (!executionIdentityEnvironment) {
+          return executionIdentityErrorResponse(
+            "IDENTITY_ENVIRONMENT_UNAVAILABLE",
+            "Codex 账号环境尚未配置",
+            503,
+          );
+        }
+        try {
+          const observation = await executionIdentityEnvironment.inspect(identity);
+          const refreshed = store.recordExecutionIdentityObservation(id, observation);
+          return Response.json({
+            identity: presentExecutionIdentity(
+              refreshed,
+              store.getDefaultExecutionIdentityId(),
+            ),
+          });
+        } catch (error) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_REFRESH_FAILED",
+            error instanceof Error ? error.message : "无法读取 Codex 账号状态",
+            503,
+          );
+        }
+      }
+
+      if (request.method === "DELETE" && identityMatch) {
+        const id = decodeURIComponent(identityMatch[1]);
+        const identity = store.getExecutionIdentity(id);
+        if (!identity) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_NOT_FOUND",
+            "找不到这个 Codex 账号",
+            404,
+          );
+        }
+        try {
+          const body = (await request.json()) as { confirm?: boolean };
+          if (body.confirm !== true) throw new Error("请确认移除这个 Codex 账号");
+          if (identity.homeKind === "managed") {
+            if (!executionIdentityEnvironment) {
+              return executionIdentityErrorResponse(
+                "IDENTITY_ENVIRONMENT_UNAVAILABLE",
+                "Codex 账号环境尚未配置",
+                503,
+              );
+            }
+            await executionIdentityEnvironment.remove(id);
+          }
+          const removed = store.removeExecutionIdentity(id);
+          return Response.json({
+            identity: presentExecutionIdentity(
+              removed,
+              store.getDefaultExecutionIdentityId(),
+            ),
+          });
+        } catch (error) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_REMOVE_FAILED",
+            error instanceof Error ? error.message : "无法移除 Codex 账号",
+            400,
+          );
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/api/local-state/export") {
@@ -2722,6 +2920,14 @@ function workspaceErrorResponse(error: WorkspaceValidationError): Response {
     },
   }[error];
   return Response.json(details, { status: error === "in_use" ? 409 : 400 });
+}
+
+function executionIdentityErrorResponse(
+  code: string,
+  error: string,
+  status: number,
+): Response {
+  return Response.json({ code, error }, { status });
 }
 
 function localStateErrorResponse(error: unknown): Response {

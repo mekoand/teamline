@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import {
+  executionIdentityLoginStates,
+  type ExecutionIdentity,
+  type ExecutionIdentityLoginState,
+  type ExecutionIdentityObservation,
+} from "./execution-identity";
+import {
   createProject,
   createProjectMaterial,
   type CreateProjectMaterialInput,
@@ -121,6 +127,22 @@ type ConversationRow = {
   decision_target: WorkOrderConversationMessage["decisionTarget"];
   requires_plan_confirmation: number;
   created_at: string;
+};
+
+type ExecutionIdentityRow = {
+  id: string;
+  tool: "codex";
+  label: string;
+  identity_status: ExecutionIdentity["status"];
+  home_kind: ExecutionIdentity["homeKind"];
+  managed_home_path: string | null;
+  account_fingerprint: string | null;
+  login_state: ExecutionIdentityLoginState;
+  capabilities_json: string;
+  last_observed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  removed_at: string | null;
 };
 
 export type LocalNotificationKind =
@@ -252,6 +274,8 @@ export class WorkOrderStore {
         updated_at TEXT NOT NULL
       )
     `);
+    this.createExecutionIdentityTable();
+    this.ensureDefaultExecutionIdentity();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_order_checkpoints (
         id TEXT PRIMARY KEY,
@@ -625,6 +649,164 @@ export class WorkOrderStore {
         .filter((checkpoint) => checkpoint.planVersion === workOrder.plan!.version)
         .at(-1) ?? null
     );
+  }
+
+  listExecutionIdentities(): ExecutionIdentity[] {
+    return this.database
+      .query<ExecutionIdentityRow, []>(`
+        SELECT id, tool, label, identity_status, home_kind, managed_home_path,
+               account_fingerprint, login_state, capabilities_json,
+               last_observed_at, created_at, updated_at, removed_at
+        FROM execution_identities
+        ORDER BY CASE identity_status WHEN 'enabled' THEN 0 WHEN 'disabled' THEN 1 ELSE 2 END,
+                 created_at ASC, id ASC
+      `)
+      .all()
+      .map(mapExecutionIdentityRow);
+  }
+
+  getExecutionIdentity(id: string): ExecutionIdentity | null {
+    const row = this.database
+      .query<ExecutionIdentityRow, [string]>(`
+        SELECT id, tool, label, identity_status, home_kind, managed_home_path,
+               account_fingerprint, login_state, capabilities_json,
+               last_observed_at, created_at, updated_at, removed_at
+        FROM execution_identities
+        WHERE id = ?
+      `)
+      .get(id);
+    return row ? mapExecutionIdentityRow(row) : null;
+  }
+
+  getDefaultExecutionIdentityId(): string | null {
+    const value = this.database
+      .query<{ value: string }, []>(`
+        SELECT value FROM local_preferences
+        WHERE key = 'default-codex-execution-identity-id'
+      `)
+      .get()?.value;
+    const identity = value ? this.getExecutionIdentity(value) : null;
+    return identity && identity.status !== "removed" ? identity.id : null;
+  }
+
+  createManagedExecutionIdentity(input: {
+    id: string;
+    label: string;
+    managedHomePath: string;
+  }): ExecutionIdentity {
+    const id = input.id.trim();
+    const label = normalizeExecutionIdentityLabel(input.label);
+    const managedHomePath = input.managedHomePath.trim();
+    if (!id) throw new Error("账号标识不能为空");
+    if (!managedHomePath) throw new Error("Codex 账号目录不能为空");
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        INSERT INTO execution_identities (
+          id, tool, label, identity_status, home_kind, managed_home_path,
+          account_fingerprint, login_state, capabilities_json,
+          last_observed_at, created_at, updated_at, removed_at
+        ) VALUES (?, 'codex', ?, 'enabled', 'managed', ?, NULL, 'signed_out', '[]', NULL, ?, ?, NULL)
+      `)
+      .run(id, label, managedHomePath, now, now);
+    if (!this.getDefaultExecutionIdentityId()) {
+      this.saveDefaultExecutionIdentityId(id, now);
+    }
+    return this.getExecutionIdentity(id)!;
+  }
+
+  renameExecutionIdentity(id: string, label: string): ExecutionIdentity {
+    const identity = this.requireExecutionIdentity(id);
+    if (identity.status === "removed") throw new Error("已移除的账号不能改名");
+    this.database
+      .query("UPDATE execution_identities SET label = ?, updated_at = ? WHERE id = ?")
+      .run(normalizeExecutionIdentityLabel(label), new Date().toISOString(), id);
+    return this.getExecutionIdentity(id)!;
+  }
+
+  setExecutionIdentityEnabled(id: string, enabled: boolean): ExecutionIdentity {
+    const identity = this.requireExecutionIdentity(id);
+    if (identity.status === "removed") throw new Error("已移除的账号不能重新启用");
+    this.database
+      .query(`
+        UPDATE execution_identities
+        SET identity_status = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(enabled ? "enabled" : "disabled", new Date().toISOString(), id);
+    return this.getExecutionIdentity(id)!;
+  }
+
+  recordExecutionIdentityObservation(
+    id: string,
+    observation: ExecutionIdentityObservation,
+  ): ExecutionIdentity {
+    const identity = this.requireExecutionIdentity(id);
+    if (identity.status === "removed") throw new Error("已移除的账号不能更新状态");
+    if (!executionIdentityLoginStates.includes(observation.loginState)) {
+      throw new Error("Codex 登录状态无效");
+    }
+    const observedAt = observation.observedAt ?? new Date().toISOString();
+    const capabilities = normalizeExecutionIdentityCapabilities(
+      observation.capabilities ?? identity.capabilities,
+    );
+    this.database
+      .query(`
+        UPDATE execution_identities
+        SET account_fingerprint = ?, login_state = ?, capabilities_json = ?,
+            last_observed_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        observation.accountFingerprint === undefined
+          ? identity.accountFingerprint
+          : observation.accountFingerprint,
+        observation.loginState,
+        JSON.stringify(capabilities),
+        observedAt,
+        observedAt,
+        id,
+      );
+    return this.getExecutionIdentity(id)!;
+  }
+
+  removeExecutionIdentity(id: string): ExecutionIdentity {
+    const identity = this.requireExecutionIdentity(id);
+    if (identity.status === "removed") return identity;
+    if (identity.homeKind === "system") {
+      throw new Error("系统 Codex 账号只能停用，不能由 Teamline 删除");
+    }
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database
+        .query(`
+          UPDATE execution_identities
+          SET identity_status = 'removed', managed_home_path = NULL,
+              account_fingerprint = NULL, login_state = 'signed_out',
+              capabilities_json = '[]', last_observed_at = NULL,
+              updated_at = ?, removed_at = ?
+          WHERE id = ?
+        `)
+        .run(now, now, id);
+      if (this.getDefaultExecutionIdentityId() === id) {
+        const replacement = this.database
+          .query<{ id: string }, [string]>(`
+            SELECT id FROM execution_identities
+            WHERE id <> ? AND identity_status = 'enabled'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+          `)
+          .get(id)?.id;
+        if (replacement) {
+          this.saveDefaultExecutionIdentityId(replacement, now);
+        } else {
+          this.database
+            .query("DELETE FROM local_preferences WHERE key = 'default-codex-execution-identity-id'")
+            .run();
+        }
+      }
+    })();
+    return this.getExecutionIdentity(id)!;
   }
 
   getExecutionMapView(): "map" | "list" {
@@ -2416,6 +2598,74 @@ export class WorkOrderStore {
     }
   }
 
+  private createExecutionIdentityTable(): void {
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS execution_identities (
+        id TEXT PRIMARY KEY,
+        tool TEXT NOT NULL,
+        label TEXT NOT NULL,
+        identity_status TEXT NOT NULL,
+        home_kind TEXT NOT NULL,
+        managed_home_path TEXT,
+        account_fingerprint TEXT,
+        login_state TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        last_observed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        removed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS execution_identities_status
+      ON execution_identities(tool, identity_status, created_at);
+    `);
+  }
+
+  private ensureDefaultExecutionIdentity(): void {
+    const existing = this.database
+      .query<{ id: string }, []>(`
+        SELECT id FROM execution_identities
+        WHERE identity_status <> 'removed'
+        ORDER BY CASE identity_status WHEN 'enabled' THEN 0 ELSE 1 END,
+                 created_at ASC, id ASC
+        LIMIT 1
+      `)
+      .get()?.id;
+    const now = new Date().toISOString();
+    let identityId = existing;
+    if (!identityId) {
+      identityId = "codex-system-default";
+      this.database
+        .query(`
+          INSERT OR IGNORE INTO execution_identities (
+            id, tool, label, identity_status, home_kind, managed_home_path,
+            account_fingerprint, login_state, capabilities_json,
+            last_observed_at, created_at, updated_at, removed_at
+          ) VALUES (?, 'codex', 'Codex', 'enabled', 'system', NULL, NULL,
+                    'unknown', '[]', NULL, ?, ?, NULL)
+        `)
+        .run(identityId, now, now);
+    }
+    if (!this.getDefaultExecutionIdentityId()) {
+      this.saveDefaultExecutionIdentityId(identityId, now);
+    }
+  }
+
+  private saveDefaultExecutionIdentityId(id: string, updatedAt: string): void {
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('default-codex-execution-identity-id', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(id, updatedAt);
+  }
+
+  private requireExecutionIdentity(id: string): ExecutionIdentity {
+    const identity = this.getExecutionIdentity(id);
+    if (!identity) throw new Error("找不到这个 Codex 账号");
+    return identity;
+  }
+
   private addExecutionColumnsToExistingDatabase(): void {
     const columns = new Set(
       this.database
@@ -2622,6 +2872,53 @@ export class WorkOrderStore {
       WHERE run_number = 0
     `);
   }
+}
+
+function mapExecutionIdentityRow(row: ExecutionIdentityRow): ExecutionIdentity {
+  let capabilities: string[] = [];
+  try {
+    capabilities = normalizeExecutionIdentityCapabilities(
+      JSON.parse(row.capabilities_json),
+    );
+  } catch {
+    capabilities = [];
+  }
+  return {
+    id: row.id,
+    tool: row.tool,
+    label: row.label,
+    status: row.identity_status,
+    homeKind: row.home_kind,
+    managedHomePath: row.managed_home_path,
+    accountFingerprint: row.account_fingerprint,
+    loginState: executionIdentityLoginStates.includes(row.login_state)
+      ? row.login_state
+      : "unknown",
+    capabilities,
+    lastObservedAt: row.last_observed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    removedAt: row.removed_at,
+  };
+}
+
+function normalizeExecutionIdentityLabel(value: string): string {
+  const label = value.trim();
+  if (!label) throw new Error("请填写账号名称");
+  if (label.length > 40) throw new Error("账号名称不能超过 40 个字符");
+  return label;
+}
+
+function normalizeExecutionIdentityCapabilities(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((capability): capability is string => typeof capability === "string")
+        .map((capability) => capability.trim())
+        .filter(Boolean),
+    ),
+  ].sort();
 }
 
 function stateNotification(workOrder: WorkOrder): {
