@@ -1,52 +1,19 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and product requests for this repository live in `mekoand/teamline` on GitHub. The complete submission and lifecycle policy is maintained in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
-## Repository binding
+## Before writing
 
-This repository is bound to `mekoand/teamline` through the `origin` remote.
+Resolve the repository from the local `origin` remote and confirm it is `mekoand/teamline`. Do not guess the repository from a stale worktree name.
 
-Before an issue-tracker write:
+## Agent rules
 
-1. Run `gh repo view` inside this repository.
-2. Verify that it resolves to `mekoand/teamline`.
+- Start implementation only from an unclaimed issue labeled `ready-for-agent`.
+- Leave a short starting comment, associate the issue with the executor, and replace `ready-for-agent` with `in-progress`.
+- Read the goal, scope, exclusions, acceptance criteria, dependencies, and linked context before changing code.
+- If a product-level ambiguity appears, replace the state with `needs-info` and ask the smallest question that resolves it.
+- Do not expand a local issue into a refactor or additional feature without updating the issue and receiving the required decision.
+- Link the pull request or commit. Close the issue only after the change reaches the default branch and satisfies its acceptance criteria.
+- Remove workflow-state labels when the issue closes.
 
-Do not guess the repository or create issues in an unrelated repository.
-
-## Conventions
-
-- Create: `gh issue create --title "..." --body "..."`
-- Read: `gh issue view <number> --comments`
-- List: `gh issue list --state open`
-- Comment: `gh issue comment <number> --body "..."`
-- Apply labels: `gh issue edit <number> --add-label "..."`
-- Remove labels: `gh issue edit <number> --remove-label "..."`
-- Close: `gh issue close <number> --comment "..."`
-
-Infer the repository from `git remote -v`. The `gh` CLI does this automatically inside a correctly configured clone.
-
-## Pull requests as a triage surface
-
-**PRs as a request surface: no.**
-
-GitHub issues, rather than external pull requests, are the default request and planning surface.
-
-## Skill terminology
-
-When a skill says “publish to the issue tracker”, create a GitHub issue.
-
-When a skill says “fetch the relevant ticket”, run:
-
-`gh issue view <number> --comments`
-
-## Wayfinding operations
-
-A wayfinder map is represented by one parent issue with linked child decision issues.
-
-- Map label: `wayfinder:map`
-- Child labels: `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task`
-- Prefer GitHub sub-issues and native issue dependencies.
-- If native dependencies are unavailable, add `Blocked by: #<number>` to the issue body.
-- A ticket is ready only when all blockers are closed and it has no assignee.
-- Claim a ticket with `gh issue edit <number> --add-assignee @me`.
-- Resolve it by recording the decision, closing the issue, and updating the parent map.
+Use direct references such as `Depends on #123`. A blocked dependency uses the `blocked` state. Larger work may use GitHub parent and sub-issues; do not encode version, type, or dependency order in titles.

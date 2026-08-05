@@ -66,6 +66,9 @@ const resourceSummaryElement = document.querySelector("#resource-summary");
 const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
 const sessionImportError = document.querySelector("#session-import-error");
+const continueGoalDialog = document.querySelector("#continue-goal-dialog");
+const continueGoalForm = document.querySelector("#continue-goal-form");
+const continueGoalError = document.querySelector("#continue-goal-error");
 const notificationDialog = document.querySelector("#notification-dialog");
 const localStateDialog = document.querySelector("#local-state-dialog");
 
@@ -126,6 +129,9 @@ function bindShellEvents() {
   });
   document.querySelector("#close-session-import").addEventListener("click", closeSessionImport);
   document.querySelector("#cancel-session-import").addEventListener("click", closeSessionImport);
+  document.querySelector("#close-continue-goal").addEventListener("click", closeContinueGoal);
+  document.querySelector("#cancel-continue-goal").addEventListener("click", closeContinueGoal);
+  continueGoalForm.addEventListener("submit", continueImportedGoal);
   document.querySelector("#session-search").addEventListener("input", (event) => {
     state.sessionSearch = event.currentTarget.value;
     renderSessionCandidates();
@@ -1252,6 +1258,7 @@ function renderImportedHistorySurface(workOrder, feedback) {
              : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}`
         : `<div class="plan-empty"><p>${escapeHtml(context.error || "来源会话等待整理。")}</p></div>`}
       <div class="import-history-actions">
+        ${ready && !isImportOnlyGoal(workOrder) ? '<button class="primary-button" data-continue-imported-goal type="button">继续这个目标</button>' : ""}
         <button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>
       </div>
       <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
@@ -1638,9 +1645,10 @@ function renderResultPanel(workOrder) {
       </section>
       <section class="result-section">
         <h3>产物</h3>
+        ${workOrder.workspace?.kind === "directory" ? '<p class="result-artifact-note">本轮新建或修改的文件，最多显示 100 项。</p>' : ""}
         <div class="result-artifact-grid">
           ${resultData.artifacts.length
-            ? resultData.artifacts.map(renderReference).join("")
+            ? resultData.artifacts.map((reference) => renderReference(reference, workOrder)).join("")
             : '<p class="result-empty">没有识别到单独的产物引用，请在工作空间中查看本轮变化。</p>'}
         </div>
       </section>
@@ -1687,6 +1695,7 @@ function collectResultViewData(workOrder, historical) {
     seen.add(location);
     artifacts.push(reference);
   };
+  (workOrder.result.artifacts ?? []).forEach(addArtifact);
   stages.flatMap((stage) => stage.artifacts ?? []).forEach(addArtifact);
   summaries.flatMap((item) => localArtifactReferences(item.rawSummary)).forEach((reference) =>
     addArtifact({ id: `summary:${reference.location}`, type: "file", ...reference }),
@@ -2014,8 +2023,14 @@ function cleanCompletionSummary(summary) {
   return summary.replace(/\[([^\]\n]+)\]\((\/[^)\n]+)\)/g, "$1").trim();
 }
 
-function renderReference(reference) {
-  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code></article>`;
+function renderReference(reference, workOrder) {
+  const canOpen =
+    workOrder?.workspace?.kind === "directory" &&
+    reference.type === "file" &&
+    (workOrder.result?.artifacts ?? []).some(
+      (artifact) => artifact.type === "file" && artifact.location === reference.location,
+    );
+  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
 }
 
 function renderContextAction(workOrder) {
@@ -2177,6 +2192,28 @@ function bindRenderedEvents() {
       renderConsole();
     });
   });
+  document.querySelectorAll("[data-open-result-artifact], [data-reveal-result-artifact]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const reveal = button.hasAttribute("data-reveal-result-artifact");
+      const path = reveal
+        ? button.dataset.revealResultArtifact
+        : button.dataset.openResultArtifact;
+      const idleLabel = reveal ? "打开所在位置" : "打开文件";
+      setBusy(button, "正在打开…");
+      try {
+        await requestJson(`/api/work-orders/${encodedSelectedId()}/artifacts/open`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, reveal }),
+        });
+        resetBusy(button, idleLabel);
+        setFeedback("result-feedback", reveal ? "已在 Finder 中显示成果。" : "已打开成果文件。", false);
+      } catch (error) {
+        resetBusy(button, idleLabel);
+        setFeedback("result-feedback", messageFrom(error, "无法打开这个成果。"), true);
+      }
+    });
+  });
   document.querySelectorAll("[data-progress-view]").forEach((button) => {
     button.addEventListener("click", () => {
       state.progressView = button.dataset.progressView;
@@ -2219,6 +2256,13 @@ function bindRenderedEvents() {
     renderConsole();
   });
   document.querySelector("#goal-project-form")?.addEventListener("submit", saveGoalProjectContext);
+
+  document.querySelector("[data-continue-imported-goal]")?.addEventListener("click", () => {
+    continueGoalError.textContent = "";
+    continueGoalForm.reset();
+    continueGoalDialog.showModal();
+    document.querySelector("#confirm-continue-goal").focus();
+  });
 
   document.querySelectorAll("[data-reorganize-sessions]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -2584,6 +2628,40 @@ function closeSessionImport() {
   sessionImportDialog.close();
   sessionImportForm.reset();
   sessionImportError.textContent = "";
+}
+
+function closeContinueGoal() {
+  continueGoalDialog.close();
+  continueGoalForm.reset();
+  continueGoalError.textContent = "";
+  resetBusy(document.querySelector("#confirm-continue-goal"), "确认并生成计划");
+}
+
+async function continueImportedGoal(event) {
+  event.preventDefault();
+  const button = document.querySelector("#confirm-continue-goal");
+  const continuationNote = String(
+    new FormData(continueGoalForm).get("continuationNote") ?? "",
+  ).trim();
+  continueGoalError.textContent = "";
+  setBusy(button, "正在生成…");
+  try {
+    const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/plan/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ continuationNote }),
+    });
+    closeContinueGoal();
+    await acceptWorkOrderResult(
+      result.workOrder,
+      result.outcome === "clarification"
+        ? "还需要你确认一项关键信息。"
+        : "后续计划已生成，请检查并确认。",
+    );
+  } catch (error) {
+    resetBusy(button, "确认并生成计划");
+    continueGoalError.textContent = messageFrom(error, "无法生成后续计划，请重试。");
+  }
 }
 
 function renderSessionCandidates() {

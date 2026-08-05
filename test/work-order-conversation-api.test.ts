@@ -24,7 +24,10 @@ function request(path: string, body?: unknown) {
 describe("work-order clarification and conversation", () => {
   test("generates a plan directly when the goal is already clear", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const created = store.create({ goal: "修复登录页的窄屏按钮溢出" });
+    const created = store.create({
+      name: "修复移动端按钮",
+      description: "修复登录页的窄屏按钮溢出",
+    });
     const app = createApp({
       store,
       planGenerator: {
@@ -51,6 +54,9 @@ describe("work-order clarification and conversation", () => {
 
     expect(response.status).toBe(200);
     expect(result.outcome).toBe("plan");
+    expect(result.workOrder.name).toBe("修复移动端按钮");
+    expect(result.workOrder.title).toBe("修复移动端按钮");
+    expect(result.workOrder.description).toBe("修复登录页的窄屏按钮溢出");
     expect(result.workOrder.pendingClarification).toBeNull();
     expect(result.workOrder.plan.confirmationRequired).toBe(true);
     expect(result.workOrder.plan.stages).toHaveLength(1);
@@ -460,7 +466,8 @@ describe("work-order clarification and conversation", () => {
   test("a structural update creates a new plan version that must be confirmed again", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const created = store.create({
-      goal: "完善设置页",
+      name: "设置页体验升级",
+      description: "完善设置页",
       workspace: { kind: "directory", path: "/tmp/teamline-settings-replan" },
     });
     const ready = store.savePlan(created.id, [
@@ -509,6 +516,7 @@ describe("work-order clarification and conversation", () => {
             outcome: "plan",
             message: "已增加移动端节点并调整资源安排。",
             questions: [],
+            goal: "完善设置页并检查移动端布局",
             resourcePlan: {
               priority: "high",
               pace: "fast",
@@ -544,6 +552,8 @@ describe("work-order clarification and conversation", () => {
 
     expect(response.status).toBe(200);
     expect(result.workOrder.plan.version).toBe(ready.plan!.version + 1);
+    expect(result.workOrder.name).toBe("设置页体验升级");
+    expect(result.workOrder.description).toBe("完善设置页并检查移动端布局");
     expect(result.workOrder.plan.confirmationRequired).toBe(true);
     expect(result.workOrder.plan.stages[1].dependsOn).toEqual(["settings-ui"]);
     expect(result.workOrder.plan.stages[0].contextNotes).toEqual(["保留这项节点补充"]);

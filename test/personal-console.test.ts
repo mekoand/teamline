@@ -115,6 +115,11 @@ describe("personal console", () => {
     expect(script).toContain("Codex 完成摘要");
     expect(script).toContain("completionSummaryForStage");
     expect(script).toContain("localArtifactReferences");
+    expect(script).toContain("workOrder.result.artifacts");
+    expect(script).toContain("打开文件");
+    expect(script).toContain("打开所在位置");
+    expect(script).toContain("本轮新建或修改的文件，最多显示 100 项");
+    expect(script).toContain("/artifacts/open`");
     expect(script).toContain("生成计划通常需要 30–90 秒");
   });
 
@@ -208,6 +213,22 @@ describe("personal console", () => {
     expect(script).toContain("当前版本不会从 Claude Code 来源目标生成计划或开始执行");
     expect(script).toContain('workOrder.importOnly ? \'<p class="source-import-only">');
     expect(script).not.toContain("data-session-goal");
+  });
+
+  test("offers one-step confirmation before continuing a ready Codex import", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [page, script] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+    ]);
+
+    expect(page).toContain('id="continue-goal-dialog"');
+    expect(page).toContain('id="continue-goal-form"');
+    expect(page).toContain('name="continuationNote"');
+    expect(page).toContain("确认并生成计划");
+    expect(script).toContain("data-continue-imported-goal");
+    expect(script).toContain("continuationNote");
+    expect(script).toContain("继续这个目标");
   });
 
   test("keeps resource provenance secondary to quota and work-order allocation", async () => {

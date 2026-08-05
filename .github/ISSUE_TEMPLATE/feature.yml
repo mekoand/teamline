@@ -1,0 +1,41 @@
+name: Feature request / 功能建议
+description: Propose a user problem or product capability / 提出一个使用问题或产品能力
+title: ""
+labels:
+  - "type:feature"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before prescribing an implementation. English or Chinese is welcome.
+
+        请优先说明问题，不需要先设计技术方案。可以使用英文或中文填写。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 问题
+      description: What is difficult or impossible today? / 当前有什么不方便或无法完成的事情？
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome / 期望结果
+      description: What should become possible? / 你希望最终能够完成什么？
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case / 使用场景
+      description: Who needs this, and in what situation? / 谁会在什么情况下使用它？
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context / 补充信息
+      description: Optional references, examples, or alternative approaches. / 可以补充参考产品、示例或其他方案。
+    validations:
+      required: false

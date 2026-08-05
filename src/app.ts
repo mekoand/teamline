@@ -7,7 +7,7 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { PlanGenerator } from "./plan-generator";
 import type { CheckpointManager } from "./checkpoint-manager";
 import { presentConsoleWorkOrders } from "./console-presentation";
@@ -79,6 +79,7 @@ type AppDependencies = {
   sessionOrganizationTimeoutMs?: number;
   dataDirectory?: string;
   executionIdentityEnvironment?: ExecutionIdentityEnvironment;
+  openLocalArtifact?: (path: string, reveal: boolean) => Promise<void>;
 };
 
 type NextStageRun = {
@@ -118,6 +119,7 @@ export function createApp({
   sessionOrganizationTimeoutMs = 5 * 60 * 1000,
   dataDirectory = join(projectRoot, ".teamline"),
   executionIdentityEnvironment,
+  openLocalArtifact = openLocalArtifactWithSystem,
 }: AppDependencies) {
   const startingWorkOrderIds = new Set<string>();
   const planningWorkOrderIds = new Set<string>();
@@ -1849,6 +1851,39 @@ export function createApp({
         return Response.json({ events: store.listRunEvents(id) });
       }
 
+      const openArtifactMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/artifacts\/open$/,
+      );
+      if (request.method === "POST" && openArtifactMatch) {
+        const workOrder = store.get(decodeURIComponent(openArtifactMatch[1]));
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
+            { status: 404 },
+          );
+        }
+        try {
+          const body = (await request.json()) as { path?: string; reveal?: boolean };
+          const artifactPath = resolveOrdinaryFolderArtifact(workOrder, body.path);
+          if (!artifactPath) {
+            return Response.json(
+              { code: "INVALID_ARTIFACT_PATH", error: "找不到这个普通文件夹成果" },
+              { status: 400 },
+            );
+          }
+          await openLocalArtifact(artifactPath, body.reveal === true);
+          return Response.json({ opened: true });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "ARTIFACT_OPEN_FAILED",
+              error: error instanceof Error ? error.message : "无法打开这个成果",
+            },
+            { status: 500 },
+          );
+        }
+      }
+
       const deliverMatch = url.pathname.match(
         /^\/api\/work-orders\/([^/]+)\/deliver$/,
       );
@@ -2130,7 +2165,15 @@ export function createApp({
 
         planningWorkOrderIds.add(id);
         try {
-          return Response.json(await generateAndStorePlan(id, workOrder, false));
+          const body = request.headers.get("content-type")?.includes("application/json")
+            ? await request.json() as { continuationNote?: unknown }
+            : {};
+          const continuationNote = typeof body.continuationNote === "string"
+            ? body.continuationNote.trim() || undefined
+            : undefined;
+          return Response.json(
+            await generateAndStorePlan(id, workOrder, false, continuationNote),
+          );
         } catch (error) {
           if (error instanceof PlanGenerationTimeoutError) {
             return Response.json(
@@ -3226,6 +3269,50 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
 function canonicalWorkspacePath(workspacePath: string): string {
   const absolutePath = resolve(workspacePath);
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
+}
+
+function resolveOrdinaryFolderArtifact(
+  workOrder: WorkOrder,
+  requestedPath: unknown,
+): string | null {
+  if (
+    workOrder.workspace?.kind !== "directory" ||
+    typeof requestedPath !== "string" ||
+    !requestedPath.trim()
+  ) {
+    return null;
+  }
+  const requested = resolve(requestedPath);
+  const reference = workOrder.result?.artifacts?.find(
+    (artifact) => artifact.type === "file" && resolve(artifact.location) === requested,
+  );
+  if (!reference) return null;
+  try {
+    const root = realpathSync(workOrder.worktreePath || workOrder.workspace.path);
+    const artifactPath = realpathSync(reference.location);
+    const childPath = relative(root, artifactPath);
+    if (!childPath || childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath)) {
+      return null;
+    }
+    if (!statSync(artifactPath).isFile()) return null;
+    return artifactPath;
+  } catch {
+    return null;
+  }
+}
+
+async function openLocalArtifactWithSystem(path: string, reveal: boolean): Promise<void> {
+  const subprocess = Bun.spawn(reveal ? ["open", "-R", path] : ["open", path], {
+    stdout: "ignore",
+    stderr: "pipe",
+  });
+  const [exitCode, stderr] = await Promise.all([
+    subprocess.exited,
+    new Response(subprocess.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(stderr.trim() || "无法打开这个成果");
+  }
 }
 
 function checkpointReference(

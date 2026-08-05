@@ -2,9 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,6 +157,250 @@ describe("result review persistence", () => {
         exitCode: null,
         output: "未配置自动验证命令",
       });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("collects files changed during an ordinary-folder run without Git", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-directory-artifacts-"));
+    try {
+      const oldFile = join(directory, "old.txt");
+      writeFileSync(oldFile, "before\n");
+      const oldTime = new Date(Date.now() - 60_000);
+      utimesSync(oldFile, oldTime, oldTime);
+
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const created = store.create({
+        workspace: { kind: "directory", path: directory },
+        goal: "生成普通文件夹成果",
+      });
+      store.savePlan(created.id, [{
+        outcome: "生成成果",
+        scope: "RESULT.md 与 docs/summary.md",
+        verification: "检查文件",
+        verificationCommand: "true",
+      }]);
+      store.saveDirectWorkspace(created.id, directory);
+      store.markStarted(created.id);
+
+      mkdirSync(join(directory, "docs"));
+      writeFileSync(join(directory, "RESULT.md"), "done\n");
+      writeFileSync(join(directory, "docs", "summary.md"), "summary\n");
+      writeFileSync(oldFile, "after\n");
+      mkdirSync(join(directory, ".git"));
+      writeFileSync(join(directory, ".git", "internal"), "ignored\n");
+
+      const result = await new LocalWorkOrderResultProcessor().process(store.get(created.id)!);
+
+      expect(result.artifacts?.map((artifact) => artifact.label).sort()).toEqual([
+        "RESULT.md",
+        "docs/summary.md",
+        "old.txt",
+      ]);
+      expect(result.artifacts).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "file",
+          label: "RESULT.md",
+          location: join(directory, "RESULT.md"),
+        }),
+      ]));
+      expect(result.git).toEqual({
+        diffStat: "普通文件夹不提供 Git 变化统计",
+        statusShort: "结果保留在所选本地文件夹中",
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("limits a very large result list to the 100 files disclosed by the UI", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-many-artifacts-"));
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const created = store.create({
+        workspace: { kind: "directory", path: directory },
+        goal: "生成大量普通文件夹成果",
+      });
+      store.savePlan(created.id, [{
+        outcome: "生成成果",
+        scope: "outputs",
+        verification: "检查文件",
+        verificationCommand: "true",
+      }]);
+      store.saveDirectWorkspace(created.id, directory);
+      store.markStarted(created.id);
+      mkdirSync(join(directory, "outputs"));
+      for (let index = 0; index < 101; index += 1) {
+        writeFileSync(join(directory, "outputs", `${String(index).padStart(3, "0")}.md`), "done\n");
+      }
+
+      const result = await new LocalWorkOrderResultProcessor().process(store.get(created.id)!);
+
+      expect(result.artifacts).toHaveLength(100);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("opens only collected ordinary-folder artifacts and can reveal their location", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-open-artifact-"));
+    const outsideDirectory = mkdtempSync(join(tmpdir(), "teamline-outside-artifact-"));
+    try {
+      const artifactPath = join(directory, "RESULT.md");
+      const outsidePath = join(outsideDirectory, "outside.md");
+      const linkedPath = join(directory, "linked.md");
+      writeFileSync(artifactPath, "done\n");
+      writeFileSync(outsidePath, "outside\n");
+      symlinkSync(outsidePath, linkedPath);
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const created = store.create({
+        workspace: { kind: "directory", path: directory },
+        goal: "打开成果",
+      });
+      store.savePlan(created.id, [{
+        outcome: "生成成果",
+        scope: "RESULT.md",
+        verification: "检查文件",
+        verificationCommand: "true",
+      }]);
+      store.saveDirectWorkspace(created.id, directory);
+      store.markStarted(created.id);
+      const verifying = store.beginResultProcessing(created.id, "Codex 已正常结束");
+      const stage = verifying.plan!.stages[0]!;
+      store.completeReview(created.id, {
+        planVersion: verifying.plan!.version,
+        artifacts: [{
+          id: "directory-result:RESULT.md",
+          type: "file",
+          label: "RESULT.md",
+          location: artifactPath,
+        }, {
+          id: "directory-result:linked.md",
+          type: "file",
+          label: "linked.md",
+          location: linkedPath,
+        }],
+        git: {
+          diffStat: "普通文件夹不提供 Git 变化统计",
+          statusShort: "结果保留在所选本地文件夹中",
+        },
+        verifications: [{
+          stageId: stage.id,
+          stageOutcome: stage.outcome,
+          command: "true",
+          status: "passed",
+          exitCode: 0,
+          output: "（无输出）",
+        }],
+        completedAt: new Date().toISOString(),
+      });
+
+      const opened: Array<{ path: string; reveal: boolean }> = [];
+      const app = createApp({
+        store,
+        openLocalArtifact: async (path, reveal) => {
+          opened.push({ path, reveal });
+        },
+      });
+      for (const reveal of [false, true]) {
+        const response = await app.fetch(new Request(
+          `http://teamline.local/api/work-orders/${created.id}/artifacts/open`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path: artifactPath, reveal }),
+          },
+        ));
+        expect(response.status).toBe(200);
+      }
+      expect(opened).toEqual([
+        { path: realpathSync(artifactPath), reveal: false },
+        { path: realpathSync(artifactPath), reveal: true },
+      ]);
+
+      const rejected = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/open`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: join(directory, "not-a-result.md"), reveal: false }),
+        },
+      ));
+      expect(rejected.status).toBe(400);
+      const escapedSymlink = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/open`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: linkedPath, reveal: false }),
+        },
+      ));
+      expect(escapedSymlink.status).toBe(400);
+      expect(opened).toHaveLength(2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      rmSync(outsideDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps existing ordinary-folder artifacts and removes files deleted by a later node", () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-merge-artifacts-"));
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const created = store.create({
+        workspace: { kind: "directory", path: directory },
+        goal: "分两步生成成果",
+      });
+      store.savePlan(created.id, [
+        { outcome: "生成 A", scope: "A.md", verification: "检查 A", verificationCommand: "true" },
+        { outcome: "生成 B", scope: "B.md", verification: "检查 B", verificationCommand: "true" },
+      ]);
+      store.saveDirectWorkspace(created.id, directory);
+
+      const completeCurrentStage = (labels: string[]) => {
+        const running = store.get(created.id)!;
+        const stage = running.plan!.stages.find((candidate) => candidate.status === "running")!;
+        const verifying = store.beginResultProcessing(created.id, "Codex 已正常结束");
+        return store.completeReview(created.id, {
+          planVersion: verifying.plan!.version,
+          artifacts: labels.map((label) => ({
+            id: `directory-result:${label}`,
+            type: "file" as const,
+            label,
+            location: join(directory, label),
+          })),
+          git: {
+            diffStat: "普通文件夹不提供 Git 变化统计",
+            statusShort: "结果保留在所选本地文件夹中",
+          },
+          verifications: [{
+            stageId: stage.id,
+            stageOutcome: stage.outcome,
+            command: "true",
+            status: "passed",
+            exitCode: 0,
+            output: "（无输出）",
+          }],
+          completedAt: new Date().toISOString(),
+        });
+      };
+
+      writeFileSync(join(directory, "A.md"), "A\n");
+      writeFileSync(join(directory, "gone.txt"), "temporary\n");
+      store.markStarted(created.id);
+      expect(completeCurrentStage(["A.md", "gone.txt"]).status).toBe("ready");
+
+      rmSync(join(directory, "gone.txt"));
+      writeFileSync(join(directory, "B.md"), "B\n");
+      store.markNextStageStarted(created.id);
+      const completed = completeCurrentStage(["B.md"]);
+
+      expect(completed.status).toBe("review");
+      expect(completed.result?.artifacts?.map((artifact) => artifact.label)).toEqual([
+        "A.md",
+        "B.md",
+      ]);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

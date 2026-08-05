@@ -1,3 +1,11 @@
+# The First Personal Web Interface Runs Locally
+
+A local service provides the personal browser interface, and the same frontend may later be packaged as a desktop app. The browser entry requires no account and does not upload goals, code, or execution records to the cloud. The first phase does not provide a separate hosted personal web app. Without the local execution host it could only observe state, not reliably control local tools, and it would introduce accounts, synchronization, privacy, and multi-device conflicts too early. Remote viewing, encrypted backup, and multi-device synchronization may be tested separately later, but they are not prerequisites for using the personal edition.
+
+---
+
+## 中文
+
 # 个人版的首个网页入口运行在本地
 
 个人版由本地服务提供浏览器界面，并可以使用同一前端封装为桌面应用。浏览器入口不要求账号，也不把目标、代码或执行记录上传到云端。第一阶段不提供独立的个人云端网页版，因为离开本地执行端后只能查看状态，无法可靠控制本机工具，还会提前引入账号、同步、隐私和多设备冲突。未来可以单独验证远程查看、加密备份和多设备同步，但它们不成为使用个人版的前提。

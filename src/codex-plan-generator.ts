@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { GeneratedPlan, PlanGenerator } from "./plan-generator";
@@ -77,7 +77,9 @@ export class CodexPlanGenerator implements PlanGenerator {
         throw new Error("Codex 返回的计划格式无法识别");
       }
 
-      return result as GeneratedPlan;
+      return workOrder.workspace
+        ? result as GeneratedPlan
+        : sanitizeWorkspaceFreePlan(result as GeneratedPlan, temporaryDirectory);
     } catch (error) {
       if (error instanceof Error && error.message.includes("ENOENT")) {
         throw new Error("找不到 Codex，请先安装并登录 Codex");
@@ -160,7 +162,7 @@ ${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${cur
 返回 clarification 时：stages 填空数组，questions 填必须回答的问题，message 简要说明为何需要回答。
 返回 plan 时：questions 填空数组，stages 至少包含一个节点；message 简要说明计划或结构化决定已经更新。
 
-请把工作拆成少量能够独立检查的阶段。每个阶段填写：
+请把工作拆成少量能够独立检查的阶段。未选择工作空间时，scope 使用相对路径或描述“启动前选择执行工作区”，不得把当前规划使用的临时目录写入 scope。每个阶段填写：
 - id：在本计划内唯一、简短稳定的英文标识
 - outcome：完成后得到什么结果
 - scope：预计影响哪些代码、文件、文档或外部工作范围
@@ -170,6 +172,40 @@ ${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${cur
 - executionMethod：需要 Codex 修改或检查本地工作空间时填写 codex；需要用户在设计、文档协作或其他外部工具中完成时填写 external。外部节点只记录状态和成果引用，不要要求 Teamline 控制、复制或自动核验外部正文
 
 不要执行计划，只返回符合指定 JSON Schema 的结果。`;
+}
+
+function sanitizeWorkspaceFreePlan(
+  plan: GeneratedPlan,
+  temporaryDirectory: string,
+): GeneratedPlan {
+  const planningDirectories = new Set([temporaryDirectory]);
+  try {
+    planningDirectories.add(realpathSync(temporaryDirectory));
+  } catch {
+    // The original path is still enough when the platform has no path aliases.
+  }
+
+  return {
+    ...plan,
+    stages: plan.stages.map((stage) => ({
+      ...stage,
+      scope: removePlanningDirectory(stage.scope, planningDirectories),
+    })),
+  };
+}
+
+function removePlanningDirectory(
+  scope: string,
+  planningDirectories: Set<string>,
+): string {
+  let normalized = scope;
+  for (const directory of [...planningDirectories].sort(
+    (left, right) => right.length - left.length,
+  )) {
+    normalized = normalized.replaceAll(`${directory}/`, "");
+    normalized = normalized.replaceAll(directory, "启动前选择的执行工作区");
+  }
+  return normalized.trim() || "启动前选择执行工作区";
 }
 
 function countGitChanges(statusShort: string): number {

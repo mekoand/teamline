@@ -37,11 +37,12 @@ if (schemaText.includes('"uniqueItems"')) {
   process.exit(1);
 }
 const outputIndex = args.indexOf("--output-last-message");
+const workingDirectory = args[args.indexOf("--cd") + 1];
 await Bun.write(args[outputIndex + 1], JSON.stringify({
   stages: [{
     id: "plan",
     outcome: "得到可确认计划",
-    scope: "执行计划",
+    scope: workingDirectory + "/RESULT.md",
     verification: "检查计划内容",
     verificationCommand: null,
     dependsOn: [],
@@ -84,11 +85,13 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
 
     expect(result.stages).toHaveLength(1);
+    expect(result.stages[0]?.scope).toBe("RESULT.md");
     expect(argumentsUsed).toContain("--skip-git-repo-check");
     expect(argumentsUsed[argumentsUsed.indexOf("--cd") + 1]).toContain("teamline-plan-");
     expect(argumentsUsed.at(-1)).toContain("历史工作已经完成需求确认");
     expect(argumentsUsed.at(-1)).toContain("等待形成后续执行计划");
     expect(argumentsUsed.at(-1)).not.toContain(".jsonl");
+    expect(argumentsUsed.at(-1)).toContain("不得把当前规划使用的临时目录写入 scope");
   });
 
   test("includes bounded prior result context without local details", async () => {

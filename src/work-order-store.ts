@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import {
   executionIdentityLoginStates,
   type ExecutionIdentity,
@@ -1437,7 +1438,7 @@ export class WorkOrderStore {
     const goal = canUpdateGoal
       ? publicPlanningText(generated.goal?.trim() || current.goal)
       : current.goal;
-    const title = titleForGoal(goal);
+    const title = current.title;
     const acceptance = !canUpdateGoal || generated.acceptance === undefined
       ? current.acceptance
       : generated.acceptance?.trim()
@@ -2198,7 +2199,11 @@ export class WorkOrderStore {
       result,
       checkpointedStageIds(workOrder),
     );
-    const mergedResult = mergeResults(workOrder?.result ?? null, result);
+    const mergedResult = mergeResults(
+      workOrder?.result ?? null,
+      result,
+      workOrder?.workspace?.kind === "directory",
+    );
     if (plan) {
       plan = advanceAfterCodexRun(plan, result);
     }
@@ -2326,7 +2331,11 @@ export class WorkOrderStore {
 
   recordVerificationFailure(id: string, result: WorkOrderResult): WorkOrder {
     const workOrder = this.get(id);
-    const mergedResult = mergeResults(workOrder?.result ?? null, result);
+    const mergedResult = mergeResults(
+      workOrder?.result ?? null,
+      result,
+      workOrder?.workspace?.kind === "directory",
+    );
     const plan = planWithVerificationStatuses(
       workOrder?.plan ?? null,
       result,
@@ -3570,6 +3579,7 @@ function advancePlanWithCompletedStages(
 function mergeResults(
   previous: WorkOrderResult | null,
   current: WorkOrderResult,
+  pruneMissingDirectoryArtifacts = false,
 ): WorkOrderResult {
   if (!previous || previous.planVersion !== current.planVersion) return current;
   const byStage = new Map(
@@ -3580,8 +3590,32 @@ function mergeResults(
   }
   return {
     ...current,
+    artifacts: mergeResultArtifacts(
+      previous.artifacts,
+      current.artifacts,
+      pruneMissingDirectoryArtifacts,
+    ),
     verifications: [...byStage.values()],
   };
+}
+
+function mergeResultArtifacts(
+  previous: WorkOrderResult["artifacts"],
+  current: WorkOrderResult["artifacts"],
+  pruneMissingDirectoryArtifacts: boolean,
+): WorkOrderResult["artifacts"] {
+  const byLocation = new Map(
+    (previous ?? []).map((artifact) => [artifact.location, artifact]),
+  );
+  for (const artifact of current ?? []) byLocation.set(artifact.location, artifact);
+  const artifacts = [...byLocation.values()].filter(
+    (artifact) =>
+      !pruneMissingDirectoryArtifacts ||
+      artifact.type !== "file" ||
+      !artifact.id.startsWith("directory-result:") ||
+      existsSync(artifact.location),
+  );
+  return artifacts.length ? artifacts : undefined;
 }
 
 function nextPlanSummary(plan: WorkOrderPlan | null): string {
@@ -3745,11 +3779,6 @@ function currentRuntime(row: WorkOrderRow): number {
     return row.runtime_ms;
   }
   return row.runtime_ms + Math.max(0, Date.now() - Date.parse(row.runtime_updated_at));
-}
-
-function titleForGoal(goal: string): string {
-  const firstLine = goal.split(/\r?\n/, 1)[0] ?? goal;
-  return firstLine.length > 56 ? `${firstLine.slice(0, 56)}…` : firstLine;
 }
 
 function publicPlanningText(value: string): string {

@@ -1,8 +1,11 @@
 import type {
+  PlanReference,
   VerificationResult,
   WorkOrder,
   WorkOrderResult,
 } from "./work-order";
+import { readdir, stat } from "node:fs/promises";
+import { join, relative } from "node:path";
 
 const maximumOutputLength = 4_000;
 
@@ -19,6 +22,7 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
       throw new Error("Git 目标缺少起始提交");
     }
 
+    const artifacts = await directoryArtifactReferences(workOrder);
     const verifications: VerificationResult[] = [];
     for (const stage of workOrder.plan.stages.filter(
       (candidate) => candidate.executionMethod === "codex",
@@ -66,11 +70,71 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
 
     return {
       planVersion: workOrder.plan.version,
+      ...(artifacts.length ? { artifacts } : {}),
       git,
       verifications,
       completedAt: new Date().toISOString(),
     };
   }
+}
+
+const ignoredArtifactDirectories = new Set([
+  ".git",
+  ".teamline",
+  ".venv",
+  "__pycache__",
+  "node_modules",
+  "venv",
+]);
+const maximumArtifacts = 100;
+
+async function directoryArtifactReferences(workOrder: WorkOrder): Promise<PlanReference[]> {
+  if (
+    workOrder.workspace?.kind !== "directory" ||
+    !workOrder.worktreePath ||
+    !workOrder.runStartedAt
+  ) {
+    return [];
+  }
+  const startedAt = Date.parse(workOrder.runStartedAt);
+  if (!Number.isFinite(startedAt)) return [];
+
+  const root = workOrder.worktreePath;
+  const pending = [root];
+  const artifacts: PlanReference[] = [];
+  while (pending.length && artifacts.length < maximumArtifacts) {
+    const directory = pending.pop()!;
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignoredArtifactDirectories.has(entry.name)) pending.push(path);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const metadata = await stat(path);
+        if (metadata.mtimeMs < startedAt) continue;
+      } catch {
+        continue;
+      }
+      const label = relative(root, path);
+      artifacts.push({
+        id: `directory-result:${label}`,
+        type: "file",
+        label,
+        location: path,
+      });
+      if (artifacts.length >= maximumArtifacts) break;
+    }
+  }
+  return artifacts.sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
 }
 
 async function gitSummary(
