@@ -8,7 +8,10 @@ import { CodexExecutionRunner } from "./codex-runner";
 import { WorkOrderStore } from "./work-order-store";
 import { GitWorktreeManager } from "./worktree-manager";
 import { LocalWorkOrderResultProcessor } from "./result-processor";
-import { createServerResourceProvider } from "./server-resources";
+import {
+  createServerIdentityResourceProvider,
+  createServerResourceProvider,
+} from "./server-resources";
 import { GitCheckpointManager } from "./checkpoint-manager";
 import { LocalCodexSessionProvider } from "./codex-session-discovery";
 import { LocalClaudeCodeSessionProvider } from "./claude-code-session-discovery";
@@ -30,6 +33,7 @@ const app = createApp({
   worktreeManager: new GitWorktreeManager(join(dataDirectory, "worktrees")),
   resultProcessor: new LocalWorkOrderResultProcessor(),
   resourceProvider: createServerResourceProvider(),
+  identityResourceProvider: createServerIdentityResourceProvider(systemCodexHome),
   checkpointManager: new GitCheckpointManager(),
   codexSessionProvider: new LocalCodexSessionProvider(systemCodexHome),
   codexSessionProviderForIdentity: (identity) =>

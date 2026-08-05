@@ -580,7 +580,8 @@ pre {
 .recovery-panel,
 .run-panel,
 .result-panel,
-.resource-orders-panel {
+.resource-orders-panel,
+.identity-quota-panel {
   margin-bottom: 18px;
   padding: 25px;
   border: 1px solid var(--line);
@@ -742,6 +743,44 @@ pre {
 
 .resource-card.unavailable {
   border-style: dashed;
+}
+
+.identity-quota-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.identity-quota-row {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.identity-quota-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.identity-quota-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.identity-quota-heading small {
+  color: var(--muted);
+}
+
+.quota-windows.compact {
+  margin-top: 12px;
+}
+
+.resource-message.compact {
+  margin-top: 10px;
+  font-size: 11px;
 }
 
 .resource-card-heading {

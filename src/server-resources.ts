@@ -1,6 +1,8 @@
 import {
   CodexAppServerResourceProvider,
+  CodexExecutionIdentityResourceProvider,
   OpenAIOrganizationUsageProvider,
+  type CodexIdentityResourceProvider,
   type ResourceProvider,
 } from "./resource-provider";
 
@@ -18,5 +20,15 @@ export function createServerResourceProvider(
     environment.OPENAI_ADMIN_KEY
       ? new OpenAIOrganizationUsageProvider(environment.OPENAI_ADMIN_KEY)
       : undefined,
+  );
+}
+
+export function createServerIdentityResourceProvider(
+  systemCodexHome: string,
+  environment: ResourceEnvironment = process.env,
+): CodexIdentityResourceProvider {
+  return new CodexExecutionIdentityResourceProvider(
+    environment.TEAMLINE_CODEX_PATH || "codex",
+    systemCodexHome,
   );
 }

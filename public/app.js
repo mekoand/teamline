@@ -988,6 +988,7 @@ function renderResourceWorkspace() {
         ${renderCodexResourceCard(resources.codex, resources.runningCount)}
         ${renderApiResourceCard(resources.openaiApi)}
       </section>
+      ${resources.codexAccounts?.length ? renderCodexAccountQuota(resources.codexAccounts) : ""}
       <section class="resource-runtime-panel">
         <div><p class="overline">运行设置</p><h2>本机并发</h2></div>
         <label class="resource-concurrency-control" title="同时运行的目标上限">
@@ -1016,6 +1017,30 @@ function renderCodexResourceCard(codex, runningCount) {
         ? `<div class="quota-windows">${renderQuotaWindow("短周期", codex.shortWindow)}${renderQuotaWindow("长期", codex.longWindow)}</div>`
         : `<p class="resource-message">${escapeHtml(codex.message || "暂时没有可用额度数据")}</p>`}
     </article>`;
+}
+
+function renderCodexAccountQuota(accounts) {
+  return `
+    <section class="identity-quota-panel">
+      <div class="section-heading compact">
+        <div><p class="overline">Codex 账号</p><h2>账号额度</h2></div>
+        <span class="subtle-label">${accounts.length} 个已启用</span>
+      </div>
+      <div class="identity-quota-list">
+        ${accounts.map(({ identity, quota, backupLabel, backupStatus }) => `
+          <article class="identity-quota-row">
+            <div class="identity-quota-heading">
+              <div><strong>${escapeHtml(identity.label)}</strong><small>${resourceStatusLabel(quota.status)}</small></div>
+              <span class="status-pill ${backupStatus === "available" ? "running" : backupStatus === "unknown" ? "response" : "queued"}">${escapeHtml(backupLabel)}</span>
+            </div>
+            <div class="quota-windows compact">
+              ${renderQuotaWindow("5 小时", quota.shortWindow)}
+              ${renderQuotaWindow("周额度", quota.longWindow)}
+            </div>
+            ${quota.message ? `<p class="resource-message compact">${escapeHtml(quota.message)}</p>` : ""}
+          </article>`).join("")}
+      </div>
+    </section>`;
 }
 
 function renderQuotaWindow(label, window) {
@@ -3193,6 +3218,7 @@ function formatUsage(usage) {
 
 function resourceStatusLabel(status) {
   return {
+    available: "额度可读取",
     loading: "正在读取",
     unavailable: "暂时不可用",
     stale: "数据已过期",

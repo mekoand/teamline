@@ -1,3 +1,5 @@
+import type { ExecutionIdentity } from "./execution-identity";
+
 export type ResourceAvailability =
   | "available"
   | "loading"
@@ -62,6 +64,11 @@ export type ResourceProviderSnapshot = {
 
 export interface ResourceProvider {
   read(): Promise<ResourceProviderSnapshot>;
+  readWithoutCodex?(): Promise<ResourceProviderSnapshot>;
+}
+
+export interface CodexIdentityResourceProvider {
+  read(identity: ExecutionIdentity): Promise<CodexResourceSignal>;
 }
 
 export interface OpenAIUsageProvider {
@@ -101,15 +108,34 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
     private readonly staleAfterMs = RESOURCE_SIGNAL_STALE_AFTER_MS,
     private readonly openaiTimeoutMs = 3_000,
     private readonly now: () => Date = () => new Date(),
+    private readonly codexHome?: string,
   ) {}
 
   async read(): Promise<ResourceProviderSnapshot> {
     const requestedAt = this.now().toISOString();
     this.startOpenAIRead(requestedAt);
-    const codex = await this.readCodex();
+    const codex = await this.readCodexSignal();
     return {
       observedAt: requestedAt,
       codex,
+      openaiApi: this.currentOpenAI(requestedAt),
+      workOrderUsage: [],
+    };
+  }
+
+  async readWithoutCodex(): Promise<ResourceProviderSnapshot> {
+    const requestedAt = this.now().toISOString();
+    this.startOpenAIRead(requestedAt);
+    return {
+      observedAt: requestedAt,
+      codex: {
+        status: "unavailable",
+        source: "codex-app-server",
+        observedAt: requestedAt,
+        message: "系统 Codex 账号未启用",
+        shortWindow: null,
+        longWindow: null,
+      },
       openaiApi: this.currentOpenAI(requestedAt),
       workOrderUsage: [],
     };
@@ -162,7 +188,7 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
     }
   }
 
-  private async readCodex(): Promise<CodexResourceSignal> {
+  async readCodexSignal(): Promise<CodexResourceSignal> {
     const now = this.now();
     if (
       this.cachedCodex &&
@@ -227,6 +253,9 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
     { bucket: CodexRateLimitBucket } | { conflict: true }
   > {
     const subprocess = Bun.spawn([this.executable, "app-server"], {
+      env: this.codexHome
+        ? { ...process.env, CODEX_HOME: this.codexHome }
+        : process.env,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -274,6 +303,43 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
       writer.end();
       subprocess.kill();
     }
+  }
+}
+
+export class CodexExecutionIdentityResourceProvider
+  implements CodexIdentityResourceProvider
+{
+  private readonly providers = new Map<string, CodexAppServerResourceProvider>();
+
+  constructor(
+    private readonly executable = "codex",
+    private readonly systemHome: string,
+    private readonly timeoutMs = 5_000,
+    private readonly cacheMs = 60_000,
+    private readonly staleAfterMs = RESOURCE_SIGNAL_STALE_AFTER_MS,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+
+  async read(identity: ExecutionIdentity): Promise<CodexResourceSignal> {
+    const codexHome = identity.homeKind === "managed"
+      ? identity.managedHomePath
+      : this.systemHome;
+    if (!codexHome) throw new Error("Codex 账号目录不可用");
+    let provider = this.providers.get(identity.id);
+    if (!provider) {
+      provider = new CodexAppServerResourceProvider(
+        this.executable,
+        this.timeoutMs,
+        undefined,
+        this.cacheMs,
+        this.staleAfterMs,
+        3_000,
+        this.now,
+        codexHome,
+      );
+      this.providers.set(identity.id, provider);
+    }
+    return provider.readCodexSignal();
   }
 }
 
@@ -425,7 +491,7 @@ function disconnectedOpenAIUsage(observedAt: string): OpenAIResourceSignal {
   };
 }
 
-function codexSignalAt(
+export function codexSignalAt(
   signal: CodexResourceSignal,
   now: Date,
   staleAfterMs: number,
