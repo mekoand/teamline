@@ -11,6 +11,13 @@ export type AutoRunDecision = {
   reasons: Map<string, string | null>;
 };
 
+export type AutoRunIdentityContext = {
+  currentExecutionIdentityId: string | null;
+  defaultExecutionIdentityId: string | null;
+  executableExecutionIdentityIds: ReadonlySet<string>;
+  quotaByExecutionIdentityId?: ReadonlyMap<string, CodexResourceSignal>;
+};
+
 const priorityRank: Record<WorkOrderPriority, number> = {
   high: 0,
   normal: 1,
@@ -28,6 +35,7 @@ export function decideAutoRun(
   codex: CodexResourceSignal,
   maxConcurrency: number,
   now = new Date(),
+  identityContext?: AutoRunIdentityContext,
 ): AutoRunDecision {
   const enabled = workOrders
     .filter((workOrder) => workOrder.resourcePlan.runWhenQuotaAvailable)
@@ -46,7 +54,14 @@ export function decideAutoRun(
   for (const workOrder of enabled) {
     reasons.set(
       workOrder.id,
-      blockingReason(workOrder, workOrders, codex, capacityReached, now),
+      blockingReason(
+        workOrder,
+        workOrders,
+        quotaForWorkOrder(workOrder, codex, identityContext),
+        capacityReached,
+        now,
+        identityBlockingReason(workOrder, identityContext),
+      ),
     );
   }
 
@@ -72,6 +87,7 @@ function blockingReason(
   codex: CodexResourceSignal,
   capacityReached: boolean,
   now: Date,
+  identityReason: string | null,
 ): string | null {
   if (workOrder.pendingClarification) return "等待补充关键信息";
   if (workOrder.plan?.confirmationRequired) return "计划有变更，等待确认";
@@ -109,6 +125,7 @@ function blockingReason(
   if (!Number.isFinite(workOrder.maxRunMinutes) || workOrder.maxRunMinutes <= 0) {
     return "等待确认单轮运行上限";
   }
+  if (identityReason) return identityReason;
   const quotaReason = quotaBlockingReason(codex, workOrder.resourcePlan.pace, now);
   if (quotaReason) return quotaReason;
   if (capacityReached) return "等待可用并发位置";
@@ -177,11 +194,12 @@ function completedStageIds(workOrder: WorkOrder): Set<string> {
   return completed;
 }
 
-function quotaBlockingReason(
+export function quotaBlockingReason(
   codex: CodexResourceSignal,
   pace: WorkOrderPace,
   now: Date,
 ): string | null {
+  if (pace === "fast" && codex.status !== "available") return null;
   if (codex.status === "conflict") return "额度数据冲突，等待重新读取";
   if (codex.status === "stale") return "额度数据已过期，等待重新读取";
   if (codex.status !== "available") return "额度数据不可用，保持排队";
@@ -195,6 +213,7 @@ function quotaBlockingReason(
     return "额度数据已过期，等待重新读取";
   }
   if (!codex.shortWindow || !codex.longWindow) {
+    if (pace === "fast") return null;
     return "额度窗口不完整，保持排队";
   }
   const windows = [codex.shortWindow, codex.longWindow];
@@ -208,10 +227,63 @@ function quotaBlockingReason(
         Date.parse(window.resetsAt) <= now.getTime(),
     )
   ) {
+    if (pace === "fast") return null;
     return "额度数据冲突，等待重新读取";
+  }
+  if (
+    pace === "fast" &&
+    windows.some((window) => window.usedPercent >= 100)
+  ) {
+    return "额度不足，等待可用额度";
   }
   if (windows.some((window) => window.usedPercent > maximumUsedPercent[pace])) {
     return "额度不足，等待可用额度";
   }
   return null;
+}
+
+function identityBlockingReason(
+  workOrder: WorkOrder,
+  context?: AutoRunIdentityContext,
+): string | null {
+  if (!context) return null;
+  const identityId =
+    workOrder.executionIdentityId ?? context.defaultExecutionIdentityId;
+  if (!identityId) return "等待选择 Codex 账号";
+  if (!context.executableExecutionIdentityIds.has(identityId)) {
+    return "Codex 账号不可用，等待处理";
+  }
+  if (
+    context.currentExecutionIdentityId &&
+    context.currentExecutionIdentityId !== identityId
+  ) {
+    return "等待账号";
+  }
+  return null;
+}
+
+function quotaForWorkOrder(
+  workOrder: WorkOrder,
+  fallback: CodexResourceSignal,
+  context?: AutoRunIdentityContext,
+): CodexResourceSignal {
+  if (!context?.quotaByExecutionIdentityId) return fallback;
+  const identityId =
+    workOrder.executionIdentityId ?? context.defaultExecutionIdentityId;
+  if (!identityId) return unavailableIdentityQuota(fallback.observedAt);
+  return (
+    context.quotaByExecutionIdentityId.get(identityId) ??
+    unavailableIdentityQuota(fallback.observedAt)
+  );
+}
+
+function unavailableIdentityQuota(observedAt: string): CodexResourceSignal {
+  return {
+    status: "unavailable",
+    source: "codex-app-server",
+    observedAt,
+    message: "这个 Codex 账号暂时没有可用额度数据",
+    shortWindow: null,
+    longWindow: null,
+  };
 }

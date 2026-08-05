@@ -580,8 +580,10 @@ describe("parallel work order execution", () => {
       const live = readyWorkOrder(firstStore, "仍在运行");
       const dead = readyWorkOrder(firstStore, "已经退出");
       const next = readyWorkOrder(firstStore, "重启后启动");
+      firstStore.bindExecutionIdentity(live.id);
       firstStore.markStarted(live.id);
       firstStore.recordRunPid(live.id, 101);
+      firstStore.bindExecutionIdentity(dead.id);
       firstStore.markStarted(dead.id);
       firstStore.recordRunPid(dead.id, 202);
       firstStore.database.close();

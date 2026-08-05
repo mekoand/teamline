@@ -320,6 +320,62 @@ describe("Codex identity quota monitoring", () => {
     });
   });
 
+  test("shows the running account separately from the default account", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const defaultId = "67000000-0000-4000-8000-000000000000";
+    managedIdentity(store, defaultId, "默认账号");
+    store.setDefaultExecutionIdentityId(defaultId);
+    store.setCurrentExecutionIdentityId("codex-system-default");
+    const app = createApp({
+      store,
+      resourceProvider: {
+        async read() {
+          const observedAt = new Date().toISOString();
+          return {
+            observedAt,
+            codex: quotaSignal({ shortUsed: 12, longUsed: 24 }),
+            openaiApi: {
+              status: "not_connected" as const,
+              source: null,
+              observedAt,
+              message: "未连接",
+              scope: null,
+              usage: null,
+            },
+            workOrderUsage: [],
+          };
+        },
+      },
+      identityResourceProvider: {
+        async read(identity) {
+          return quotaSignal({ shortUsed: 42, longUsed: 54 });
+        },
+      },
+    });
+
+    const resources = await (
+      await app.fetch(new Request("http://teamline.local/api/resources"))
+    ).json();
+    const accounts = new Map(resources.codexAccounts.map(
+      (account: { identity: { id: string } }) => [account.identity.id, account],
+    ));
+
+    expect(resources.codex).toMatchObject({
+      shortWindow: { usedPercent: 12 },
+      longWindow: { usedPercent: 24 },
+    });
+    expect(accounts.get("codex-system-default")).toMatchObject({
+      identity: { isDefault: false },
+      backupStatus: "current",
+      backupLabel: "当前账号",
+    });
+    expect(accounts.get(defaultId)).toMatchObject({
+      identity: { isDefault: true },
+      backupStatus: "available",
+      backupLabel: "备用账号可用",
+    });
+  });
+
   test("reads each identity through its own CODEX_HOME", async () => {
     const directory = temporaryDirectory();
     const executable = join(directory, "fake-codex");

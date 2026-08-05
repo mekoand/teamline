@@ -386,12 +386,28 @@ describe("interrupt and continue API", () => {
     }
   });
 
-  test("authentication, permission, configuration, and unrelated resume failures do not fall back", async () => {
+  test("authentication and permission wait for a response while transient resume failures retry once", async () => {
     const failures = [
-      "Session session-saved unavailable: authentication required",
-      "Session session-saved unavailable: permission denied",
-      "Session session-saved unavailable: invalid config.toml",
-      "Session session-saved unavailable: network timeout",
+      {
+        message: "Session session-saved unavailable: authentication required",
+        runStatus: "interrupted",
+        invocations: 1,
+      },
+      {
+        message: "Session session-saved unavailable: permission denied",
+        runStatus: "interrupted",
+        invocations: 1,
+      },
+      {
+        message: "Session session-saved unavailable: invalid config.toml",
+        runStatus: "failed",
+        invocations: 1,
+      },
+      {
+        message: "Session session-saved unavailable: network timeout",
+        runStatus: "failed",
+        invocations: 2,
+      },
     ];
 
     for (const [index, failure] of failures.entries()) {
@@ -406,7 +422,7 @@ describe("interrupt and continue API", () => {
           "#!/bin/sh",
           `printf '<%s>\\n' "$@" >> "${invocationLog}"`,
           'case " $* " in *" resume "*)',
-          `  printf '%s\\n' '${failure}' >&2`,
+          `  printf '%s\\n' '${failure.message}' >&2`,
           "  exit 1",
           "esac",
           `printf '%s\\n' '{"type":"turn.completed"}'`,
@@ -437,8 +453,10 @@ describe("interrupt and continue API", () => {
         expect(response.status).toBe(200);
         await waitFor(() => store.get(interrupted.id)?.runStatus !== "running");
 
-        expect(store.get(interrupted.id)?.runStatus).toBe("failed");
-        expect(readFileSync(invocationLog, "utf8").match(/<exec>/g)).toHaveLength(1);
+        expect(store.get(interrupted.id)?.runStatus).toBe(failure.runStatus);
+        expect(readFileSync(invocationLog, "utf8").match(/<exec>/g)).toHaveLength(
+          failure.invocations,
+        );
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }

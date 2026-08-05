@@ -45,7 +45,11 @@ import {
   presentResources,
   type IdentityQuotaObservation,
 } from "./resource-presentation";
-import { decideAutoRun } from "./resource-scheduler";
+import {
+  decideAutoRun,
+  quotaBlockingReason,
+  type AutoRunIdentityContext,
+} from "./resource-scheduler";
 import type {
   CodexSessionProvider,
 } from "./codex-session-discovery";
@@ -140,6 +144,7 @@ export function createApp({
   const planningWorkOrderIds = new Set<string>();
   const organizingWorkOrderIds = new Set<string>();
   const startingWorkspacePaths = new Map<string, string>();
+  const startingExecutionIdentityIds = new Map<string, string>();
   const activeRuns = new Map<string, StartedCodexRun>();
   const runTimeouts = new Map<string, () => void>();
   const stopReasons = new Map<string, string>();
@@ -353,6 +358,90 @@ export function createApp({
     ]);
     return activeOrStarting.size >= store.getExecutionSettings().maxConcurrency;
   };
+  const identitySchedulingContext = (): AutoRunIdentityContext => ({
+    currentExecutionIdentityId: store.getCurrentExecutionIdentityId(),
+    defaultExecutionIdentityId: store.getDefaultExecutionIdentityId(),
+    executableExecutionIdentityIds: new Set(
+      store
+        .listExecutionIdentities()
+        .filter(
+          (identity) =>
+            identity.status === "enabled" &&
+            (identity.loginState === "ready" ||
+              (identity.homeKind === "system" && identity.loginState === "unknown")),
+        )
+        .map((identity) => identity.id),
+    ),
+    ...(identityResourceProvider
+      ? {
+          quotaByExecutionIdentityId: new Map(
+            latestIdentityQuota.map(({ identity, signal }) => [identity.id, signal]),
+          ),
+        }
+      : {}),
+  });
+  const executionIdentityIdForStart = (workOrder: WorkOrder): string => {
+    const identityId =
+      workOrder.executionIdentityId ?? store.getDefaultExecutionIdentityId();
+    if (!identityId) throw new Error("请先选择可用的 Codex 账号");
+    const identity = store.getExecutionIdentity(identityId);
+    if (
+      !identity ||
+      identity.status !== "enabled" ||
+      (identity.loginState !== "ready" &&
+        !(identity.homeKind === "system" && identity.loginState === "unknown"))
+    ) {
+      throw new Error("这个目标绑定的 Codex 账号当前不可用");
+    }
+    return identity.id;
+  };
+  const identityStartBlock = (
+    workOrderId: string,
+    executionIdentityId: string,
+  ): { code: string; error: string } | null => {
+    const occupiedIdentities = new Set<string>();
+    let hasUnboundActiveRun = false;
+    for (const activeId of store.activeRunIds()) {
+      const identityId = store.get(activeId)?.executionIdentityId;
+      if (identityId) {
+        occupiedIdentities.add(identityId);
+      } else {
+        hasUnboundActiveRun = true;
+      }
+    }
+    for (const [candidateId, identityId] of startingExecutionIdentityIds) {
+      if (candidateId !== workOrderId) occupiedIdentities.add(identityId);
+    }
+    if (hasUnboundActiveRun) {
+      return {
+        code: "EXECUTION_IDENTITY_BUSY",
+        error: "等待账号：仍有旧版 Codex 运行未结束",
+      };
+    }
+    if (
+      [...occupiedIdentities].some(
+        (identityId) => identityId !== executionIdentityId,
+      )
+    ) {
+      return {
+        code: "EXECUTION_IDENTITY_BUSY",
+        error: "等待账号：另一个 Codex 账号仍有节点在运行",
+      };
+    }
+    const currentIdentityId = store.getCurrentExecutionIdentityId();
+    if (currentIdentityId && currentIdentityId !== executionIdentityId) {
+      return {
+        code: "EXECUTION_IDENTITY_SWITCH_REQUIRED",
+        error: "等待账号：请确认切换 Codex 账号后再运行",
+      };
+    }
+    return null;
+  };
+  const selectExecutionIdentityForStart = (executionIdentityId: string) => {
+    if (!store.getCurrentExecutionIdentityId()) {
+      store.setCurrentExecutionIdentityId(executionIdentityId);
+    }
+  };
   const workspaceOwner = (id: string, workspacePath: string) => {
     const targetPath = canonicalWorkspacePath(workspacePath);
     const activeOwner = store
@@ -385,11 +474,37 @@ export function createApp({
     if (!codexRunner) return null;
     const bound = store.bindExecutionIdentity(id);
     const executionIdentity = executionIdentityForRun(store, bound, Boolean(bound.sessionId));
-    const started = store.markNextStageStarted(id);
-    const scopedWorkOrder = codexRunWorkOrder(started);
-    let run: StartedCodexRun;
-    let fallback: NextStageRun["fallback"];
+    const identityBlock = identityStartBlock(id, executionIdentity.id);
+    if (identityBlock) {
+      store.saveSchedulingWaitReason(id, "等待账号");
+      return null;
+    }
+    startingExecutionIdentityIds.set(id, executionIdentity.id);
     try {
+      if (bound.resourcePlan.runWhenQuotaAvailable) {
+        const snapshot = await readResourceSnapshot();
+        const identityQuota = latestIdentityQuota.find(
+          ({ identity }) => identity.id === executionIdentity.id,
+        )?.signal ?? snapshot.codex;
+        const quotaReason = quotaBlockingReason(
+          identityQuota,
+          bound.resourcePlan.pace,
+          new Date(),
+        );
+        if (quotaReason) {
+          store.saveSchedulingWaitReason(id, quotaReason);
+          return null;
+        }
+      }
+      if (executionCapacityReached()) {
+        store.saveSchedulingWaitReason(id, "等待可用并发位置");
+        return null;
+      }
+      selectExecutionIdentityForStart(executionIdentity.id);
+      const started = store.markNextStageStarted(id);
+      const scopedWorkOrder = codexRunWorkOrder(started);
+      let run: StartedCodexRun;
+      let fallback: NextStageRun["fallback"];
       if (started.sessionId) {
         run = await codexRunner.resume({
           workOrder: scopedWorkOrder,
@@ -418,29 +533,55 @@ export function createApp({
           continuation: await continuationContext(store, id, workspacePath),
         });
       }
+      if (store.get(id)?.runStatus === "stopping") {
+        try {
+          run.interrupt();
+        } catch {
+          // The run is already stopping; do not register or consume it.
+        }
+        if (run.exited) {
+          try {
+            await run.exited;
+          } catch {
+            // Process termination was still observed even if its exit promise rejected.
+          }
+          store.recordInterrupted(id);
+        }
+        return null;
+      }
+      store.recordRunPid(id, run.pid ?? null);
+      startRunTimeout(id);
+      return { run, fallback, executionIdentityId: executionIdentity.id };
     } catch (error) {
       store.recordExit(id, -1, safeCodexStartError(error));
       return null;
+    } finally {
+      startingExecutionIdentityIds.delete(id);
     }
-    if (store.get(id)?.runStatus === "stopping") {
-      try {
-        run.interrupt();
-      } catch {
-        // The run is already stopping; do not register or consume it.
-      }
-      if (run.exited) {
-        try {
-          await run.exited;
-        } catch {
-          // Process termination was still observed even if its exit promise rejected.
-        }
-        store.recordInterrupted(id);
-      }
-      return null;
-    }
-    store.recordRunPid(id, run.pid ?? null);
-    startRunTimeout(id);
-    return { run, fallback, executionIdentityId: executionIdentity.id };
+  };
+
+  const retryTransientCodexFailure = async (
+    id: string,
+    workspacePath: string,
+    executionIdentity: ExecutionIdentity,
+  ): Promise<StartedCodexRun | null> => {
+    if (!codexRunner || store.get(id)?.runStatus === "stopping") return null;
+    const current = store.get(id);
+    if (!current) return null;
+    store.recordProgress(id, "Codex 短暂中断，正在自动恢复一次");
+    return current.sessionId
+      ? codexRunner.resume({
+          workOrder: codexRunWorkOrder(current),
+          workspacePath,
+          sessionId: current.sessionId,
+          executionIdentity,
+        })
+      : codexRunner.start({
+          workOrder: codexRunWorkOrder(current),
+          workspacePath,
+          executionIdentity,
+          continuation: await continuationContext(store, id, workspacePath),
+        });
   };
 
   const refreshIdentityQuota = async (systemSignal: CodexResourceSignal) => {
@@ -513,6 +654,8 @@ export function createApp({
         store.list().filter((workOrder) => !isImportOnlyWorkOrder(workOrder)),
         snapshot.codex,
         store.getExecutionSettings().maxConcurrency,
+        new Date(),
+        identitySchedulingContext(),
       );
       for (const [id, reason] of decision.reasons) {
         store.saveAutoRunReason(id, reason);
@@ -594,6 +737,7 @@ export function createApp({
         const defaultIdentityId = store.getDefaultExecutionIdentityId();
         return Response.json({
           defaultIdentityId,
+          currentIdentityId: store.getCurrentExecutionIdentityId(),
           identities: store
             .listExecutionIdentities()
             .map((identity) => presentExecutionIdentity(identity, defaultIdentityId)),
@@ -715,6 +859,45 @@ export function createApp({
           return executionIdentityErrorResponse(
             "EXECUTION_IDENTITY_UNAVAILABLE",
             error instanceof Error ? error.message : "无法设为默认 Codex 账号",
+            409,
+          );
+        }
+      }
+
+      const currentIdentityMatch = url.pathname.match(
+        /^\/api\/execution-identities\/([^/]+)\/activate$/,
+      );
+      if (request.method === "POST" && currentIdentityMatch) {
+        const id = decodeURIComponent(currentIdentityMatch[1]);
+        try {
+          const body = (await request.json()) as { confirm?: boolean };
+          if (body.confirm !== true) {
+            throw new Error("请确认切换当前运行账号");
+          }
+          const currentIdentityId = store.getCurrentExecutionIdentityId();
+          if (
+            currentIdentityId !== id &&
+            (store.activeRunIds().length > 0 || startingExecutionIdentityIds.size > 0)
+          ) {
+            return executionIdentityErrorResponse(
+              "EXECUTION_IDENTITY_BUSY",
+              "请等待当前账号的所有运行节点结束后再切换",
+              409,
+            );
+          }
+          const identity = store.setCurrentExecutionIdentityId(id);
+          scheduleAutoRunCheck();
+          return Response.json({
+            currentIdentityId: identity.id,
+            identity: presentExecutionIdentity(
+              identity,
+              store.getDefaultExecutionIdentityId(),
+            ),
+          });
+        } catch (error) {
+          return executionIdentityErrorResponse(
+            "EXECUTION_IDENTITY_SWITCH_REJECTED",
+            error instanceof Error ? error.message : "无法切换当前运行账号",
             409,
           );
         }
@@ -1282,6 +1465,8 @@ export function createApp({
           workOrders: presentConsoleWorkOrders(
             store.list(),
             executionSettings.maxConcurrency,
+            store.getCurrentExecutionIdentityId(),
+            store.getDefaultExecutionIdentityId(),
           ),
           executionSettings,
         });
@@ -1334,12 +1519,14 @@ export function createApp({
       if (request.method === "GET" && url.pathname === "/api/resources") {
         const snapshot = await readResourceSnapshot();
         const defaultIdentityId = store.getDefaultExecutionIdentityId();
+        const currentIdentityId =
+          store.getCurrentExecutionIdentityId() ?? defaultIdentityId;
         const displayedSnapshot = identityResourceProvider
           ? {
               ...snapshot,
               codex:
                 latestIdentityQuota.find(
-                  ({ identity }) => identity.id === defaultIdentityId,
+                  ({ identity }) => identity.id === currentIdentityId,
                 )?.signal ?? snapshot.codex,
             }
           : snapshot;
@@ -1355,6 +1542,7 @@ export function createApp({
                 codexAccounts: presentIdentityQuota(
                   latestIdentityQuota,
                   defaultIdentityId,
+                  currentIdentityId,
                 ),
               }
             : {}),
@@ -1467,6 +1655,22 @@ export function createApp({
             { status: 503 },
           );
         }
+        let scheduledExecutionIdentityId: string;
+        try {
+          scheduledExecutionIdentityId = executionIdentityIdForStart(workOrder);
+        } catch (error) {
+          return Response.json(
+            {
+              code: "EXECUTION_IDENTITY_UNAVAILABLE",
+              error: error instanceof Error ? error.message : "Codex 账号不可用",
+            },
+            { status: 409 },
+          );
+        }
+        const identityBlock = identityStartBlock(id, scheduledExecutionIdentityId);
+        if (identityBlock) {
+          return Response.json(identityBlock, { status: 409 });
+        }
         let workspacePath: string | null = null;
         const currentPlanHasBaseline = workOrder.checkpoints.some(
           (checkpoint) =>
@@ -1510,6 +1714,7 @@ export function createApp({
         }
 
         startingWorkOrderIds.add(id);
+        startingExecutionIdentityIds.set(id, scheduledExecutionIdentityId);
         try {
           let delegatedWorktree: DelegatedWorktree | null = null;
           if (workOrder.workspace.kind === "git" && !reusingWorkspace) {
@@ -1533,6 +1738,8 @@ export function createApp({
               store.list().filter((candidate) => !isImportOnlyWorkOrder(candidate)),
               snapshot.codex,
               store.getExecutionSettings().maxConcurrency,
+              new Date(),
+              identitySchedulingContext(),
             );
             for (const [candidateId, reason] of finalAutoRunDecision.reasons) {
               store.saveAutoRunReason(candidateId, reason);
@@ -1588,11 +1795,13 @@ export function createApp({
           }
           let executionIdentity: ExecutionIdentity;
           try {
+            store.bindExecutionIdentity(id, scheduledExecutionIdentityId);
             executionIdentity = executionIdentityForRun(
               store,
               store.get(id)!,
               reusingWorkspace && Boolean(store.get(id)!.sessionId),
             );
+            selectExecutionIdentityForStart(scheduledExecutionIdentityId);
           } catch (error) {
             return Response.json(
               {
@@ -1697,6 +1906,8 @@ export function createApp({
             finishReason: () => finishReason(id),
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, workspacePath!),
+            retryTransient: () =>
+              retryTransientCodexFailure(id, workspacePath!, executionIdentity),
             fallback,
             afterRunSettled: () => {
               if (autoRunRequested) {
@@ -1709,6 +1920,7 @@ export function createApp({
         } finally {
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
+          startingExecutionIdentityIds.delete(id);
         }
       }
 
@@ -1817,6 +2029,20 @@ export function createApp({
           workOrder.workspace.kind === "directory"
             ? resolvedWorkspace.path
             : workOrder.worktreePath;
+        let scheduledExecutionIdentityId: string;
+        try {
+          scheduledExecutionIdentityId = executionIdentityIdForStart(workOrder);
+        } catch (error) {
+          return Response.json(
+            {
+              code: "EXECUTION_IDENTITY_UNAVAILABLE",
+              error: error instanceof Error ? error.message : "Codex 账号不可用",
+            },
+            { status: 409 },
+          );
+        }
+        const identityBlock = identityStartBlock(id, scheduledExecutionIdentityId);
+        if (identityBlock) return Response.json(identityBlock, { status: 409 });
         if (executionCapacityReached()) {
           const { maxConcurrency } = store.getExecutionSettings();
           return Response.json(
@@ -1828,8 +2054,10 @@ export function createApp({
           );
         }
         startingWorkOrderIds.add(id);
+        startingExecutionIdentityIds.set(id, scheduledExecutionIdentityId);
         if (workspaceOwner(id, workspacePath)) {
           startingWorkOrderIds.delete(id);
+          startingExecutionIdentityIds.delete(id);
           return Response.json(
             {
               code: "WORKSPACE_IN_USE",
@@ -1847,6 +2075,7 @@ export function createApp({
               workOrder,
               Boolean(workOrder.sessionId),
             );
+            selectExecutionIdentityForStart(scheduledExecutionIdentityId);
           } catch (error) {
             return Response.json(
               {
@@ -1894,6 +2123,8 @@ export function createApp({
             finishReason: () => finishReason(id),
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
+            retryTransient: () =>
+              retryTransientCodexFailure(id, workspacePath, executionIdentity),
             afterRunSettled: scheduleAutoRunCheck,
             fallback:
               workOrder.sessionId && codexRunner
@@ -1923,6 +2154,7 @@ export function createApp({
         } finally {
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
+          startingExecutionIdentityIds.delete(id);
         }
       }
 
@@ -1985,6 +2217,20 @@ export function createApp({
             { status: 409 },
           );
         }
+        let scheduledExecutionIdentityId: string;
+        try {
+          scheduledExecutionIdentityId = executionIdentityIdForStart(workOrder);
+        } catch (error) {
+          return Response.json(
+            {
+              code: "EXECUTION_IDENTITY_UNAVAILABLE",
+              error: error instanceof Error ? error.message : "Codex 账号不可用",
+            },
+            { status: 409 },
+          );
+        }
+        const identityBlock = identityStartBlock(id, scheduledExecutionIdentityId);
+        if (identityBlock) return Response.json(identityBlock, { status: 409 });
         if (executionCapacityReached()) {
           const { maxConcurrency } = store.getExecutionSettings();
           return Response.json(
@@ -2006,6 +2252,7 @@ export function createApp({
         }
 
         startingWorkOrderIds.add(id);
+        startingExecutionIdentityIds.set(id, scheduledExecutionIdentityId);
         startingWorkspacePaths.set(id, resolvedWorkspace.path);
         try {
           const residueId = crypto.randomUUID();
@@ -2029,6 +2276,7 @@ export function createApp({
           let executionIdentity: ExecutionIdentity;
           try {
             executionIdentity = executionIdentityForRun(store, workOrder);
+            selectExecutionIdentityForStart(scheduledExecutionIdentityId);
           } catch (error) {
             return Response.json(
               {
@@ -2074,6 +2322,8 @@ export function createApp({
             resultProcessor,
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
+            retryTransient: () =>
+              retryTransientCodexFailure(id, resolvedWorkspace.path, executionIdentity),
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             afterRunSettled: scheduleAutoRunCheck,
@@ -2082,6 +2332,7 @@ export function createApp({
         } finally {
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
+          startingExecutionIdentityIds.delete(id);
         }
       }
 
@@ -2842,15 +3093,21 @@ async function consumeRunEvents(
     finishReason?: () => string | undefined;
     checkpointManager?: CheckpointManager;
     startNextStage?: () => Promise<NextStageRun | null>;
+    retryTransient?: () => Promise<StartedCodexRun | null>;
+    transientRetryUsed?: boolean;
     afterRunSettled?: () => void;
   } = {},
 ): Promise<void> {
   let settled = false;
+  let needsResponseMessage: string | null = null;
   try {
     for await (const event of run.events) {
       if (event.type === "session") {
         store.recordSession(workOrderId, event.sessionId, options.executionIdentityId);
       } else if (event.type === "progress") {
+        if (event.report?.kind === "needs_response") {
+          needsResponseMessage = event.message || "Codex 需要补充信息";
+        }
         const visibleMessage = event.message.replace(stageProgressPattern, "").trim();
         if (visibleMessage) {
           const activeStageId = store.get(workOrderId)?.plan?.stages.find(
@@ -2869,6 +3126,52 @@ async function consumeRunEvents(
           options.clearRunTimeout?.();
           store.recordInterrupted(workOrderId, options.finishReason?.());
           settled = true;
+        } else if (
+          needsResponseMessage ||
+          ["needs_response", "authentication_required", "permission_required"].includes(
+            event.endState ?? "",
+          )
+        ) {
+          options.clearRunTimeout?.();
+          store.recordInterrupted(
+            workOrderId,
+            needsResponseMessage ?? event.message ?? "Codex 需要你响应",
+          );
+          settled = true;
+        } else if (event.endState === "transient_failure" && options.retryTransient) {
+          if (options.transientRetryUsed) {
+            options.clearRunTimeout?.();
+            store.recordExit(
+              workOrderId,
+              event.exitCode || -1,
+              "自动恢复一次后仍然失败，需要你响应",
+            );
+            settled = true;
+          } else {
+            let retryRun: StartedCodexRun | null = null;
+            try {
+              retryRun = await options.retryTransient();
+            } catch {
+              // The retry result below is handled as a failed recovery.
+            }
+            if (!retryRun) {
+              options.clearRunTimeout?.();
+              store.recordExit(
+                workOrderId,
+                event.exitCode || -1,
+                "短暂故障自动恢复失败，需要你响应",
+              );
+              settled = true;
+            } else {
+              activeRuns.set(workOrderId, retryRun);
+              store.recordRunPid(workOrderId, retryRun.pid ?? null);
+              void consumeRunEvents(store, workOrderId, retryRun, activeRuns, {
+                ...options,
+                transientRetryUsed: true,
+              });
+              return;
+            }
+          }
         } else if (event.resumeUnavailable && options.fallback) {
           let fallbackRun: StartedCodexRun | null;
           try {
@@ -2913,6 +3216,8 @@ async function consumeRunEvents(
             finishReason: options.finishReason,
             afterRunSettled: options.afterRunSettled,
             startNextStage: options.startNextStage,
+            retryTransient: options.retryTransient,
+            transientRetryUsed: options.transientRetryUsed,
           });
           return;
         } else if (event.exitCode === 0 && options.resultProcessor) {
@@ -2942,6 +3247,7 @@ async function consumeRunEvents(
                     ...options,
                     executionIdentityId: next.executionIdentityId,
                     fallback: next.fallback,
+                    transientRetryUsed: false,
                   });
                   return;
                 }
