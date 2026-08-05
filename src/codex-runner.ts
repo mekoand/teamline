@@ -1,4 +1,5 @@
 import type { WorkOrder } from "./work-order";
+import type { ExecutionIdentity } from "./execution-identity";
 
 export type CodexRunEvent =
   | { type: "session"; sessionId: string }
@@ -36,12 +37,14 @@ export interface CodexRunner {
   start(input: {
     workOrder: WorkOrder;
     workspacePath: string;
+    executionIdentity?: ExecutionIdentity;
     continuation?: ContinuationContext;
   }): Promise<StartedCodexRun>;
   resume(input: {
     workOrder: WorkOrder;
     workspacePath: string;
     sessionId: string;
+    executionIdentity?: ExecutionIdentity;
   }): Promise<StartedCodexRun>;
 }
 
@@ -51,6 +54,7 @@ export class CodexExecutionRunner implements CodexRunner {
   async start(input: {
     workOrder: WorkOrder;
     workspacePath: string;
+    executionIdentity?: ExecutionIdentity;
     continuation?: ContinuationContext;
   }): Promise<StartedCodexRun> {
     try {
@@ -68,6 +72,7 @@ export class CodexExecutionRunner implements CodexRunner {
         ],
         {
           cwd: input.workspacePath,
+          env: executionEnvironment(input.executionIdentity),
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -93,6 +98,7 @@ export class CodexExecutionRunner implements CodexRunner {
     workOrder: WorkOrder;
     workspacePath: string;
     sessionId: string;
+    executionIdentity?: ExecutionIdentity;
   }): Promise<StartedCodexRun> {
     try {
       const subprocess = Bun.spawn(
@@ -107,6 +113,7 @@ export class CodexExecutionRunner implements CodexRunner {
         ],
         {
           cwd: input.workspacePath,
+          env: executionEnvironment(input.executionIdentity),
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -127,6 +134,15 @@ export class CodexExecutionRunner implements CodexRunner {
       throw new Error("Codex 无法继续，请确认本机 Codex 安装和配置后重试");
     }
   }
+}
+
+function executionEnvironment(identity?: ExecutionIdentity): Record<string, string | undefined> {
+  if (!identity) return process.env;
+  if (identity.homeKind === "managed") {
+    if (!identity.managedHomePath) throw new Error("Codex 账号目录不可用");
+    return { ...process.env, CODEX_HOME: identity.managedHomePath };
+  }
+  return process.env;
 }
 
 async function* readRunEvents(
@@ -304,12 +320,19 @@ function buildExecutionPrompt(
           : ""
       }`
     : "";
+  const sessionHandoff = workOrder.sessionHandoff
+    ? `\n\n这是确认切换 Codex 账号后的新会话，不要恢复旧线程。\n此前进展：${workOrder.sessionHandoff.summary || "暂无摘要"}\n当前节点：${workOrder.sessionHandoff.currentStageOutcome ?? "等待继续"}${
+        workOrder.sessionHandoff.currentStageId
+          ? `（${workOrder.sessionHandoff.currentStageId}）`
+          : ""
+      }`
+    : "";
 
   const workspaceRule =
     workOrder.workspace?.kind === "directory"
       ? "请在用户明确选择的当前本地文件夹中完成以下已确认的工作目标。"
       : "请在当前独立 Git worktree 中完成以下已确认的工作目标。";
-  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n当前 AI 节点：\n${stages ?? "未提供"}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。\n\n进展提示（可选，每条单独一行）：\n- TEAMLINE_STAGE_START:<节点 ID>\n- TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- TEAMLINE_NEEDS_RESPONSE:<需要用户补充的内容>\n- TEAMLINE_SUGGEST_STAGE:<建议增加的节点>\n这些提示只用于展示；Teamline 仍会根据实际启动、退出和验证结果决定节点状态，新增节点也需要用户确认。${currentContext}`;
+  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n当前 AI 节点：\n${stages ?? "未提供"}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。\n\n进展提示（可选，每条单独一行）：\n- TEAMLINE_STAGE_START:<节点 ID>\n- TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- TEAMLINE_NEEDS_RESPONSE:<需要用户补充的内容>\n- TEAMLINE_SUGGEST_STAGE:<建议增加的节点>\n这些提示只用于展示；Teamline 仍会根据实际启动、退出和验证结果决定节点状态，新增节点也需要用户确认。${sessionHandoff}${currentContext}`;
 }
 
 export function buildResumePrompt(workOrder: WorkOrder): string {

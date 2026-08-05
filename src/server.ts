@@ -32,6 +32,12 @@ const app = createApp({
   resourceProvider: createServerResourceProvider(),
   checkpointManager: new GitCheckpointManager(),
   codexSessionProvider: new LocalCodexSessionProvider(systemCodexHome),
+  codexSessionProviderForIdentity: (identity) =>
+    new LocalCodexSessionProvider(
+      identity.homeKind === "managed"
+        ? identity.managedHomePath!
+        : systemCodexHome,
+    ),
   claudeCodeSessionProvider: new LocalClaudeCodeSessionProvider(
     resolve(process.env.CLAUDE_CODE_PROJECTS_DIR ?? join(homedir(), ".claude", "projects")),
   ),

@@ -420,7 +420,9 @@ describe("V2 domain data", () => {
 
       expect(previewResponse.status).toBe(200);
       expect(confirmResponse.status).toBe(201);
-      expect(restoredStore.get("legacy-owner")?.sourceSessions).toEqual([importSource]);
+      expect(restoredStore.get("legacy-owner")?.sourceSessions).toEqual([
+        { ...importSource, openInCodex: true },
+      ]);
       expect(restoredStore.get("legacy-duplicate")).toMatchObject({
         sourceSessions: [],
         importSource: null,

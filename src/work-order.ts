@@ -102,7 +102,18 @@ export type WorkOrderImportSource = {
   id: string;
   lastActiveAt: string;
   lastReadAt?: string | null;
+  executionIdentityId?: string | null;
+  openInCodex?: boolean;
   version: 1;
+};
+
+export type SessionHandoff = {
+  fromExecutionIdentityId: string;
+  previousSessionId: string | null;
+  summary: string;
+  currentStageId: string | null;
+  currentStageOutcome: string | null;
+  createdAt: string;
 };
 
 export type ImportedHistoricalStage = {
@@ -235,6 +246,9 @@ export type WorkOrder = {
   sourceSessions: WorkOrderImportSource[];
   importContext: WorkOrderImportContext | null;
   currentSessionId: string | null;
+  executionIdentityId: string | null;
+  sessionIdentityId: string | null;
+  sessionHandoff: SessionHandoff | null;
   importSource: WorkOrderImportSource | null;
   resourcePlan: WorkOrderResourcePlan;
   goal: string;
@@ -279,6 +293,7 @@ export type CreateWorkOrderInput = {
   sourceSessions?: WorkOrderImportSource[];
   importContext?: WorkOrderImportContext | null;
   importSource?: WorkOrderImportSource;
+  executionIdentityId?: string | null;
   goal?: string;
   acceptance?: string;
 };
@@ -341,6 +356,9 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     sourceSessions,
     importContext: input.importContext ?? null,
     currentSessionId: null,
+    executionIdentityId: input.executionIdentityId?.trim() || null,
+    sessionIdentityId: null,
+    sessionHandoff: null,
     importSource: sourceSessions[0] ?? null,
     resourcePlan: {
       priority: "normal",
@@ -400,6 +418,10 @@ function normalizeSourceSession(value: unknown): WorkOrderImportSource {
       : typeof source.lastReadAt === "string" && Number.isFinite(Date.parse(source.lastReadAt))
         ? { lastReadAt: new Date(source.lastReadAt).toISOString() }
         : {}),
+    ...(typeof source.executionIdentityId === "string" && source.executionIdentityId.trim()
+      ? { executionIdentityId: source.executionIdentityId.trim() }
+      : {}),
+    ...(source.openInCodex === true ? { openInCodex: true } : {}),
     version: 1,
   };
 }
