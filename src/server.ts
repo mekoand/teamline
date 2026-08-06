@@ -26,6 +26,13 @@ mkdirSync(dataDirectory, { recursive: true });
 const store = new WorkOrderStore(new Database(join(dataDirectory, "teamline.db"), { create: true }));
 store.interruptActiveRunsAfterRestart();
 const port = Number(process.env.TEAMLINE_PORT ?? 4310);
+const executionIdentityEnvironment = new LocalCodexIdentityEnvironment(
+  join(dataDirectory, "codex-identities"),
+  {
+    executable: process.env.TEAMLINE_CODEX_PATH,
+    systemHome: systemCodexHome,
+  },
+);
 const app = createApp({
   store,
   planGenerator: new CodexPlanGenerator(),
@@ -48,13 +55,7 @@ const app = createApp({
   sessionOrganizer: new CodexSessionOrganizer(),
   projectRoot,
   dataDirectory,
-  executionIdentityEnvironment: new LocalCodexIdentityEnvironment(
-    join(dataDirectory, "codex-identities"),
-    {
-      executable: process.env.TEAMLINE_CODEX_PATH,
-      systemHome: systemCodexHome,
-    },
-  ),
+  executionIdentityEnvironment,
 });
 
 const server = Bun.serve({
@@ -65,3 +66,20 @@ const server = Bun.serve({
 });
 
 console.log(`Teamline is running at ${server.url}`);
+
+let shuttingDown = false;
+const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  server.stop(true);
+  await executionIdentityEnvironment.close();
+  store.database.close();
+};
+const shutdownForSignal = () => {
+  void shutdown().then(
+    () => process.exit(0),
+    () => process.exit(1),
+  );
+};
+process.once("SIGINT", shutdownForSignal);
+process.once("SIGTERM", shutdownForSignal);

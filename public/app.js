@@ -18,6 +18,13 @@ const allGoalStatusGroups = [
   ["completed", "已完成"],
 ];
 
+const homeHistoryFilters = [
+  ["current", "当前"],
+  ["7", "7 天"],
+  ["30", "30 天"],
+  ["all", "全部"],
+];
+
 const state = {
   workOrders: [],
   projects: [],
@@ -29,13 +36,18 @@ const state = {
   selectedStageIndex: 0,
   followCurrentStage: true,
   draftStages: null,
-  contextTab: "details",
+  contextTab: "artifacts",
+  homeHistoryFilter: "7",
   primaryView: null,
-  progressView: "timeline",
+  progressView: "map",
   mobileContextOpen: false,
   events: [],
   executionSettings: { maxConcurrency: 2 },
   resources: null,
+  executionIdentities: { defaultIdentityId: null, currentIdentityId: null, identities: [] },
+  identityLoginStates: {},
+  identityLoginTimers: new Map(),
+  identityLoginChecks: new Set(),
   resourceError: "",
   resourceRefreshInFlight: false,
   autoRunCheckRequested: true,
@@ -173,7 +185,8 @@ function resetGoalSelection() {
   state.selected = null;
   state.draftStages = null;
   state.primaryView = null;
-  state.progressView = "timeline";
+  state.progressView = "map";
+  state.contextTab = "artifacts";
   state.mobileContextOpen = false;
 }
 
@@ -315,14 +328,17 @@ async function refreshConsole({
   }
 
   try {
-    const [consoleState, notificationState, projectState] = await Promise.all([
+    const [consoleState, notificationState, projectState, executionIdentityState] = await Promise.all([
       requestJson("/api/console"),
       requestJson("/api/notifications"),
       requestJson("/api/projects"),
+      requestJson("/api/execution-identities"),
     ]);
     const { workOrders, executionSettings } = consoleState;
     state.workOrders = workOrders;
     state.projects = projectState.projects;
+    state.executionIdentities = executionIdentityState;
+    resumeIdentityLoginChecks();
     state.executionSettings = executionSettings;
     state.notifications = notificationState.notifications;
     state.unreadNotificationCount = notificationState.unreadCount;
@@ -681,6 +697,8 @@ function renderAllGoalsWorkspace() {
       (workOrder) => visibleStatus(workOrder, state.workOrders).status === status,
     ).length,
   ]));
+  const visibleOrders = homeVisibleWorkOrders();
+  const projectGroups = homeProjectGroups(visibleOrders);
   return `
     <section class="workspace-content all-goals-workspace">
       <header class="overview-heading">
@@ -698,34 +716,130 @@ function renderAllGoalsWorkspace() {
       <div class="status-summary" aria-label="目标状态摘要">
         ${groups
           .filter(([status]) => ["response", "review", "running", "completed"].includes(status))
-          .map(([status, label]) => `<div><strong>${counts[status]}</strong><span>${label}</span></div>`)
+          .map(([status, label]) => `<div data-home-status="${status}"><strong>${counts[status]}</strong><span>${label}</span></div>`)
           .join("")}
       </div>
-      ${state.workOrders.length
-        ? `<div class="home-status-groups">${groups.map(([status, label]) => {
-            const orders = state.workOrders.filter(
-              (workOrder) => visibleStatus(workOrder, state.workOrders).status === status,
-            );
-            if (!orders.length) return "";
-            return `
-              <section class="home-status-section" data-home-status="${status}" aria-labelledby="home-${status}">
-                <header><h2 id="home-${status}">${label}</h2><span>${orders.length}</span></header>
-                <div>${orders.map(renderHomeGoalRow).join("")}</div>
-              </section>`;
-          }).join("")}</div>`
+      <div class="home-history-toolbar">
+        <div><strong>按项目查看</strong><span>活动目标始终显示</span></div>
+        <div class="home-history-filter" role="group" aria-label="历史目标范围">
+          ${homeHistoryFilters.map(([value, label]) => `<button type="button" data-home-history="${value}" class="${state.homeHistoryFilter === value ? "active" : ""}" aria-pressed="${state.homeHistoryFilter === value}">${label}</button>`).join("")}
+        </div>
+      </div>
+      ${visibleOrders.length
+        ? `<div class="home-project-groups">${projectGroups.map(renderHomeProjectGroup).join("")}</div>`
         : `<section class="home-empty"><h2>还没有目标</h2><button class="primary-button" id="empty-create" type="button">新建目标</button></section>`}
     </section>`;
 }
 
 function renderHomeGoalRow(workOrder) {
   const presentation = visibleStatus(workOrder, state.workOrders);
+  const stage = currentStageForGoal(workOrder);
+  const accountLabel = homeAccountLabel(workOrder);
   return `
     <button class="home-goal-row" data-work-order-id="${escapeHtml(workOrder.id)}" type="button">
       <span class="status-dot ${presentation.status}"></span>
-      <span><strong>${escapeHtml(workOrder.title)}</strong><small>${escapeHtml(presentation.reason)}</small></span>
-      <time>${formatDate(workOrder.updatedAt)}</time>
+      <span class="home-goal-title"><strong>${escapeHtml(workOrder.title)}</strong>${accountLabel ? `<small class="goal-account-tag">${escapeHtml(accountLabel)}</small>` : ""}</span>
+      <span class="home-goal-fact" data-label="当前节点"><strong>${escapeHtml(stage?.outcome || homeCurrentNodeFallback(workOrder))}</strong><small>${escapeHtml(stage?.statusReason || workOrder.currentSummary)}</small></span>
+      <span class="home-goal-fact" data-label="状态"><span class="status-pill ${presentation.status}">${visibleStatusLabels[presentation.status]}</span><small>${escapeHtml(waitingReasonLabel(presentation))}</small></span>
+      <span class="home-goal-fact" data-label="下一步"><strong>${escapeHtml(homeNextStep(workOrder, presentation))}</strong><small>更新于 ${formatDate(workOrder.updatedAt)}</small></span>
       <span class="row-arrow" aria-hidden="true">›</span>
     </button>`;
+}
+
+function homeVisibleWorkOrders() {
+  const historyDays = Number(state.homeHistoryFilter);
+  const cutoff = Number.isFinite(historyDays)
+    ? Date.now() - historyDays * 24 * 60 * 60_000
+    : null;
+  return state.workOrders.filter((workOrder) => {
+    const active = visibleStatus(workOrder, state.workOrders).status !== "completed";
+    if (active || state.homeHistoryFilter === "all") return true;
+    if (state.homeHistoryFilter === "current") return false;
+    return Date.parse(workOrder.updatedAt) >= cutoff;
+  });
+}
+
+function homeProjectGroups(workOrders) {
+  const projectById = new Map(state.projects.map((project) => [project.id, project]));
+  const grouped = new Map();
+  for (const workOrder of workOrders) {
+    const key = projectById.has(workOrder.projectId) ? workOrder.projectId : "unassigned";
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(workOrder);
+  }
+  const orderedKeys = [
+    ...state.projects.map((project) => project.id).filter((id) => grouped.has(id)),
+    ...(grouped.has("unassigned") ? ["unassigned"] : []),
+  ];
+  return orderedKeys.map((key) => ({
+    id: key,
+    name: key === "unassigned" ? "独立目标" : projectById.get(key).name,
+    orders: grouped.get(key).sort(compareHomeGoals),
+  }));
+}
+
+function renderHomeProjectGroup(group) {
+  return `
+    <section class="home-project-section" data-home-project="${escapeHtml(group.id)}">
+      <header><div><p class="overline">项目</p><h2>${escapeHtml(group.name)}</h2></div><span>${group.orders.length} 个目标</span></header>
+      <div class="home-goal-table">
+        <div class="home-goal-table-heading" aria-hidden="true"><span>目标</span><span>当前节点</span><span>状态与等待</span><span>下一步</span></div>
+        ${group.orders.map(renderHomeGoalRow).join("")}
+      </div>
+    </section>`;
+}
+
+function compareHomeGoals(left, right) {
+  const order = { response: 0, review: 1, running: 2, planning: 3, queued: 4, completed: 5 };
+  const leftStatus = visibleStatus(left, state.workOrders).status;
+  const rightStatus = visibleStatus(right, state.workOrders).status;
+  return order[leftStatus] - order[rightStatus] || right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function currentStageForGoal(workOrder) {
+  const stages = workOrder.plan?.stages ?? [];
+  return stages[preferredStageIndex(workOrder)] ?? null;
+}
+
+function homeCurrentNodeFallback(workOrder) {
+  if (workOrder.importContext && !workOrder.plan) return "整理来源会话";
+  return workOrder.plan ? "等待开始" : "尚未生成计划";
+}
+
+function waitingReasonLabel(presentation) {
+  return ["queued", "response"].includes(presentation.status)
+    ? presentation.reason
+    : `当前：${presentation.reason}`;
+}
+
+function homeNextStep(workOrder, presentation) {
+  if (presentation.status === "completed") return "查看成果";
+  if (presentation.status === "review") return "验收成果与验证";
+  if (presentation.status === "running") return "查看执行进展";
+  if (presentation.status === "response") {
+    if (presentation.reason.includes("外部节点")) return "登记外部成果";
+    if (presentation.reason.includes("验证") || presentation.reason.includes("节点结果")) return "确认验证结果";
+    if (presentation.reason.includes("关键信息")) return "补充关键信息";
+    return "处理并继续";
+  }
+  if (presentation.status === "queued") {
+    if (presentation.reason.includes("工作空间")) return "选择工作空间";
+    if (presentation.reason === "等待账号") return "切换到目标账号";
+    if (presentation.reason === "可以开始运行") return "确认并启动";
+    return "等待资源可用";
+  }
+  if (workOrder.plan?.confirmationRequired) return "确认执行计划";
+  if (workOrder.plan) return "准备开始";
+  return workOrder.importContext ? "生成后续计划" : "生成执行计划";
+}
+
+function homeAccountLabel(workOrder) {
+  const identities = state.executionIdentities.identities;
+  if (new Set(identities.map((identity) => identity.id)).size <= 1) return "";
+  const id = workOrder.executionIdentityId ?? state.executionIdentities.defaultIdentityId;
+  const identity = identities.find((candidate) => candidate.id === id);
+  if (!identity) return "未选账号";
+  return `${identity.label}${identity.status === "removed" ? " · 已移除" : ""}`;
 }
 
 function renderProjectsWorkspace() {
@@ -837,6 +951,12 @@ function bindOverviewEvents() {
   });
   document.querySelectorAll(".home-goal-row").forEach((button) => {
     button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
+  });
+  document.querySelectorAll("[data-home-history]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.homeHistoryFilter = button.dataset.homeHistory;
+      renderConsole();
+    });
   });
   document.querySelector("#toggle-project-create")?.addEventListener("click", () => {
     state.projectCreateOpen = !state.projectCreateOpen;
@@ -954,22 +1074,37 @@ function renderResourceSummary() {
     return;
   }
   const { codex } = state.resources;
-  if (codex.status !== "available") {
-    resourceSummaryElement.innerHTML = `
-      <button type="button" data-open-resource-summary>
-        <span>Codex 额度</span><strong>${resourceStatusLabel(codex.status)}</strong>
-      </button>`;
-  } else {
-    resourceSummaryElement.innerHTML = `
-      <button type="button" data-open-resource-summary>
+  const accounts = state.resources.codexAccounts ?? [];
+  const current = accounts.find(({ backupStatus }) => backupStatus === "current");
+  const shownQuota = current?.quota ?? codex;
+  resourceSummaryElement.innerHTML = `
+    <details class="topbar-quota-control">
+      <summary>
         <span>Codex 额度</span>
-        <strong>短 ${formatRemaining(codex.shortWindow)} · 长 ${formatRemaining(codex.longWindow)}</strong>
-      </button>`;
-  }
-  resourceSummaryElement.querySelector("button")?.addEventListener("click", () => {
+        ${shownQuota.status === "available"
+          ? `<strong>5 小时 ${formatRemaining(shownQuota.shortWindow)}</strong><i>周 ${formatRemaining(shownQuota.longWindow)}</i>`
+          : `<strong>${resourceStatusLabel(shownQuota.status)}</strong>`}
+      </summary>
+      <div class="topbar-quota-popover">
+        ${accounts.length
+          ? accounts.map(renderTopbarAccountQuota).join("")
+          : `<article><strong>Codex</strong><span>${resourceStatusLabel(codex.status)}</span></article>`}
+        <button class="text-button" type="button" data-open-resource-summary>管理账号与额度</button>
+      </div>
+    </details>`;
+  resourceSummaryElement.querySelector("[data-open-resource-summary]")?.addEventListener("click", () => {
+    resourceSummaryElement.querySelector(".topbar-quota-control")?.removeAttribute("open");
     history.pushState({}, "", "/resources");
     renderConsole();
   });
+}
+
+function renderTopbarAccountQuota({ identity, quota, backupLabel }) {
+  return `
+    <article>
+      <div><strong>${escapeHtml(identity.label)}</strong><span>${escapeHtml(compactBackupLabel(backupLabel))}</span></div>
+      <dl><div><dt>5 小时</dt><dd>${formatRemaining(quota.shortWindow)}</dd></div><div><dt>周</dt><dd>${formatRemaining(quota.longWindow)}</dd></div></dl>
+    </article>`;
 }
 
 function renderResourceWorkspace() {
@@ -988,7 +1123,7 @@ function renderResourceWorkspace() {
         ${renderCodexResourceCard(resources.codex, resources.runningCount)}
         ${renderApiResourceCard(resources.openaiApi)}
       </section>
-      ${resources.codexAccounts?.length ? renderCodexAccountQuota(resources.codexAccounts) : ""}
+      ${Array.isArray(resources.codexAccounts) ? renderCodexAccountQuota(resources.codexAccounts) : ""}
       <section class="resource-runtime-panel">
         <div><p class="overline">运行设置</p><h2>本机并发</h2></div>
         <label class="resource-concurrency-control" title="同时运行的目标上限">
@@ -1014,7 +1149,7 @@ function renderCodexResourceCard(codex, runningCount) {
     <article class="resource-card ${available ? "available" : "unavailable"}">
       <div class="resource-card-heading"><div><p class="overline">Codex 订阅</p><h2>${available ? "额度可读取" : resourceStatusLabel(codex.status)}</h2></div><span class="status-pill ${available ? "running" : "response"}">${runningCount} 项运行中</span></div>
       ${available
-        ? `<div class="quota-windows">${renderQuotaWindow("短周期", codex.shortWindow)}${renderQuotaWindow("长期", codex.longWindow)}</div>`
+        ? `<div class="quota-windows">${renderQuotaWindow("5 小时", codex.shortWindow)}${renderQuotaWindow("周额度", codex.longWindow)}</div>`
         : `<p class="resource-message">${escapeHtml(codex.message || "暂时没有可用额度数据")}</p>`}
     </article>`;
 }
@@ -1023,24 +1158,63 @@ function renderCodexAccountQuota(accounts) {
   return `
     <section class="identity-quota-panel">
       <div class="section-heading compact">
-        <div><p class="overline">Codex 账号</p><h2>账号额度</h2></div>
-        <span class="subtle-label">${accounts.length} 个已启用</span>
+        <div><p class="overline">Codex 账号</p><h2>账号与额度</h2></div>
+        <div class="identity-panel-tools">
+          <span class="subtle-label">${accounts.length} 个已启用</span>
+          <details class="identity-add-disclosure">
+            <summary>添加账号</summary>
+            <form id="add-identity-form">
+              <label><span>账号名称</span><input name="label" required maxlength="40" placeholder="例如：备用" autocomplete="off" /></label>
+              <button class="primary-button" type="submit">添加并登录</button>
+              <p class="inline-feedback" id="identity-create-feedback" role="status"></p>
+            </form>
+          </details>
+        </div>
       </div>
       <div class="identity-quota-list">
-        ${accounts.map(({ identity, quota, backupLabel, backupStatus }) => `
+        ${accounts.length ? accounts.map(({ identity, quota, backupLabel, backupStatus }) => {
+          const login = state.identityLoginStates[identity.id];
+          return `
           <article class="identity-quota-row">
             <div class="identity-quota-heading">
               <div><strong>${escapeHtml(identity.label)}</strong><small>${resourceStatusLabel(quota.status)}</small></div>
-              <span class="status-pill ${backupStatus === "available" ? "running" : backupStatus === "unknown" ? "response" : "queued"}">${escapeHtml(backupLabel)}</span>
+              <span class="status-pill ${backupStatus === "available" ? "running" : backupStatus === "unknown" ? "response" : "queued"}">${escapeHtml(compactBackupLabel(backupLabel))}</span>
             </div>
             <div class="quota-windows compact">
               ${renderQuotaWindow("5 小时", quota.shortWindow)}
               ${renderQuotaWindow("周额度", quota.longWindow)}
             </div>
             ${quota.message ? `<p class="resource-message compact">${escapeHtml(quota.message)}</p>` : ""}
-          </article>`).join("")}
+            <div class="identity-actions">
+              ${identity.homeKind === "managed" && ["signed_out", "expired"].includes(identity.loginState) ? `<button class="secondary-button" type="button" data-login-identity="${escapeHtml(identity.id)}" ${login?.status === "in_progress" ? "disabled" : ""}>${login?.status === "in_progress" ? "登录中…" : "登录"}</button>` : ""}
+              <button class="text-button" type="button" data-refresh-identity="${escapeHtml(identity.id)}">刷新状态</button>
+              <span data-identity-login-message>${escapeHtml(identityLoginMessage(login, identity))}</span>
+            </div>
+          </article>`;
+        }).join("") : '<p class="muted identity-empty">还没有可用账号，可以先添加一个。</p>'}
       </div>
     </section>`;
+}
+
+function compactBackupLabel(label) {
+  return {
+    "备用账号可用": "备用可用",
+    "备用账号额度未知": "备用未知",
+    "备用账号额度不足": "备用不足",
+  }[label] ?? label;
+}
+
+function identityLoginMessage(login, identity) {
+  if (login?.status === "in_progress") return "请在打开的页面完成登录";
+  if (login?.status === "failed") return login.error || "登录失败";
+  if (login?.status === "completed") return "登录已完成，正在确认账号";
+  return {
+    ready: "已登录",
+    signed_out: "未登录",
+    expired: "登录已失效",
+    pending: "等待登录",
+    unknown: "状态未知",
+  }[identity.loginState] ?? "";
 }
 
 function renderQuotaWindow(label, window) {
@@ -1099,8 +1273,197 @@ function resourceOptions(options, selected) {
 
 function bindResourceEvents() {
   document.querySelector("#max-concurrency")?.addEventListener("change", saveMaxConcurrency);
+  document.querySelector("#add-identity-form")?.addEventListener("submit", createAndLoginIdentity);
   document.querySelectorAll("[data-resource-priority], [data-resource-pace], [data-resource-auto-run]")
     .forEach((control) => control.addEventListener("change", () => saveResourcePlan(control.dataset.workOrderId)));
+  document.querySelectorAll("[data-login-identity]").forEach((button) => {
+    button.addEventListener("click", () => startIdentityLogin(button.dataset.loginIdentity));
+  });
+  document.querySelectorAll("[data-refresh-identity]").forEach((button) => {
+    button.addEventListener("click", () => refreshExecutionIdentity(button.dataset.refreshIdentity, button));
+  });
+}
+
+async function createAndLoginIdentity(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  const label = String(new FormData(event.currentTarget).get("label") ?? "").trim();
+  setBusy(button, "正在添加…");
+  let identity;
+  try {
+    ({ identity } = await requestJson("/api/execution-identities", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label }),
+    }));
+  } catch (error) {
+    resetBusy(button, "添加并登录");
+    setFeedback("identity-create-feedback", messageFrom(error, "无法添加 Codex 账号"), true);
+    return;
+  }
+  try {
+    state.identityLoginChecks.add(identity.id);
+    const result = await requestJson(
+      `/api/execution-identities/${encodeURIComponent(identity.id)}/login`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      },
+    );
+    state.identityLoginStates[identity.id] = result.login;
+    await refreshConsole({ polling: true, checkAutoRun: false });
+    scheduleIdentityLoginPoll(identity.id);
+  } catch (error) {
+    state.identityLoginStates[identity.id] = {
+      status: "failed",
+      error: messageFrom(error, "账号已添加，但无法开始登录"),
+    };
+    await refreshConsole({ polling: true, checkAutoRun: false });
+  }
+}
+
+async function startIdentityLogin(id) {
+  const button = document.querySelector(`[data-login-identity="${CSS.escape(id)}"]`);
+  setBusy(button, "正在检查…");
+  try {
+    state.identityLoginChecks.add(id);
+    const current = await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/login`);
+    if (current.login.status === "in_progress") {
+      state.identityLoginStates[id] = current.login;
+      renderConsole();
+      scheduleIdentityLoginPoll(id);
+      return;
+    }
+    if (current.login.status === "completed") {
+      const identity = await refreshIdentityAfterLogin(id);
+      if (identity.loginState === "ready") {
+        delete state.identityLoginStates[id];
+        await refreshConsole({ polling: true, checkAutoRun: false });
+        return;
+      }
+    }
+    const result = await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
+    state.identityLoginStates[id] = result.login;
+    renderConsole();
+    scheduleIdentityLoginPoll(id);
+  } catch (error) {
+    resetBusy(button, "登录");
+    state.identityLoginStates[id] = { status: "failed", error: messageFrom(error, "无法开始登录") };
+    renderConsole();
+  }
+}
+
+function resumeIdentityLoginChecks() {
+  state.executionIdentities.identities
+    .filter(
+      (identity) =>
+        identity.homeKind === "managed" &&
+        identity.status === "enabled" &&
+        ["signed_out", "expired"].includes(identity.loginState) &&
+        !state.identityLoginChecks.has(identity.id),
+    )
+    .forEach((identity) => {
+      state.identityLoginChecks.add(identity.id);
+      void recoverIdentityLoginState(identity.id);
+    });
+}
+
+async function recoverIdentityLoginState(id) {
+  try {
+    const { login } = await requestJson(
+      `/api/execution-identities/${encodeURIComponent(id)}/login`,
+    );
+    state.identityLoginStates[id] = login;
+    if (login.status === "in_progress") {
+      scheduleIdentityLoginPoll(id);
+      if (isResourceView()) renderConsole();
+      return;
+    }
+    if (login.status === "completed") {
+      const identity = await refreshIdentityAfterLogin(id);
+      if (identity.loginState === "ready") {
+        delete state.identityLoginStates[id];
+      } else {
+        state.identityLoginStates[id] = {
+          status: "failed",
+          error: "登录已结束，但账号仍未就绪，请重新登录",
+        };
+      }
+      await refreshConsole({ polling: true, checkAutoRun: false });
+      return;
+    }
+    if (isResourceView()) renderConsole();
+  } catch (error) {
+    state.identityLoginStates[id] = {
+      status: "failed",
+      error: messageFrom(error, "无法恢复登录状态"),
+    };
+    if (isResourceView()) renderConsole();
+  }
+}
+
+async function refreshIdentityAfterLogin(id) {
+  const { identity } = await requestJson(
+    `/api/execution-identities/${encodeURIComponent(id)}/refresh`,
+    { method: "POST" },
+  );
+  state.executionIdentities.identities = state.executionIdentities.identities.map(
+    (candidate) => candidate.id === id ? identity : candidate,
+  );
+  return identity;
+}
+
+function scheduleIdentityLoginPoll(id) {
+  clearTimeout(state.identityLoginTimers.get(id));
+  state.identityLoginTimers.set(id, setTimeout(() => void pollIdentityLogin(id), 1_500));
+}
+
+async function pollIdentityLogin(id) {
+  try {
+    const result = await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/login`);
+    state.identityLoginStates[id] = result.login;
+    if (result.login.status === "in_progress") {
+      if (isResourceView()) renderConsole();
+      scheduleIdentityLoginPoll(id);
+      return;
+    }
+    if (result.login.status === "completed") {
+      const identity = await refreshIdentityAfterLogin(id);
+      if (identity.loginState === "ready") {
+        delete state.identityLoginStates[id];
+      } else {
+        state.identityLoginStates[id] = {
+          status: "failed",
+          error: "登录已结束，但账号仍未就绪，请重新登录",
+        };
+      }
+      await refreshConsole({ polling: true, checkAutoRun: false });
+      return;
+    }
+    if (isResourceView()) renderConsole();
+  } catch (error) {
+    state.identityLoginStates[id] = { status: "failed", error: messageFrom(error, "无法读取登录状态") };
+    if (isResourceView()) renderConsole();
+  }
+}
+
+async function refreshExecutionIdentity(id, button) {
+  setBusy(button, "刷新中…");
+  try {
+    await requestJson(`/api/execution-identities/${encodeURIComponent(id)}/refresh`, {
+      method: "POST",
+    });
+    await refreshConsole({ polling: true, checkAutoRun: false });
+  } catch (error) {
+    resetBusy(button, "刷新状态");
+    state.identityLoginStates[id] = { status: "failed", error: messageFrom(error, "无法刷新账号状态") };
+    renderConsole();
+  }
 }
 
 async function saveResourcePlan(id) {
@@ -1212,16 +1575,14 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
     return renderImportedHistorySurface(workOrder, feedback);
   }
   const hasResult = Boolean(workOrder.result);
-  const defaultView = hasResult && ["review", "delivered"].includes(workOrder.status)
-    ? "result"
-    : "map";
+  const defaultView = "map";
   const activeView = hasResult ? (state.primaryView ?? defaultView) : "map";
   if (activeView === "result") {
     return `
       <section class="primary-work-surface">
         <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
-          <button type="button" data-primary-view="map" role="tab" aria-selected="false">进展</button>
-          <button type="button" data-primary-view="result" role="tab" aria-selected="true" class="active">成果</button>
+          <button type="button" data-primary-view="map" role="tab" aria-selected="false">执行图</button>
+          <button type="button" data-primary-view="result" role="tab" aria-selected="true" class="active">成果与验证</button>
         </div>
         ${renderResultPanel(workOrder)}
       </section>`;
@@ -1232,7 +1593,7 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
         <div class="section-heading">
           <div>
             <p class="overline">目标主体</p>
-            <h2>${stages ? (canEditPlan ? "编辑执行计划" : "执行进展") : "准备执行计划"}</h2>
+            <h2>${stages ? (canEditPlan ? "编辑执行计划" : "执行图") : "准备执行计划"}</h2>
           </div>
           <div class="map-heading-actions">
             ${workOrder.plan && !canEditPlan ? renderMapViewControls(workOrder) : ""}
@@ -1241,8 +1602,8 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
         </div>
         ${hasResult ? `
           <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
-            <button type="button" data-primary-view="map" role="tab" aria-selected="true" class="active">进展</button>
-            <button type="button" data-primary-view="result" role="tab" aria-selected="false">成果</button>
+            <button type="button" data-primary-view="map" role="tab" aria-selected="true" class="active">执行图</button>
+            <button type="button" data-primary-view="result" role="tab" aria-selected="false">成果与验证</button>
           </div>` : ""}
       </div>
         ${workOrder.revisionNote ? `<aside class="notice"><strong>补充要求</strong><p>${escapeHtml(workOrder.revisionNote)}</p></aside>` : ""}
@@ -1558,7 +1919,7 @@ function renderTechnicalActivity(workOrder) {
   if (!events.length) return "";
   return `
     <details class="technical-activity">
-      <summary>${stage ? `节点 ${state.selectedStageIndex + 1} · ` : ""}工具与日志 <span>${events.length}</span></summary>
+      <summary>${stage ? `节点 ${state.selectedStageIndex + 1} · ` : ""}完整工具与日志 <span>${events.length}</span></summary>
       <div class="technical-event-list">
         ${events.map((event) => `
           <article><div><time>${escapeHtml(formatDate(event.createdAt))}</time><strong>${escapeHtml(event.message)}</strong></div>${event.detail ? `<pre>${escapeHtml(event.detail)}</pre>` : ""}</article>`).join("")}
@@ -1923,9 +2284,9 @@ function renderContextSupport(workOrder) {
 
 function renderContextTabs() {
   const tabs = [
+    ["artifacts", "成果与验证"],
     ["details", "详情"],
     ["materials", "素材"],
-    ["artifacts", "成果"],
   ];
   return `
     <div class="context-tabs" role="tablist" aria-label="节点详情">
@@ -2798,7 +3159,7 @@ async function selectWorkOrder(id) {
   if (id !== state.selected?.id) {
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
-    state.contextTab = "details";
+    state.contextTab = "artifacts";
     state.primaryView = null;
     state.mobileContextOpen = false;
     history.pushState({}, "", `/goals/${encodeURIComponent(id)}`);

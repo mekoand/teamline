@@ -72,6 +72,37 @@ describe("personal console", () => {
     expect(styles).toContain(".home-status-section");
   });
 
+  test("groups the home view by project with a seven-day default and operational goal summaries", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [script, styles] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
+    ]);
+
+    expect(script).toContain('homeHistoryFilter: "7"');
+    expect(script).toContain('["current", "当前"]');
+    expect(script).toContain('["7", "7 天"]');
+    expect(script).toContain('["30", "30 天"]');
+    expect(script).toContain('["all", "全部"]');
+    expect(script).toContain("const active = visibleStatus(workOrder, state.workOrders).status !== \"completed\"");
+    expect(script).toContain("homeProjectGroups");
+    expect(script).toContain('data-label="当前节点"');
+    expect(script).toContain('data-label="状态"');
+    expect(script).toContain('data-label="下一步"');
+    expect(script).toContain("new Set(identities.map((identity) => identity.id)).size <= 1");
+    expect(styles).toContain(".home-project-groups");
+    expect(styles).toContain(".goal-account-tag");
+  });
+
+  test("keeps removed account labels on historical goals", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain("new Set(identities.map((identity) => identity.id)).size <= 1");
+    expect(script).toContain('identity.status === "removed" ? " · 已移除"');
+    expect(script).not.toContain('state.executionIdentities.identities.filter(\n    (identity) => identity.status !== "removed"');
+  });
+
   test("uses stepped 390px navigation with explicit return paths and balanced Chinese wrapping", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const [script, styles] = await Promise.all([
@@ -184,6 +215,52 @@ describe("personal console", () => {
     );
     expect(script).toContain("Codex 额度</span>");
     expect(script).not.toContain("${runningCount} 项运行中</span>\n      </button>");
+  });
+
+  test("shows compact account quota controls and wires managed-account login polling", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [script, styles] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
+    ]);
+
+    expect(script).toContain('class="topbar-quota-control"');
+    expect(script).toContain('removeAttribute("open")');
+    expect(script).toContain('renderQuotaWindow("5 小时"');
+    expect(script).toContain('renderQuotaWindow("周额度"');
+    expect(script).toContain("Array.isArray(resources.codexAccounts)");
+    expect(script).toContain("还没有可用账号，可以先添加一个。");
+    expect(script).toContain('"备用账号可用": "备用可用"');
+    expect(script).toContain('"备用账号额度未知": "备用未知"');
+    expect(script).toContain("data-login-identity");
+    expect(script).toContain('id="add-identity-form"');
+    expect(script).toContain('requestJson("/api/execution-identities"');
+    expect(script).toContain("添加并登录");
+    expect(script).toContain("JSON.stringify({ confirm: true })");
+    expect(script).toContain("/login`");
+    expect(script).toContain('current.login.status === "in_progress"');
+    expect(script).toContain('result.login.status === "completed"');
+    expect(script).toContain("identityLoginChecks: new Set()");
+    expect(script).toContain("resumeIdentityLoginChecks()");
+    expect(script).toContain("recoverIdentityLoginState");
+    expect(script).toContain('identity.status === "enabled"');
+    expect(script).toContain('if (identity.loginState === "ready")');
+    expect(script).toContain("refreshIdentityAfterLogin");
+    expect(script).toContain("/refresh`");
+    expect(styles).toContain(".topbar-quota-popover");
+    expect(styles).toContain(".identity-actions");
+  });
+
+  test("keeps the execution graph primary while prioritizing artifacts and verification", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain('progressView: "map"');
+    expect(script).toContain('contextTab: "artifacts"');
+    expect(script).toContain('const defaultView = "map"');
+    expect(script).toContain(">执行图</button>");
+    expect(script).toContain(">成果与验证</button>");
+    expect(script).toContain("完整工具与日志");
   });
 
   test("offers one local session import flow for Codex and Claude Code", async () => {
