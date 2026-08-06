@@ -105,6 +105,12 @@ describe("resource API", () => {
           periodEnd: "2026-08-03T04:00:00.000Z",
         },
       },
+      paidApi: {
+        available: false,
+        budget: { monthlyBudgetUsd: null },
+        note:
+          "用量由提供方延迟回传，Teamline 会在观察到限额后停止后续付费节点，但当前节点仍可能产生少量超支。",
+      },
       workOrders: [
         {
           id: workOrder.id,
@@ -115,6 +121,8 @@ describe("resource API", () => {
           maxRunMinutes: 60,
           runWhenQuotaAvailable: false,
           autoRunReason: null,
+          paidApiFallbackEnabled: false,
+          paidApiLimitUsd: null,
           usage: {
             status: "available",
             amount: 3.25,
@@ -333,6 +341,7 @@ describe("resource API", () => {
     let apiNow = new Date("2026-08-03T04:00:00.000Z");
     const apiUsage = new OpenAIOrganizationUsageProvider(
       "sk-admin-test",
+      undefined,
       async (request) => {
         requests.push(request);
         return Response.json({
@@ -406,6 +415,37 @@ describe("resource API", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test("reads actual costs for the configured Teamline project", async () => {
+    const requests: Request[] = [];
+    const now = new Date("2026-08-03T04:00:00.000Z");
+    const provider = new OpenAIOrganizationUsageProvider(
+      "sk-admin-test",
+      "proj_teamline",
+      async (request) => {
+        requests.push(request);
+        return Response.json({
+          data: [{ results: [{ amount: { value: 2.25, currency: "usd" } }] }],
+          has_more: false,
+        });
+      },
+      () => now,
+    );
+
+    const result = await provider.read(now.toISOString());
+
+    expect(result).toMatchObject({
+      status: "available",
+      scope: "project",
+      usage: {
+        amount: 2.25,
+        periodEnd: now.toISOString(),
+      },
+    });
+    expect(new URL(requests[0]!.url).searchParams.get("project_ids")).toBe(
+      "proj_teamline",
+    );
   });
 
   test("keeps stale signals labelled and counts current runs without using them for scheduling", async () => {
@@ -585,6 +625,7 @@ describe("resource API", () => {
     chmodSync(executable, 0o755);
     const apiUsage = new OpenAIOrganizationUsageProvider(
       "sk-admin-test",
+      undefined,
       async () => Response.json({ data: [{ start_time: 1785542400 }], has_more: false }),
       () => new Date("2026-08-03T04:00:00.000Z"),
     );

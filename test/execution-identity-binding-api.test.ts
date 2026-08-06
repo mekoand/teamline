@@ -340,4 +340,49 @@ describe("goal and session execution identity binding", () => {
 
     expect(await Bun.file(observedHome).text()).toBe(managedHomePath);
   });
+
+  test("passes the API key only to explicitly paid Codex executions", async () => {
+    const directory = temporaryDirectory();
+    const executable = join(directory, "fake-codex");
+    const observedKey = join(directory, "observed-key.txt");
+    writeFileSync(
+      executable,
+      `#!/bin/sh\nprintf '%s|%s|%s' "$CODEX_API_KEY" "$OPENAI_API_KEY" "$OPENAI_ADMIN_KEY" > '${observedKey}'\nprintf '%s\\n' '{"type":"turn.completed"}'\n`,
+    );
+    chmodSync(executable, 0o755);
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = readyDirectoryGoal(store, directory);
+    const runner = new CodexExecutionRunner(executable, "paid-test-key");
+
+    const previousApiKey = process.env.OPENAI_API_KEY;
+    const previousAdminKey = process.env.OPENAI_ADMIN_KEY;
+    process.env.OPENAI_API_KEY = "must-not-leak";
+    process.env.OPENAI_ADMIN_KEY = "admin-must-not-leak";
+    try {
+      const subscription = await runner.start({
+        workOrder,
+        workspacePath: directory,
+        billingMode: "subscription",
+      });
+      for await (const _event of subscription.events) {
+        // Consume the process output so the fake command exits.
+      }
+      expect(await Bun.file(observedKey).text()).toBe("||");
+
+      const paid = await runner.start({
+        workOrder,
+        workspacePath: directory,
+        billingMode: "paid_api",
+      });
+      for await (const _event of paid.events) {
+        // Consume the process output so the fake command exits.
+      }
+      expect(await Bun.file(observedKey).text()).toBe("paid-test-key||");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousApiKey;
+      if (previousAdminKey === undefined) delete process.env.OPENAI_ADMIN_KEY;
+      else process.env.OPENAI_ADMIN_KEY = previousAdminKey;
+    }
+  });
 });

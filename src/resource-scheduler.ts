@@ -16,6 +16,7 @@ export type AutoRunIdentityContext = {
   defaultExecutionIdentityId: string | null;
   executableExecutionIdentityIds: ReadonlySet<string>;
   quotaByExecutionIdentityId?: ReadonlyMap<string, CodexResourceSignal>;
+  paidFallbackReasons?: ReadonlyMap<string, string | null>;
 };
 
 const priorityRank: Record<WorkOrderPriority, number> = {
@@ -61,6 +62,7 @@ export function decideAutoRun(
         capacityReached,
         now,
         identityBlockingReason(workOrder, identityContext),
+        identityContext?.paidFallbackReasons,
       ),
     );
   }
@@ -88,6 +90,7 @@ function blockingReason(
   capacityReached: boolean,
   now: Date,
   identityReason: string | null,
+  paidFallbackReasons?: ReadonlyMap<string, string | null>,
 ): string | null {
   if (workOrder.pendingClarification) return "等待补充关键信息";
   if (workOrder.plan?.confirmationRequired) return "计划有变更，等待确认";
@@ -128,7 +131,14 @@ function blockingReason(
   }
   if (identityReason) return identityReason;
   const quotaReason = quotaBlockingReason(codex, workOrder.resourcePlan.pace, now);
-  if (quotaReason) return quotaReason;
+  if (quotaReason) {
+    if (paidFallbackReasons?.has(workOrder.id)) {
+      const paidReason = paidFallbackReasons.get(workOrder.id);
+      if (paidReason) return paidReason;
+    } else {
+      return quotaReason;
+    }
+  }
   if (capacityReached) return "等待可用并发位置";
   if (
     workOrder.workspace.kind === "directory" &&

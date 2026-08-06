@@ -104,6 +104,10 @@ describe("work-order resource scheduling", () => {
       pace: "balanced",
       runWhenQuotaAvailable: false,
       autoRunReason: null,
+      paidApiFallbackEnabled: false,
+      paidApiLimitUsd: null,
+      lastPaidApiRunAt: null,
+      lastBillingMode: null,
     });
 
     const app = createApp({ store });

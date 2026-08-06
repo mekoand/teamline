@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { GeneratedPlan, PlanGenerator } from "./plan-generator";
 import type { WorkOrder } from "./work-order";
+import { codexProcessEnvironment } from "./codex-environment";
 
 const schemaPath = resolve(import.meta.dir, "plan-output-schema.json");
 
@@ -48,6 +49,7 @@ export class CodexPlanGenerator implements PlanGenerator {
           buildPrompt(workOrder),
         ],
         {
+          env: codexProcessEnvironment(),
           stdout: "pipe",
           stderr: "pipe",
         },

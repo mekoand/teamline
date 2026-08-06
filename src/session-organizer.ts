@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DiscoveredSession } from "./session-discovery";
 import type { WorkOrderImportContext, WorkOrderImportSource } from "./work-order";
+import { codexProcessEnvironment } from "./codex-environment";
 
 export type SessionOrganization = {
   description: string;
@@ -68,7 +69,11 @@ export class CodexSessionOrganizer implements SessionOrganizer {
           "--ephemeral",
           buildPrompt(preparedInput),
         ],
-        { stdout: "pipe", stderr: "pipe" },
+        {
+          env: codexProcessEnvironment(),
+          stdout: "pipe",
+          stderr: "pipe",
+        },
       );
       signal?.addEventListener("abort", stop, { once: true });
       const [exitCode, stdout, stderr] = await Promise.all([

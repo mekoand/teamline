@@ -13,6 +13,7 @@ import type { CheckpointManager } from "./checkpoint-manager";
 import { presentConsoleWorkOrders } from "./console-presentation";
 import type { WorkOrderResultProcessor } from "./result-processor";
 import type {
+  CodexBillingMode,
   ContinuationContext,
   CodexRunEvent,
   CodexRunner,
@@ -39,7 +40,9 @@ import {
   type CodexIdentityResourceProvider,
   type CodexResourceSignal,
   type ResourceProvider,
+  type ResourceProviderSnapshot,
 } from "./resource-provider";
+import { decidePaidApiRun } from "./paid-api-budget";
 import {
   presentIdentityQuota,
   presentResources,
@@ -107,6 +110,7 @@ type NextStageRun = {
   run: StartedCodexRun;
   executionIdentityId: string;
   fallback?: () => Promise<StartedCodexRun | null>;
+  retryTransient?: () => Promise<StartedCodexRun | null>;
 };
 
 class PlanGenerationTimeoutError extends Error {}
@@ -367,7 +371,25 @@ export function createApp({
     ]);
     return activeOrStarting.size >= store.getExecutionSettings().maxConcurrency;
   };
-  const identitySchedulingContext = (): AutoRunIdentityContext => ({
+  const paidApiAvailable = () => codexRunner?.paidApiAvailable?.() === true;
+  const paidFallbackReasons = (snapshot: ResourceProviderSnapshot) =>
+    new Map(
+      store
+        .list()
+        .filter((workOrder) => workOrder.resourcePlan.paidApiFallbackEnabled)
+        .map((workOrder) => {
+          const decision = decidePaidApiRun(
+            workOrder,
+            snapshot,
+            store.getPaidApiBudgetSettings(),
+            paidApiAvailable(),
+          );
+          return [workOrder.id, decision.allowed ? null : decision.reason] as const;
+        }),
+    );
+  const identitySchedulingContext = (
+    snapshot?: ResourceProviderSnapshot,
+  ): AutoRunIdentityContext => ({
     currentExecutionIdentityId: store.getCurrentExecutionIdentityId(),
     defaultExecutionIdentityId: store.getDefaultExecutionIdentityId(),
     executableExecutionIdentityIds: new Set(
@@ -388,7 +410,49 @@ export function createApp({
           ),
         }
       : {}),
+    ...(snapshot ? { paidFallbackReasons: paidFallbackReasons(snapshot) } : {}),
   });
+  const billingModeFor = (
+    workOrder: WorkOrder,
+    snapshot: ResourceProviderSnapshot,
+    codex: CodexResourceSignal,
+  ): CodexBillingMode => {
+    const quotaReason = quotaBlockingReason(
+      codex,
+      workOrder.resourcePlan.pace,
+      new Date(),
+    );
+    if (!quotaReason) return "subscription";
+    return decidePaidApiRun(
+      workOrder,
+      snapshot,
+      store.getPaidApiBudgetSettings(),
+      paidApiAvailable(),
+    ).allowed
+      ? "paid_api"
+      : "subscription";
+  };
+  const claimPaidApiAttribution = (
+    id: string,
+    billingMode: CodexBillingMode,
+    snapshot: ResourceProviderSnapshot | null,
+  ): boolean => {
+    if (billingMode !== "paid_api") return true;
+    const usage = snapshot?.openaiApi.usage;
+    if (
+      snapshot?.openaiApi.status !== "available" ||
+      snapshot.openaiApi.scope !== "project" ||
+      usage?.unit !== "usd"
+    ) {
+      return false;
+    }
+    return store.claimPaidApiAttribution(
+      id,
+      usage.amount,
+      usage.periodStart,
+      new Date().toISOString(),
+    );
+  };
   const executionIdentityIdForStart = (workOrder: WorkOrder): string => {
     const identityId =
       workOrder.executionIdentityId ?? store.getDefaultExecutionIdentityId();
@@ -489,9 +553,16 @@ export function createApp({
       return null;
     }
     startingExecutionIdentityIds.set(id, executionIdentity.id);
+    let cancelPaidAttribution = false;
     try {
-      if (bound.resourcePlan.runWhenQuotaAvailable) {
+      let billingMode: CodexBillingMode = "subscription";
+      let paidSnapshot: ResourceProviderSnapshot | null = null;
+      if (
+        bound.resourcePlan.runWhenQuotaAvailable ||
+        bound.resourcePlan.paidApiFallbackEnabled
+      ) {
         const snapshot = await readResourceSnapshot();
+        paidSnapshot = snapshot;
         const identityQuota = latestIdentityQuota.find(
           ({ identity }) => identity.id === executionIdentity.id,
         )?.signal ?? snapshot.codex;
@@ -501,25 +572,47 @@ export function createApp({
           new Date(),
         );
         if (quotaReason) {
-          store.saveSchedulingWaitReason(id, quotaReason);
-          return null;
+          if (!bound.resourcePlan.paidApiFallbackEnabled) {
+            store.saveSchedulingWaitReason(id, quotaReason);
+            return null;
+          }
+          const paidDecision = decidePaidApiRun(
+            bound,
+            snapshot,
+            store.getPaidApiBudgetSettings(),
+            paidApiAvailable(),
+          );
+          if (!paidDecision.allowed) {
+            store.saveSchedulingWaitReason(id, paidDecision.reason || quotaReason);
+            return null;
+          }
+          billingMode = "paid_api";
         }
       }
       if (executionCapacityReached()) {
         store.saveSchedulingWaitReason(id, "等待可用并发位置");
         return null;
       }
+      if (!claimPaidApiAttribution(id, billingMode, paidSnapshot)) {
+        store.saveSchedulingWaitReason(id, "等待上一笔 API 实际用量更新");
+        return null;
+      }
+      cancelPaidAttribution = billingMode === "paid_api";
       selectExecutionIdentityForStart(executionIdentity.id);
       const started = store.markNextStageStarted(id);
       const scopedWorkOrder = codexRunWorkOrder(started);
+      const canResume =
+        Boolean(started.sessionId) &&
+        bound.resourcePlan.lastBillingMode === billingMode;
       let run: StartedCodexRun;
       let fallback: NextStageRun["fallback"];
-      if (started.sessionId) {
+      if (started.sessionId && canResume) {
         run = await codexRunner.resume({
           workOrder: scopedWorkOrder,
           workspacePath,
           sessionId: started.sessionId,
           executionIdentity,
+          billingMode,
         });
         fallback = async () => {
           if (store.get(id)?.runStatus === "stopping") return null;
@@ -531,6 +624,7 @@ export function createApp({
             workOrder: codexRunWorkOrder(store.get(id)!),
             workspacePath,
             executionIdentity,
+            billingMode,
             continuation: await continuationContext(store, id, workspacePath),
           });
         };
@@ -539,6 +633,7 @@ export function createApp({
           workOrder: scopedWorkOrder,
           workspacePath,
           executionIdentity,
+          billingMode,
           continuation: await continuationContext(store, id, workspacePath),
         });
       }
@@ -558,13 +653,27 @@ export function createApp({
         }
         return null;
       }
+      store.recordBillingStarted(id, billingMode);
+      cancelPaidAttribution = false;
       store.recordRunPid(id, run.pid ?? null);
       startRunTimeout(id);
-      return { run, fallback, executionIdentityId: executionIdentity.id };
+      return {
+        run,
+        fallback,
+        executionIdentityId: executionIdentity.id,
+        retryTransient: () =>
+          retryTransientCodexFailure(
+            id,
+            workspacePath,
+            executionIdentity,
+            billingMode,
+          ),
+      };
     } catch (error) {
       store.recordExit(id, -1, safeCodexStartError(error));
       return null;
     } finally {
+      if (cancelPaidAttribution) store.cancelPaidApiAttribution(id);
       startingExecutionIdentityIds.delete(id);
     }
   };
@@ -573,6 +682,7 @@ export function createApp({
     id: string,
     workspacePath: string,
     executionIdentity: ExecutionIdentity,
+    billingMode: CodexBillingMode,
   ): Promise<StartedCodexRun | null> => {
     if (!codexRunner || store.get(id)?.runStatus === "stopping") return null;
     const current = store.get(id);
@@ -584,11 +694,13 @@ export function createApp({
           workspacePath,
           sessionId: current.sessionId,
           executionIdentity,
+          billingMode,
         })
       : codexRunner.start({
           workOrder: codexRunWorkOrder(current),
           workspacePath,
           executionIdentity,
+          billingMode,
           continuation: await continuationContext(store, id, workspacePath),
         });
   };
@@ -644,6 +756,80 @@ export function createApp({
     );
   };
 
+  const withPaidApiAttribution = (
+    snapshot: ResourceProviderSnapshot,
+  ): ResourceProviderSnapshot => {
+    let state = store.getPaidApiAttributionState();
+    const pending = state.pending;
+    if (pending) {
+      const direct = snapshot.workOrderUsage.find(
+        (usage) =>
+          usage.workOrderId === pending.workOrderId &&
+          usage.source === "openai-usage-api" &&
+          usage.unit === "usd" &&
+          Number.isFinite(usage.amount) &&
+          usage.amount >= 0 &&
+          Date.parse(usage.observedAt) > Date.parse(pending.startedAt),
+      );
+      if (direct) {
+        store.completePaidApiAttribution(
+          pending.workOrderId,
+          direct.amount,
+          direct.observedAt,
+          "absolute",
+        );
+      } else {
+        const account = snapshot.openaiApi;
+        if (
+          account.status === "available" &&
+          account.source === "openai-usage-api" &&
+          account.scope === "project" &&
+          account.usage?.unit === "usd" &&
+          account.usage.periodStart === pending.periodStart &&
+          Number.isFinite(account.usage.amount) &&
+          account.usage.amount > pending.baselineUsd &&
+          Date.parse(account.observedAt) > Date.parse(pending.startedAt)
+        ) {
+          store.completePaidApiAttribution(
+            pending.workOrderId,
+            account.usage.amount - pending.baselineUsd,
+            account.observedAt,
+            "increment",
+          );
+        }
+      }
+      state = store.getPaidApiAttributionState();
+    }
+
+    const usageByWorkOrder = new Map(
+      snapshot.workOrderUsage.map((usage) => [usage.workOrderId, usage]),
+    );
+    const currentProjectObservation =
+      !state.pending &&
+      snapshot.openaiApi.status === "available" &&
+      snapshot.openaiApi.source === "openai-usage-api" &&
+      snapshot.openaiApi.scope === "project" &&
+      snapshot.openaiApi.usage?.unit === "usd"
+        ? snapshot.openaiApi.observedAt
+        : null;
+    for (const [workOrderId, observation] of Object.entries(
+      state.observedByWorkOrder,
+    )) {
+      usageByWorkOrder.set(workOrderId, {
+        workOrderId,
+        amount: observation.amountUsd,
+        unit: "usd",
+        observedAt: currentProjectObservation ?? observation.observedAt,
+        source: "openai-usage-api",
+      });
+    }
+    return {
+      ...snapshot,
+      workOrderUsage: [...usageByWorkOrder.values()],
+      pendingPaidUsageWorkOrderId: state.pending?.workOrderId ?? null,
+    };
+  };
+
   const readResourceSnapshot = async () => {
     let snapshot;
     try {
@@ -668,7 +854,7 @@ export function createApp({
       );
     }
     await refreshIdentityQuota(snapshot.codex);
-    return snapshot;
+    return withPaidApiAttribution(snapshot);
   };
   const runAutoRunOnce = () => {
     if (closed) {
@@ -684,7 +870,7 @@ export function createApp({
         snapshot.codex,
         store.getExecutionSettings().maxConcurrency,
         new Date(),
-        identitySchedulingContext(),
+        identitySchedulingContext(snapshot),
       );
       for (const [id, reason] of decision.reasons) {
         store.saveAutoRunReason(id, reason);
@@ -1696,6 +1882,7 @@ export function createApp({
           store.list(),
           store.getExecutionSettings().maxConcurrency,
         );
+        const paidAttribution = store.getPaidApiAttributionState();
         return Response.json({
           ...resources,
           ...(identityResourceProvider
@@ -1707,7 +1894,71 @@ export function createApp({
                 ),
               }
             : {}),
+          paidApi: {
+            available: paidApiAvailable(),
+            budget: store.getPaidApiBudgetSettings(),
+            note:
+              "用量由提供方延迟回传，Teamline 会在观察到限额后停止后续付费节点，但当前节点仍可能产生少量超支。",
+            ...(paidAttribution.pending
+              ? {
+                  pending: {
+                    workOrderId: paidAttribution.pending.workOrderId,
+                    startedAt: paidAttribution.pending.startedAt,
+                  },
+                }
+              : {}),
+          },
         });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/api/resources/paid-api-budget") {
+        try {
+          const body = (await request.json()) as { monthlyBudgetUsd?: number | null };
+          if (body.monthlyBudgetUsd === undefined) {
+            throw new Error("请填写 API 月度预算");
+          }
+          const budget = store.savePaidApiBudgetSettings(body.monthlyBudgetUsd);
+          scheduleAutoRunCheck();
+          return Response.json({ budget });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_PAID_API_BUDGET",
+              error: error instanceof Error ? error.message : "无法保存 API 月度预算",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/resources/paid-api-attribution/clear"
+      ) {
+        try {
+          const body = (await request.json()) as {
+            workOrderId?: string;
+            confirmNoPendingCharge?: boolean;
+          };
+          if (body.confirmNoPendingCharge !== true || !body.workOrderId) {
+            throw new Error("请确认这次执行没有尚未回传的费用");
+          }
+          const pending = store.getPaidApiAttributionState().pending;
+          if (!pending || pending.workOrderId !== body.workOrderId) {
+            throw new Error("当前没有这笔待确认的 API 用量");
+          }
+          store.cancelPaidApiAttribution(body.workOrderId);
+          scheduleAutoRunCheck();
+          return Response.json({ cleared: true });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "PAID_API_ATTRIBUTION_CLEAR_REJECTED",
+              error: error instanceof Error ? error.message : "无法解除 API 用量等待",
+            },
+            { status: 400 },
+          );
+        }
       }
 
       if (request.method === "POST" && url.pathname === "/api/resources/run-once") {
@@ -1876,6 +2127,7 @@ export function createApp({
 
         startingWorkOrderIds.add(id);
         startingExecutionIdentityIds.set(id, scheduledExecutionIdentityId);
+        let cancelPaidAttribution = false;
         try {
           let delegatedWorktree: DelegatedWorktree | null = null;
           if (workOrder.workspace.kind === "git" && !reusingWorkspace) {
@@ -1893,14 +2145,16 @@ export function createApp({
           }
 
           let finalAutoRunDecision: ReturnType<typeof decideAutoRun> | null = null;
+          let finalResourceSnapshot: ResourceProviderSnapshot | null = null;
           if (autoRunRequested) {
             const snapshot = await readResourceSnapshot();
+            finalResourceSnapshot = snapshot;
             finalAutoRunDecision = decideAutoRun(
               store.list().filter((candidate) => !isImportOnlyWorkOrder(candidate)),
               snapshot.codex,
               store.getExecutionSettings().maxConcurrency,
               new Date(),
-              identitySchedulingContext(),
+              identitySchedulingContext(snapshot),
             );
             for (const [candidateId, reason] of finalAutoRunDecision.reasons) {
               store.saveAutoRunReason(candidateId, reason);
@@ -1972,6 +2226,30 @@ export function createApp({
               { status: 409 },
             );
           }
+          if (
+            !finalResourceSnapshot &&
+            workOrder.resourcePlan.paidApiFallbackEnabled
+          ) {
+            finalResourceSnapshot = await readResourceSnapshot();
+          }
+          const identityQuota = finalResourceSnapshot
+            ? latestIdentityQuota.find(
+                ({ identity }) => identity.id === executionIdentity.id,
+              )?.signal ?? finalResourceSnapshot.codex
+            : null;
+          const billingMode = finalResourceSnapshot && identityQuota
+            ? billingModeFor(workOrder, finalResourceSnapshot, identityQuota)
+            : "subscription";
+          if (!claimPaidApiAttribution(id, billingMode, finalResourceSnapshot)) {
+            return Response.json(
+              {
+                code: "PAID_API_USAGE_PENDING",
+                error: "等待上一笔 API 实际用量更新",
+              },
+              { status: 409 },
+            );
+          }
+          cancelPaidAttribution = billingMode === "paid_api";
           let startedWorkOrder;
           try {
             startedWorkOrder = reusingWorkspace
@@ -2015,12 +2293,17 @@ export function createApp({
           let run;
           let fallback: NextStageRun["fallback"];
           try {
-            if (reusingWorkspace && startedWorkOrder.sessionId) {
+            const canResume =
+              reusingWorkspace &&
+              Boolean(startedWorkOrder.sessionId) &&
+              (workOrder.resourcePlan.lastBillingMode ?? "subscription") === billingMode;
+            if (canResume && startedWorkOrder.sessionId) {
               run = await codexRunner.resume({
                 workOrder: codexRunWorkOrder(startedWorkOrder),
                 workspacePath: workspacePath!,
                 sessionId: startedWorkOrder.sessionId,
                 executionIdentity,
+                billingMode,
               });
               fallback = async () => {
                 if (store.get(id)?.runStatus === "stopping") return null;
@@ -2032,6 +2315,7 @@ export function createApp({
                   workOrder: codexRunWorkOrder(store.get(id)!),
                   workspacePath: workspacePath!,
                   executionIdentity,
+                  billingMode,
                   continuation: await continuationContext(store, id, workspacePath!),
                 });
               };
@@ -2040,6 +2324,7 @@ export function createApp({
                 workOrder: codexRunWorkOrder(startedWorkOrder),
                 workspacePath: workspacePath!,
                 executionIdentity,
+                billingMode,
                 continuation: reusingWorkspace
                   ? await continuationContext(store, id, workspacePath!)
                   : undefined,
@@ -2054,6 +2339,8 @@ export function createApp({
             );
           }
 
+          startedWorkOrder = store.recordBillingStarted(id, billingMode);
+          cancelPaidAttribution = false;
           store.recordRunPid(id, run.pid ?? null);
           if (autoRunRequested) {
             store.recordAutoRunStarted(id, startedWorkOrder.runNumber);
@@ -2068,7 +2355,12 @@ export function createApp({
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, workspacePath!),
             retryTransient: () =>
-              retryTransientCodexFailure(id, workspacePath!, executionIdentity),
+              retryTransientCodexFailure(
+                id,
+                workspacePath!,
+                executionIdentity,
+                billingMode,
+              ),
             fallback,
             afterRunSettled: () => {
               if (autoRunRequested) {
@@ -2079,6 +2371,7 @@ export function createApp({
           });
           return Response.json({ workOrder: startedWorkOrder });
         } finally {
+          if (cancelPaidAttribution) store.cancelPaidApiAttribution(id);
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
           startingExecutionIdentityIds.delete(id);
@@ -2228,6 +2521,7 @@ export function createApp({
           );
         }
         startingWorkspacePaths.set(id, workspacePath);
+        let cancelPaidAttribution = false;
         try {
           let executionIdentity: ExecutionIdentity;
           try {
@@ -2246,20 +2540,46 @@ export function createApp({
               { status: 409 },
             );
           }
+          const continueSnapshot = workOrder.resourcePlan.paidApiFallbackEnabled
+            ? await readResourceSnapshot()
+            : null;
+          const continueQuota = continueSnapshot
+            ? latestIdentityQuota.find(
+                ({ identity }) => identity.id === executionIdentity.id,
+              )?.signal ?? continueSnapshot.codex
+            : null;
+          const billingMode = continueSnapshot && continueQuota
+            ? billingModeFor(workOrder, continueSnapshot, continueQuota)
+            : "subscription";
+          if (!claimPaidApiAttribution(id, billingMode, continueSnapshot)) {
+            return Response.json(
+              {
+                code: "PAID_API_USAGE_PENDING",
+                error: "等待上一笔 API 实际用量更新",
+              },
+              { status: 409 },
+            );
+          }
+          cancelPaidAttribution = billingMode === "paid_api";
+          const canResume =
+            Boolean(workOrder.sessionId) &&
+            (workOrder.resourcePlan.lastBillingMode ?? "subscription") === billingMode;
           const continued = store.markContinued(id);
           let run;
           try {
-            run = workOrder.sessionId
+            run = workOrder.sessionId && canResume
               ? await codexRunner.resume({
                   workOrder: codexRunWorkOrder(continued),
                   workspacePath,
                   sessionId: workOrder.sessionId,
                   executionIdentity,
+                  billingMode,
                 })
               : await codexRunner.start({
                   workOrder: codexRunWorkOrder(continued),
                   workspacePath,
                   executionIdentity,
+                  billingMode,
                   continuation: await continuationContext(
                     store,
                     id,
@@ -2274,6 +2594,8 @@ export function createApp({
               { status: 502 },
             );
           }
+          store.recordBillingStarted(id, billingMode);
+          cancelPaidAttribution = false;
           store.recordRunPid(id, run.pid ?? null);
           activeRuns.set(id, run);
           startRunTimeout(id);
@@ -2285,7 +2607,12 @@ export function createApp({
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
             retryTransient: () =>
-              retryTransientCodexFailure(id, workspacePath, executionIdentity),
+              retryTransientCodexFailure(
+                id,
+                workspacePath,
+                executionIdentity,
+                billingMode,
+              ),
             afterRunSettled: scheduleAutoRunCheck,
             fallback:
               workOrder.sessionId && codexRunner
@@ -2306,6 +2633,7 @@ export function createApp({
                       workOrder: codexRunWorkOrder(store.get(id)!),
                       workspacePath,
                       executionIdentity,
+                      billingMode,
                       continuation: context,
                     });
                   }
@@ -2313,6 +2641,7 @@ export function createApp({
           });
           return Response.json({ workOrder: continued });
         } finally {
+          if (cancelPaidAttribution) store.cancelPaidApiAttribution(id);
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
           startingExecutionIdentityIds.delete(id);
@@ -2415,6 +2744,7 @@ export function createApp({
         startingWorkOrderIds.add(id);
         startingExecutionIdentityIds.set(id, scheduledExecutionIdentityId);
         startingWorkspacePaths.set(id, resolvedWorkspace.path);
+        let cancelPaidAttribution = false;
         try {
           const residueId = crypto.randomUUID();
           try {
@@ -2447,6 +2777,27 @@ export function createApp({
               { status: 409 },
             );
           }
+          const reexecuteSnapshot = workOrder.resourcePlan.paidApiFallbackEnabled
+            ? await readResourceSnapshot()
+            : null;
+          const reexecuteQuota = reexecuteSnapshot
+            ? latestIdentityQuota.find(
+                ({ identity }) => identity.id === executionIdentity.id,
+              )?.signal ?? reexecuteSnapshot.codex
+            : null;
+          const billingMode = reexecuteSnapshot && reexecuteQuota
+            ? billingModeFor(workOrder, reexecuteSnapshot, reexecuteQuota)
+            : "subscription";
+          if (!claimPaidApiAttribution(id, billingMode, reexecuteSnapshot)) {
+            return Response.json(
+              {
+                code: "PAID_API_USAGE_PENDING",
+                error: "等待上一笔 API 实际用量更新",
+              },
+              { status: 409 },
+            );
+          }
+          cancelPaidAttribution = billingMode === "paid_api";
           const reexecuted = store.markReexecuted(id);
           store.recordProgress(
             id,
@@ -2460,6 +2811,7 @@ export function createApp({
               workOrder: codexRunWorkOrder(reexecuted),
               workspacePath: resolvedWorkspace.path,
               executionIdentity,
+              billingMode,
               continuation: {
                 ...(await continuationContext(store, id, resolvedWorkspace.path)),
                 reexecuteStage: currentStage
@@ -2475,6 +2827,8 @@ export function createApp({
               { status: 502 },
             );
           }
+          store.recordBillingStarted(id, billingMode);
+          cancelPaidAttribution = false;
           store.recordRunPid(id, run.pid ?? null);
           activeRuns.set(id, run);
           startRunTimeout(id);
@@ -2484,13 +2838,19 @@ export function createApp({
             checkpointManager,
             startNextStage: () => startNextCodexStage(id, resolvedWorkspace.path),
             retryTransient: () =>
-              retryTransientCodexFailure(id, resolvedWorkspace.path, executionIdentity),
+              retryTransientCodexFailure(
+                id,
+                resolvedWorkspace.path,
+                executionIdentity,
+                billingMode,
+              ),
             clearRunTimeout: () => clearRunTimeout(id),
             finishReason: () => finishReason(id),
             afterRunSettled: scheduleAutoRunCheck,
           });
           return Response.json({ workOrder: store.get(id)! });
         } finally {
+          if (cancelPaidAttribution) store.cancelPaidApiAttribution(id);
           startingWorkOrderIds.delete(id);
           startingWorkspacePaths.delete(id);
           startingExecutionIdentityIds.delete(id);
@@ -2971,6 +3331,8 @@ export function createApp({
             priority?: WorkOrder["resourcePlan"]["priority"];
             pace?: WorkOrder["resourcePlan"]["pace"];
             runWhenQuotaAvailable?: boolean;
+            paidApiFallbackEnabled?: boolean;
+            paidApiLimitUsd?: number | null;
             maxRunMinutes?: number;
           };
           if (
@@ -2984,6 +3346,8 @@ export function createApp({
             priority: body.priority,
             pace: body.pace,
             runWhenQuotaAvailable: body.runWhenQuotaAvailable,
+            paidApiFallbackEnabled: body.paidApiFallbackEnabled,
+            paidApiLimitUsd: body.paidApiLimitUsd,
             ...(body.maxRunMinutes === undefined
               ? {}
               : { maxRunMinutes: body.maxRunMinutes }),
@@ -3023,6 +3387,8 @@ export function createApp({
             priority?: WorkOrder["resourcePlan"]["priority"];
             pace?: WorkOrder["resourcePlan"]["pace"];
             runWhenQuotaAvailable?: boolean;
+            paidApiFallbackEnabled?: boolean;
+            paidApiLimitUsd?: number | null;
           };
           if (
             body.priority === undefined ||
@@ -3035,6 +3401,8 @@ export function createApp({
             priority: body.priority,
             pace: body.pace,
             runWhenQuotaAvailable: body.runWhenQuotaAvailable,
+            paidApiFallbackEnabled: body.paidApiFallbackEnabled,
+            paidApiLimitUsd: body.paidApiLimitUsd,
           });
           scheduleAutoRunCheck();
           return Response.json({ workOrder });
@@ -3422,6 +3790,7 @@ async function consumeRunEvents(
                     ...options,
                     executionIdentityId: next.executionIdentityId,
                     fallback: next.fallback,
+                    retryTransient: next.retryTransient,
                     transientRetryUsed: false,
                   });
                   return;

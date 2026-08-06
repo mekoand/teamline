@@ -1,5 +1,6 @@
 import type { WorkOrder } from "./work-order";
 import type { ExecutionIdentity } from "./execution-identity";
+import { codexProcessEnvironment } from "./codex-environment";
 
 export type CodexRunEvent =
   | { type: "session"; sessionId: string }
@@ -40,29 +41,42 @@ export type StartedCodexRun = {
   pid?: number;
 };
 
+export type CodexBillingMode = "subscription" | "paid_api";
+
 export interface CodexRunner {
   start(input: {
     workOrder: WorkOrder;
     workspacePath: string;
     executionIdentity?: ExecutionIdentity;
     continuation?: ContinuationContext;
+    billingMode?: CodexBillingMode;
   }): Promise<StartedCodexRun>;
   resume(input: {
     workOrder: WorkOrder;
     workspacePath: string;
     sessionId: string;
     executionIdentity?: ExecutionIdentity;
+    billingMode?: CodexBillingMode;
   }): Promise<StartedCodexRun>;
+  paidApiAvailable?(): boolean;
 }
 
 export class CodexExecutionRunner implements CodexRunner {
-  constructor(private readonly commandPath = Bun.env.TEAMLINE_CODEX_PATH || "codex") {}
+  constructor(
+    private readonly commandPath = Bun.env.TEAMLINE_CODEX_PATH || "codex",
+    private readonly paidApiKey = Bun.env.OPENAI_API_KEY || Bun.env.CODEX_API_KEY,
+  ) {}
+
+  paidApiAvailable(): boolean {
+    return Boolean(this.paidApiKey);
+  }
 
   async start(input: {
     workOrder: WorkOrder;
     workspacePath: string;
     executionIdentity?: ExecutionIdentity;
     continuation?: ContinuationContext;
+    billingMode?: CodexBillingMode;
   }): Promise<StartedCodexRun> {
     try {
       const subprocess = Bun.spawn(
@@ -79,7 +93,11 @@ export class CodexExecutionRunner implements CodexRunner {
         ],
         {
           cwd: input.workspacePath,
-          env: executionEnvironment(input.executionIdentity),
+          env: executionEnvironment(
+            input.executionIdentity,
+            input.billingMode,
+            this.paidApiKey,
+          ),
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -106,6 +124,7 @@ export class CodexExecutionRunner implements CodexRunner {
     workspacePath: string;
     sessionId: string;
     executionIdentity?: ExecutionIdentity;
+    billingMode?: CodexBillingMode;
   }): Promise<StartedCodexRun> {
     try {
       const subprocess = Bun.spawn(
@@ -120,7 +139,11 @@ export class CodexExecutionRunner implements CodexRunner {
         ],
         {
           cwd: input.workspacePath,
-          env: executionEnvironment(input.executionIdentity),
+          env: executionEnvironment(
+            input.executionIdentity,
+            input.billingMode,
+            this.paidApiKey,
+          ),
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -143,13 +166,24 @@ export class CodexExecutionRunner implements CodexRunner {
   }
 }
 
-function executionEnvironment(identity?: ExecutionIdentity): Record<string, string | undefined> {
-  if (!identity) return process.env;
-  if (identity.homeKind === "managed") {
-    if (!identity.managedHomePath) throw new Error("Codex 账号目录不可用");
-    return { ...process.env, CODEX_HOME: identity.managedHomePath };
+function executionEnvironment(
+  identity?: ExecutionIdentity,
+  billingMode: CodexBillingMode = "subscription",
+  paidApiKey?: string,
+): Record<string, string | undefined> {
+  if (billingMode === "paid_api" && !paidApiKey) {
+    throw new Error("本机未提供付费 API 凭证");
   }
-  return process.env;
+  const codexHome = identity?.homeKind === "managed"
+    ? identity.managedHomePath
+    : undefined;
+  if (identity?.homeKind === "managed" && !codexHome) {
+    throw new Error("Codex 账号目录不可用");
+  }
+  return codexProcessEnvironment({
+    ...(codexHome ? { codexHome } : {}),
+    ...(billingMode === "paid_api" && paidApiKey ? { apiKey: paidApiKey } : {}),
+  });
 }
 
 async function* readRunEvents(

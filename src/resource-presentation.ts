@@ -101,6 +101,8 @@ export function presentResources(
       maxRunMinutes: workOrder.maxRunMinutes,
       runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
       autoRunReason: workOrder.resourcePlan.autoRunReason,
+      paidApiFallbackEnabled: workOrder.resourcePlan.paidApiFallbackEnabled,
+      paidApiLimitUsd: workOrder.resourcePlan.paidApiLimitUsd,
       usage: presentWorkOrderUsage(
         usageByWorkOrder.get(workOrder.id),
         snapshot.observedAt,
