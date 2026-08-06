@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createApp } from "../src/app";
+import { LocalStateTransfer } from "../src/local-state-transfer";
 import { WorkOrderStore } from "../src/work-order-store";
-import { resolve } from "node:path";
 
 async function* noEvents() {}
 
@@ -21,11 +24,12 @@ function request(path: string, body?: unknown) {
 function sourceState() {
   const store = new WorkOrderStore(new Database(":memory:"));
   const created = store.create({
-    goal: "恢复本地委托，不要泄露 api_key=super-secret-value；Authorization: Basic dXNlcjpwYXNz；GEMINI_API_KEY=AIzaSyDUMMYSECRET1234567890",
+    goal: "恢复本地委托，不要泄露 api_key=super-secret-value；Authorization: Basic dXNlcjpwYXNz；GEMINI_API_KEY=AIzaSyDUMMYSECRET1234567890；Cookie: session=super-cookie-value",
     acceptance: "在新数据库预览后恢复；不要访问 https://inline:password@example.test/path?auth=hidden-value",
     workspace: { kind: "directory", path: "/missing/teamline-workspace" },
     materials: [
       { kind: "file", value: "/missing/brief.md" },
+      { kind: "file", value: "/missing/.codex/auth.json" },
       { kind: "link", value: "https://user:pass@example.test/brief?token=private" },
     ],
     importSource: {
@@ -147,7 +151,7 @@ describe("local Teamline state transfer", () => {
       error: expect.stringContaining("来源会话"),
     });
     expect(bundle).toMatchObject({
-      version: 3,
+      version: 4,
       projectMaterials: [],
       projects: [{ id: project.id, name: "Teamline V2" }],
       workOrders: [
@@ -218,6 +222,7 @@ describe("local Teamline state transfer", () => {
     bundle.version = 1;
     delete bundle.projects;
     delete bundle.projectMaterials;
+    delete bundle.executionIdentities;
     delete bundle.workOrders[0].name;
     delete bundle.workOrders[0].description;
     delete bundle.workOrders[0].projectId;
@@ -225,6 +230,10 @@ describe("local Teamline state transfer", () => {
     delete bundle.workOrders[0].sourceSessions;
     delete bundle.workOrders[0].importContext;
     delete bundle.workOrders[0].currentSessionId;
+    delete bundle.workOrders[0].executionIdentityId;
+    delete bundle.workOrders[0].sessionIdentityId;
+    delete bundle.workOrders[0].sessionHandoff;
+    delete bundle.workOrders[0].result;
 
     const targetStore = new WorkOrderStore(new Database(":memory:"));
     const targetApp = createApp({ store: targetStore });
@@ -249,6 +258,43 @@ describe("local Teamline state transfer", () => {
     });
   });
 
+  test("restores a version 3 bundle without identity and result fields", async () => {
+    const source = sourceState();
+    const bundle = await (
+      await createApp({ store: source.store }).fetch(request("/api/local-state/export"))
+    ).json();
+    bundle.version = 3;
+    delete bundle.executionIdentities;
+    for (const workOrder of bundle.workOrders) {
+      delete workOrder.executionIdentityId;
+      delete workOrder.sessionIdentityId;
+      delete workOrder.sessionHandoff;
+      delete workOrder.result;
+      for (const sourceSession of workOrder.sourceSessions) {
+        delete sourceSession.executionIdentityId;
+      }
+      if (workOrder.sessionReferences.imported) {
+        delete workOrder.sessionReferences.imported.executionIdentityId;
+      }
+    }
+    const targetStore = new WorkOrderStore(new Database(":memory:"));
+    const transfer = new LocalStateTransfer(targetStore);
+    const preview = transfer.preview(bundle);
+
+    expect(transfer.confirm({ previewId: preview.previewId })).toEqual({
+      imported: 1,
+      copied: 0,
+      skipped: 0,
+    });
+    expect(targetStore.get(source.id)).toMatchObject({
+      currentSessionId: "session-runtime-reference",
+      executionIdentityId: null,
+      sessionIdentityId: null,
+      result: null,
+      checkpoints: [{ treeHash: "0123456789abcdef0123456789abcdef01234567" }],
+    });
+  });
+
   test("restores duplicate V1 import sources with one stable owner", async () => {
     const source = sourceState();
     const bundle = await (
@@ -266,6 +312,7 @@ describe("local Teamline state transfer", () => {
     bundle.version = 1;
     delete bundle.projects;
     delete bundle.projectMaterials;
+    delete bundle.executionIdentities;
     for (const workOrder of bundle.workOrders) {
       delete workOrder.name;
       delete workOrder.description;
@@ -274,6 +321,10 @@ describe("local Teamline state transfer", () => {
       delete workOrder.sourceSessions;
       delete workOrder.importContext;
       delete workOrder.currentSessionId;
+      delete workOrder.executionIdentityId;
+      delete workOrder.sessionIdentityId;
+      delete workOrder.sessionHandoff;
+      delete workOrder.result;
     }
 
     const targetStore = new WorkOrderStore(new Database(":memory:"));
@@ -298,6 +349,206 @@ describe("local Teamline state transfer", () => {
       sourceSessions: [],
       importSource: null,
     });
+  });
+
+  test("upgrades and transfers a single-account database without losing domain history", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-single-account-upgrade-"));
+    const databasePath = join(directory, "teamline.db");
+    const sourceSession = {
+      kind: "codex_session",
+      id: "legacy-source-session",
+      lastActiveAt: "2026-08-01T00:00:00.000Z",
+      version: 1,
+    };
+    const plan = {
+      version: 1,
+      stages: [{
+        id: "legacy-stage",
+        outcome: "完成旧数据迁移",
+        scope: "本地数据库",
+        verification: "运行迁移测试",
+        dependsOn: [],
+        executionMethod: "codex",
+        workspace: { kind: "git", path: "/tmp/teamline" },
+        materials: [],
+        artifacts: [],
+        status: "completed",
+        statusReason: "旧版本已完成",
+      }],
+      updatedAt: "2026-08-01T02:00:00.000Z",
+    };
+    const result = {
+      planVersion: 1,
+      artifacts: [{
+        id: "legacy-result",
+        type: "file",
+        label: "旧成果",
+        location: "/tmp/legacy-result.md",
+      }],
+      git: { diffStat: "2 files changed", statusShort: "M src/a.ts" },
+      verifications: [{
+        stageId: "legacy-stage",
+        stageOutcome: "完成旧数据迁移",
+        command: "bun test",
+        status: "passed",
+        exitCode: 0,
+        output: "pass",
+      }],
+      completedAt: "2026-08-01T03:00:00.000Z",
+    };
+    try {
+      const legacy = new Database(databasePath, { create: true });
+      legacy.exec(`
+        CREATE TABLE projects (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO projects VALUES (
+          'legacy-project', '旧项目',
+          '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+        );
+        CREATE TABLE work_orders (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          project_id TEXT,
+          repository_path TEXT NOT NULL,
+          workspace_kind TEXT,
+          source_sessions_json TEXT,
+          import_source_json TEXT,
+          resource_plan_json TEXT,
+          goal TEXT NOT NULL,
+          acceptance TEXT,
+          status TEXT NOT NULL,
+          current_summary TEXT NOT NULL,
+          plan_json TEXT,
+          result_json TEXT,
+          session_id TEXT,
+          max_run_minutes INTEGER NOT NULL DEFAULT 60,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE work_order_checkpoints (
+          id TEXT PRIMARY KEY,
+          work_order_id TEXT NOT NULL,
+          checkpoint_kind TEXT NOT NULL,
+          plan_version INTEGER NOT NULL,
+          stage_id TEXT,
+          stage_outcome TEXT,
+          run_number INTEGER NOT NULL,
+          sequence INTEGER NOT NULL,
+          tree_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE execution_settings (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          max_concurrency INTEGER NOT NULL
+        );
+        INSERT INTO execution_settings VALUES (1, 6);
+        INSERT INTO work_order_checkpoints VALUES (
+          'legacy-checkpoint', 'legacy-goal', 'stage', 1,
+          'legacy-stage', '完成旧数据迁移', 3, 1,
+          '2222222222222222222222222222222222222222',
+          '2026-08-01T03:00:00.000Z'
+        );
+      `);
+      legacy
+        .query(`
+          INSERT INTO work_orders (
+            id, title, project_id, repository_path, workspace_kind,
+            source_sessions_json, import_source_json, resource_plan_json,
+            goal, acceptance, status, current_summary, plan_json, result_json,
+            session_id, max_run_minutes, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          "legacy-goal",
+          "旧目标",
+          "legacy-project",
+          "/tmp/teamline",
+          "git",
+          JSON.stringify([sourceSession]),
+          JSON.stringify(sourceSession),
+          JSON.stringify({
+            priority: "high",
+            pace: "saving",
+            runWhenQuotaAvailable: true,
+            autoRunReason: "旧账号额度充足",
+          }),
+          "保留旧目标、会话和成果",
+          "迁移后可验收",
+          "review",
+          "等待验收",
+          JSON.stringify(plan),
+          JSON.stringify(result),
+          "legacy-runtime-session",
+          120,
+          "2026-08-01T00:00:00.000Z",
+          "2026-08-01T03:00:00.000Z",
+        );
+      legacy.close();
+
+      const upgradedStore = new WorkOrderStore(new Database(databasePath));
+      expect(upgradedStore.listProjects()).toEqual([{
+        id: "legacy-project",
+        name: "旧项目",
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      }]);
+      expect(upgradedStore.get("legacy-goal")).toMatchObject({
+        projectId: "legacy-project",
+        currentSessionId: "legacy-runtime-session",
+        sourceSessions: [{
+          id: "legacy-source-session",
+          executionIdentityId: "codex-system-default",
+        }],
+        executionIdentityId: "codex-system-default",
+        sessionIdentityId: "codex-system-default",
+        result,
+        checkpoints: [{ id: "legacy-checkpoint", runNumber: 3 }],
+        resourcePlan: {
+          priority: "high",
+          pace: "saving",
+          runWhenQuotaAvailable: true,
+        },
+        maxRunMinutes: 120,
+      });
+      expect(upgradedStore.getExecutionSettings()).toEqual({ maxConcurrency: 6 });
+
+      const bundle = new LocalStateTransfer(upgradedStore).export();
+      const restoredStore = new WorkOrderStore(new Database(":memory:"));
+      const restoredApp = createApp({ store: restoredStore });
+      const preview = await (
+        await restoredApp.fetch(request("/api/local-state/restore/preview", { bundle }))
+      ).json();
+      const restoredResponse = await restoredApp.fetch(
+        request("/api/local-state/restore/confirm", { previewId: preview.previewId }),
+      );
+      expect(restoredResponse.status).toBe(201);
+      expect(restoredStore.listProjects()).toEqual(upgradedStore.listProjects());
+      expect(restoredStore.get("legacy-goal")).toMatchObject({
+        projectId: "legacy-project",
+        currentSessionId: "legacy-runtime-session",
+        sourceSessions: [{
+          id: "legacy-source-session",
+          executionIdentityId: expect.any(String),
+        }],
+        result,
+        checkpoints: [{ runNumber: 3 }],
+        resourcePlan: {
+          priority: "high",
+          pace: "saving",
+          runWhenQuotaAvailable: false,
+        },
+        maxRunMinutes: 120,
+        plan: { confirmationRequired: true },
+      });
+      expect(restoredStore.getExecutionSettings()).toEqual({ maxConcurrency: 6 });
+      upgradedStore.database.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("rejects duplicate, dangling, and conflicting project references through preview", async () => {
@@ -440,7 +691,7 @@ describe("local Teamline state transfer", () => {
     expect(response.headers.get("content-disposition")).toContain("teamline-state-");
     expect(bundle).toMatchObject({
       format: "teamline-local-state",
-      version: 3,
+      version: 4,
       projectMaterials: [],
       settings: { maxConcurrency: 3, executionMapView: "list" },
       workOrders: [
@@ -468,10 +719,237 @@ describe("local Teamline state transfer", () => {
     expect(serialized).not.toContain("hunter2");
     expect(serialized).not.toContain("dXNlcjpwYXNz");
     expect(serialized).not.toContain("AIzaSyDUMMYSECRET1234567890");
+    expect(serialized).not.toContain("super-cookie-value");
+    expect(serialized).not.toContain("auth.json");
     expect(serialized).not.toContain("run_events");
     expect(serialized).not.toContain("runEvents");
     expect(serialized).not.toContain("runPid");
     expect(serialized).not.toContain("worktreePath");
+  });
+
+  test("round-trips identity history and results without restoring identity or session authorization", async () => {
+    const sourceStore = new WorkOrderStore(new Database(":memory:"));
+    const sourceIdentityId = "11111111-1111-4111-8111-111111111111";
+    sourceStore.createManagedExecutionIdentity({
+      id: sourceIdentityId,
+      label: "工作账号",
+      managedHomePath: "/managed-codex/private-auth-home",
+    });
+    sourceStore.recordExecutionIdentityObservation(sourceIdentityId, {
+      accountFingerprint: "private-account-fingerprint",
+      loginState: "ready",
+      capabilities: ["sessions", "private-capability"],
+    });
+    sourceStore.setDefaultExecutionIdentityId(sourceIdentityId);
+    sourceStore.setCurrentExecutionIdentityId(sourceIdentityId);
+    const created = sourceStore.create({
+      name: "保留账号归属与成果",
+      description: "迁移后重新授权执行",
+      executionIdentityId: sourceIdentityId,
+      sourceSessions: [{
+        kind: "codex_session",
+        id: "managed-source-session",
+        lastActiveAt: "2026-08-04T01:00:00.000Z",
+        executionIdentityId: sourceIdentityId,
+        openInCodex: true,
+        version: 1,
+      }],
+    });
+    const planned = sourceStore.savePlan(created.id, [{
+      id: "migration-stage",
+      outcome: "迁移账号历史",
+      scope: "本地状态",
+      verification: "运行迁移测试",
+    }]);
+    const result = {
+      planVersion: planned.plan!.version,
+      artifacts: [{
+        id: "result-artifact",
+        type: "file" as const,
+        label: "迁移成果",
+        location: "/tmp/result.md",
+      }],
+      git: { diffStat: "1 file changed", statusShort: "M result.md" },
+      verifications: [{
+        stageId: planned.plan!.stages[0]!.id,
+        stageOutcome: planned.plan!.stages[0]!.outcome,
+        command: null,
+        status: "not_configured" as const,
+        exitCode: null,
+        output: "",
+      }],
+      completedAt: "2026-08-04T02:00:00.000Z",
+    };
+    sourceStore.database
+      .query(`
+        UPDATE work_orders
+        SET session_id = ?, session_identity_id = ?, result_json = ?
+        WHERE id = ?
+      `)
+      .run(
+        "managed-runtime-session",
+        sourceIdentityId,
+        JSON.stringify(result),
+        created.id,
+      );
+    sourceStore.saveCheckpoint(created.id, {
+      id: "identity-checkpoint",
+      kind: "stage",
+      planVersion: planned.plan!.version,
+      stageId: planned.plan!.stages[0]!.id,
+      stageOutcome: planned.plan!.stages[0]!.outcome,
+      runNumber: 2,
+      treeHash: "1111111111111111111111111111111111111111",
+    });
+    sourceStore.saveResourcePlan(created.id, {
+      priority: "background",
+      pace: "saving",
+      runWhenQuotaAvailable: true,
+    });
+    sourceStore.saveMaxConcurrency(4);
+
+    const sourceApp = createApp({ store: sourceStore });
+    const bundle = await (
+      await sourceApp.fetch(request("/api/local-state/export"))
+    ).json();
+    const exportedIdentity = bundle.executionIdentities.find(
+      (identity: { id: string }) => identity.id === sourceIdentityId,
+    );
+    expect(bundle.version).toBe(4);
+    expect(exportedIdentity).toEqual({
+      id: sourceIdentityId,
+      tool: "codex",
+      label: "工作账号",
+      homeKind: "managed",
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(bundle.workOrders[0]).toMatchObject({
+      executionIdentityId: sourceIdentityId,
+      sessionIdentityId: sourceIdentityId,
+      currentSessionId: "managed-runtime-session",
+      sourceSessions: [{
+        id: "managed-source-session",
+        executionIdentityId: sourceIdentityId,
+      }],
+      result,
+      checkpoints: [{ id: "identity-checkpoint", runNumber: 2 }],
+      resourcePlan: { priority: "background", pace: "saving" },
+    });
+    expect(JSON.stringify(bundle)).not.toContain("/managed-codex/private-auth-home");
+    expect(JSON.stringify(bundle)).not.toContain("private-account-fingerprint");
+    expect(JSON.stringify(bundle)).not.toContain("private-capability");
+    expect(bundle.workOrders[0].sourceSessions[0].openInCodex).toBeUndefined();
+
+    const mixedIdentitySources = structuredClone(bundle);
+    mixedIdentitySources.workOrders[0].sourceSessions.push({
+      ...mixedIdentitySources.workOrders[0].sourceSessions[0],
+      id: "system-source-session",
+      executionIdentityId: "codex-system-default",
+    });
+    const mixedIdentityResponse = await createApp({
+      store: new WorkOrderStore(new Database(":memory:")),
+    }).fetch(request("/api/local-state/restore/preview", {
+      bundle: mixedIdentitySources,
+    }));
+    expect(mixedIdentityResponse.status).toBe(400);
+    expect(await mixedIdentityResponse.json()).toMatchObject({
+      code: "INVALID_STATE_BUNDLE",
+      error: expect.stringContaining("同一个 Codex 账号"),
+    });
+
+    for (const [field, value] of [
+      ["managedHomePath", "/tmp/copied-auth-home"],
+      ["token", "copied-token"],
+      ["cookie", "copied-cookie"],
+      ["authFile", "/tmp/auth.json"],
+    ]) {
+      const unsafe = structuredClone(bundle);
+      const identity = unsafe.executionIdentities.find(
+        (candidate: { id: string }) => candidate.id === sourceIdentityId,
+      ) as Record<string, unknown>;
+      identity[field] = value;
+      const rejected = await createApp({
+        store: new WorkOrderStore(new Database(":memory:")),
+      }).fetch(request("/api/local-state/restore/preview", { bundle: unsafe }));
+      expect(rejected.status).toBe(400);
+      expect((await rejected.json()).code).toBe("INVALID_STATE_BUNDLE");
+    }
+
+    const targetStore = new WorkOrderStore(new Database(":memory:"));
+    const targetApp = createApp({ store: targetStore });
+    const targetDefaultBefore = targetStore.getDefaultExecutionIdentityId();
+    const preview = await (
+      await targetApp.fetch(request("/api/local-state/restore/preview", { bundle }))
+    ).json();
+    const restoredResponse = await targetApp.fetch(
+      request("/api/local-state/restore/confirm", { previewId: preview.previewId }),
+    );
+    expect(restoredResponse.status).toBe(201);
+
+    const restoredIdentity = targetStore.getExecutionIdentity(sourceIdentityId)!;
+    const restored = targetStore.get(created.id)!;
+    expect(restoredIdentity).toMatchObject({
+      id: sourceIdentityId,
+      status: "removed",
+      homeKind: "managed",
+      managedHomePath: null,
+      accountFingerprint: null,
+      loginState: "signed_out",
+      capabilities: [],
+    });
+    expect(targetStore.getDefaultExecutionIdentityId()).toBe(targetDefaultBefore);
+    expect(targetStore.getCurrentExecutionIdentityId()).toBeNull();
+    expect(restored).toMatchObject({
+      executionIdentityId: sourceIdentityId,
+      sessionIdentityId: sourceIdentityId,
+      sessionId: "managed-runtime-session",
+      sourceSessions: [{
+        id: "managed-source-session",
+        executionIdentityId: sourceIdentityId,
+      }],
+      result,
+      resourcePlan: {
+        priority: "background",
+        pace: "saving",
+        runWhenQuotaAvailable: false,
+      },
+      plan: { confirmationRequired: true },
+    });
+    expect(restored.sourceSessions[0]!.openInCodex).toBeUndefined();
+    expect(() => targetStore.bindExecutionIdentity(created.id)).toThrow(
+      "这个 Codex 账号当前不可用",
+    );
+
+    const reauthorizedIdentityId = "22222222-2222-4222-8222-222222222222";
+    targetStore.createManagedExecutionIdentity({
+      id: reauthorizedIdentityId,
+      label: "重新授权账号",
+      managedHomePath: "/new-local-managed-home",
+    });
+    targetStore.recordExecutionIdentityObservation(reauthorizedIdentityId, {
+      loginState: "ready",
+      capabilities: ["sessions"],
+    });
+    const rebound = targetStore.switchExecutionIdentity(
+      created.id,
+      reauthorizedIdentityId,
+    );
+    expect(rebound).toMatchObject({
+      executionIdentityId: reauthorizedIdentityId,
+      sessionIdentityId: null,
+      sessionId: null,
+      result,
+    });
+    const roundTripped = await (
+      await targetApp.fetch(request("/api/local-state/export"))
+    ).json();
+    expect(roundTripped.workOrders[0]).toMatchObject({
+      executionIdentityId: reauthorizedIdentityId,
+      sourceSessions: [{ executionIdentityId: sourceIdentityId }],
+      result,
+    });
+    expect(JSON.stringify(roundTripped)).not.toContain("/new-local-managed-home");
   });
 
   test("previews a restore into a new database without writing and flags missing references", async () => {

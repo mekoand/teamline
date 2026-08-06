@@ -397,7 +397,7 @@ describe("V2 domain data", () => {
           new Request("http://teamline.local/api/local-state/export"),
         )
       ).json();
-      expect(exported.version).toBe(3);
+      expect(exported.version).toBe(4);
       database.close();
 
       const restoredStore = new WorkOrderStore(new Database(":memory:"));
@@ -420,9 +420,10 @@ describe("V2 domain data", () => {
 
       expect(previewResponse.status).toBe(200);
       expect(confirmResponse.status).toBe(201);
-      expect(restoredStore.get("legacy-owner")?.sourceSessions).toEqual([
-        { ...importSource, openInCodex: true },
-      ]);
+      expect(restoredStore.get("legacy-owner")?.sourceSessions).toEqual([{
+        ...importSource,
+        executionIdentityId: expect.any(String),
+      }]);
       expect(restoredStore.get("legacy-duplicate")).toMatchObject({
         sourceSessions: [],
         importSource: null,

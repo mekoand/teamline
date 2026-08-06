@@ -1017,8 +1017,8 @@ export class WorkOrderStore {
       .all();
     const values = new Map(rows.map((row) => [row.key, row.value]));
     return {
-      autoRunStarted: values.get("notification-auto-run-started") !== "false",
-      autoRunStopped: values.get("notification-auto-run-stopped") !== "false",
+      autoRunStarted: values.get("notification-auto-run-started") === "true",
+      autoRunStopped: values.get("notification-auto-run-stopped") === "true",
     };
   }
 
@@ -1075,16 +1075,22 @@ export class WorkOrderStore {
 
   claimPendingNotifications(limit = 10): LocalNotification[] {
     const transaction = this.database.transaction(() => {
+      const settings = this.getNotificationSettings();
       const pending = this.database
-        .query<LocalNotificationRow, [number]>(`
+        .query<LocalNotificationRow, [number, number, number]>(`
           SELECT id, notification_kind, work_order_id, stage_id, title, body,
                  target_url, read_at, claimed_at, created_at
           FROM local_notifications
           WHERE claimed_at IS NULL AND read_at IS NULL
+            AND (
+              notification_kind IN ('response', 'review')
+              OR (notification_kind = 'auto_run_started' AND ? = 1)
+              OR (notification_kind = 'auto_run_stopped' AND ? = 1)
+            )
           ORDER BY created_at ASC, id ASC
           LIMIT ?
         `)
-        .all(limit);
+        .all(Number(settings.autoRunStarted), Number(settings.autoRunStopped), limit);
       if (pending.length === 0) return [];
       const claimedAt = new Date().toISOString();
       const claim = this.database.query(`

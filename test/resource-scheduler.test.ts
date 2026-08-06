@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createApp } from "../src/app";
@@ -337,7 +337,7 @@ describe("work-order resource scheduling", () => {
     expect(decision.candidateId).toBeNull();
     expect(decision.reasons.get(external.id)).toBe("等待完成外部节点");
 
-    store.saveWorkspace(noWorkspace.id, { kind: "directory", path: "/tmp/teamline" });
+    store.saveWorkspace(noWorkspace.id, { kind: "directory", path: tmpdir() });
     decision = decideAutoRun(
       store.list(),
       { ...availableQuota(), status: "stale", shortWindow: null, longWindow: null },
@@ -650,6 +650,105 @@ describe("work-order resource scheduling", () => {
     }
   });
 
+  test("refreshes accounts, quota, and workspace after a wake gap and closes its timer", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-background-wake-"));
+    const workspace = join(directory, "workspace");
+    try {
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const managedIdentityId = "73333333-3333-4333-8333-333333333333";
+      store.createManagedExecutionIdentity({
+        id: managedIdentityId,
+        label: "后台备用账号",
+        managedHomePath: join(directory, "codex-home"),
+      });
+      store.recordExecutionIdentityObservation(managedIdentityId, {
+        loginState: "ready",
+        capabilities: ["app-server"],
+      });
+      const created = store.create({ goal: "唤醒后继续判断" });
+      const planned = store.savePlan(created.id, [
+        { outcome: "完成后台执行", scope: "当前文件夹", verification: "检查" },
+      ]);
+      store.saveWorkspace(planned.id, { kind: "directory", path: workspace });
+      enable(store, planned.id);
+      const scheduler = oneShotScheduler();
+      let now = 0;
+      let resourceReads = 0;
+      let identityReads = 0;
+      let managedQuotaReads = 0;
+      const starts: string[] = [];
+      const app = createApp({
+        store,
+        resourceProvider: {
+          async read() {
+            resourceReads += 1;
+            return (await availableResourceProvider().read());
+          },
+        },
+        identityResourceProvider: {
+          async read() {
+            managedQuotaReads += 1;
+            return availableQuota();
+          },
+        },
+        codexRunner: {
+          async start({ workOrder }) {
+            starts.push(workOrder.id);
+            return {
+              interrupt() {},
+              events: (async function* (): AsyncGenerator<CodexRunEvent> {
+                await new Promise(() => {});
+              })(),
+            };
+          },
+          async resume() {
+            throw new Error("not used");
+          },
+        },
+        executionIdentityEnvironment: {
+          async create() { return { managedHomePath: "/tmp/not-used" }; },
+          async remove() {},
+          async inspect() {
+            identityReads += 1;
+            return { loginState: "ready" as const, capabilities: ["app-server"] };
+          },
+          async startLogin() { return { status: "idle" as const }; },
+          getLoginStatus() { return { status: "idle" as const }; },
+        },
+        autoRunRetryScheduler: scheduler.schedule,
+        autoRunRetryMs: 100,
+        backgroundNow: () => now,
+        wakeDetectionThresholdMs: 50,
+      });
+
+      expect(scheduler.runNext().delayMs).toBe(0);
+      await Bun.sleep(0);
+      expect(resourceReads).toBe(1);
+      expect(managedQuotaReads).toBe(1);
+      expect(starts).toEqual([]);
+      expect(store.get(planned.id)?.resourcePlan.autoRunReason).toBe(
+        "工作空间不可用，等待重新检查",
+      );
+      expect(scheduler.timers.find((timer) => timer.active)?.delayMs).toBe(100);
+
+      mkdirSync(workspace);
+      now = 1_000;
+      scheduler.runNext();
+      const deadline = Date.now() + 1_000;
+      while (starts.length === 0 && Date.now() < deadline) await Bun.sleep(2);
+      expect(identityReads).toBe(2);
+      expect(resourceReads).toBe(3);
+      expect(managedQuotaReads).toBe(3);
+      expect(starts).toEqual([planned.id]);
+
+      expect(scheduler.activeCount()).toBe(1);
+      await app.close();
+      expect(scheduler.activeCount()).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("plan and workspace APIs immediately recheck a previously authorized work order", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "teamline-auto-run-static-"));
     try {
@@ -688,12 +787,6 @@ describe("work-order resource scheduling", () => {
           }),
         }),
       );
-      expect(scheduler.activeCount()).toBe(1);
-      expect(scheduler.runNext().delayMs).toBe(0);
-      await Bun.sleep(0);
-      expect(store.get(workOrder.id)?.resourcePlan.autoRunReason).toBe(
-        "等待确认计划",
-      );
       expect(scheduler.activeCount()).toBe(0);
 
       await app.fetch(
@@ -711,7 +804,7 @@ describe("work-order resource scheduling", () => {
       expect(store.get(workOrder.id)?.resourcePlan.autoRunReason).toBe(
         "等待选择工作空间",
       );
-      expect(scheduler.activeCount()).toBe(0);
+      expect(scheduler.activeCount()).toBe(1);
 
       await app.fetch(
         new Request(`http://teamline.local/api/work-orders/${workOrder.id}/workspace`, {
@@ -773,7 +866,7 @@ describe("work-order resource scheduling", () => {
       expect(store.get(waiting.id)?.resourcePlan.autoRunReason).toBe(
         "等待可用并发位置",
       );
-      expect(scheduler.activeCount()).toBe(0);
+      expect(scheduler.activeCount()).toBe(1);
 
       await app.fetch(
         new Request("http://teamline.local/api/execution-settings", {
@@ -790,6 +883,31 @@ describe("work-order resource scheduling", () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  test("stops background polling when the last authorized goal is delivered", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = enable(store, ready(store, "完成后停止轮询").id);
+    const scheduler = oneShotScheduler();
+    const app = createApp({
+      store,
+      resourceProvider: availableResourceProvider(),
+      autoRunRetryScheduler: scheduler.schedule,
+    });
+    expect(scheduler.activeCount()).toBe(1);
+
+    store.database
+      .query("UPDATE work_orders SET status = 'review' WHERE id = ?")
+      .run(workOrder.id);
+    const response = await app.fetch(
+      new Request(`http://teamline.local/api/work-orders/${workOrder.id}/deliver`, {
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(store.get(workOrder.id)?.status).toBe("delivered");
+    expect(scheduler.activeCount()).toBe(0);
   });
 
   test("uses the current account and that account's own quota when choosing work", () => {

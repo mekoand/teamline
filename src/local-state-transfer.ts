@@ -12,6 +12,7 @@ import {
   type ClarificationQuestion,
   type PlanReference,
   type PlanStage,
+  type SessionHandoff,
   type WorkOrder,
   type WorkOrderCheckpoint,
   type WorkOrderConversationMessage,
@@ -19,6 +20,7 @@ import {
   type WorkOrderImportContext,
   type WorkOrderMaterial,
   type WorkOrderPlan,
+  type WorkOrderResult,
   type WorkOrderResourcePlan,
   type WorkOrderStatus,
   type WorkOrderWorkspace,
@@ -26,10 +28,11 @@ import {
 import type { WorkOrderStore } from "./work-order-store";
 
 const bundleFormat = "teamline-local-state" as const;
-const bundleVersion = 3 as const;
-type BundleVersion = 1 | 2 | typeof bundleVersion;
+const bundleVersion = 4 as const;
+type BundleVersion = 1 | 2 | 3 | typeof bundleVersion;
 const maxBundleBytes = 5 * 1024 * 1024;
 const maxWorkOrders = 1_000;
+const maxExecutionIdentities = 1_000;
 const maxCheckpointsPerWorkOrder = 1_000;
 const maxGitWorkspacesToInspect = 10;
 const checkpointInspectionTimeoutMs = 500;
@@ -44,7 +47,17 @@ export type LocalStateBundle = {
   };
   projects: Project[];
   projectMaterials: ProjectMaterial[];
+  executionIdentities: ExportedExecutionIdentityReference[];
   workOrders: ExportedWorkOrder[];
+};
+
+type ExportedExecutionIdentityReference = {
+  id: string;
+  tool: "codex";
+  label: string;
+  homeKind: "system" | "managed";
+  createdAt: string;
+  updatedAt: string;
 };
 
 type ExportedWorkOrder = {
@@ -66,6 +79,9 @@ type ExportedWorkOrder = {
   sourceSessions: WorkOrderImportSource[];
   importContext: WorkOrderImportContext | null;
   currentSessionId: string | null;
+  executionIdentityId: string | null;
+  sessionIdentityId: string | null;
+  sessionHandoff: SessionHandoff | null;
   sessionReferences: {
     imported: WorkOrderImportSource | null;
     active: string | null;
@@ -76,6 +92,7 @@ type ExportedWorkOrder = {
     requiresPlanConfirmation: boolean;
     createdAt: string;
   } | null;
+  result: WorkOrderResult | null;
   checkpoints: WorkOrderCheckpoint[];
   conversationDecisions: Array<
     Pick<
@@ -147,6 +164,7 @@ export class LocalStateTransfer {
       projectMaterials: this.store
         .listProjects()
         .flatMap((project) => this.store.listProjectMaterials(project.id)),
+      executionIdentities: this.store.listExecutionIdentities(),
       workOrders: this.store.list(),
     }))();
     return {
@@ -159,6 +177,18 @@ export class LocalStateTransfer {
       },
       projects: redactObject(snapshot.projects),
       projectMaterials: redactObject(snapshot.projectMaterials),
+      executionIdentities: redactObject(
+        snapshot.executionIdentities.map(
+          ({ id, tool, label, homeKind, createdAt, updatedAt }) => ({
+            id,
+            tool,
+            label,
+            homeKind,
+            createdAt,
+            updatedAt,
+          }),
+        ),
+      ),
       workOrders: snapshot.workOrders.map(exportWorkOrder),
     };
   }
@@ -274,6 +304,12 @@ export class LocalStateTransfer {
           : workOrder.id,
       ]),
     );
+    const identityTargetIds = new Map(
+      preview.bundle.executionIdentities.map((identity) => [
+        identity.id,
+        this.store.getExecutionIdentity(identity.id) ? crypto.randomUUID() : identity.id,
+      ]),
+    );
     const projectMaterialTargetIds = new Map(
       preview.bundle.projectMaterials.map((material) => {
         const remappedGoalId =
@@ -292,6 +328,13 @@ export class LocalStateTransfer {
       }),
     );
     this.store.database.transaction(() => {
+      for (const identity of preview.bundle.executionIdentities) {
+        insertHistoricalExecutionIdentity(
+          this.store,
+          identity,
+          identityTargetIds.get(identity.id)!,
+        );
+      }
       for (const project of preview.bundle.projects) {
         insertProject(this.store, project);
       }
@@ -336,6 +379,7 @@ export class LocalStateTransfer {
           },
           targetId,
           resolution === "import_copy",
+          identityTargetIds,
         );
         if (resolution === "import_copy") copied += 1;
         else imported += 1;
@@ -390,12 +434,16 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     sourceSessions: workOrder.sourceSessions.map(exportSessionSource),
     importContext: workOrder.importContext,
     currentSessionId: workOrder.currentSessionId,
+    executionIdentityId: workOrder.executionIdentityId,
+    sessionIdentityId: workOrder.sessionIdentityId,
+    sessionHandoff: workOrder.sessionHandoff,
     sessionReferences: {
       imported: workOrder.importSource ? exportSessionSource(workOrder.importSource) : null,
       active: workOrder.sessionId,
     },
     executionMap: workOrder.plan,
     pendingClarification: workOrder.pendingClarification,
+    result: workOrder.result,
     checkpoints: workOrder.checkpoints,
     conversationDecisions: workOrder.conversation
       .filter((message) => message.kind === "decision")
@@ -419,6 +467,9 @@ function exportSessionSource(source: WorkOrderImportSource): WorkOrderImportSour
     id: source.id,
     lastActiveAt: source.lastActiveAt,
     ...(source.lastReadAt !== undefined ? { lastReadAt: source.lastReadAt } : {}),
+    ...(source.executionIdentityId
+      ? { executionIdentityId: source.executionIdentityId }
+      : {}),
     version: 1,
   };
 }
@@ -437,10 +488,11 @@ function redactObject<T>(value: T): T {
 function redactString(value: string): string {
   let redacted = value
     .replace(
-      /\bAuthorization\s*:\s*(Basic|Bearer)\s+[^\s,;]+/gi,
+      /\bAuthorization\s*:\s*(Basic|Bearer)\s+[^\s,;，；。]+/gi,
       "Authorization: $1 [已隐藏凭据]",
     )
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [已隐藏凭据]")
+    .replace(/\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]+/gi, "$1: [已隐藏凭据]")
+    .replace(/\bBearer\s+[^\s,;，；。]+/gi, "Bearer [已隐藏凭据]")
     .replace(
       /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi,
       "[已隐藏私钥]",
@@ -450,7 +502,11 @@ function redactString(value: string): string {
       /\b([A-Z][A-Z0-9_]*(?:API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|PASSWORD|SECRET|CREDENTIALS?))\s*[:=]\s*[^\s,;&]+/gi,
       "$1=[已隐藏凭据]",
     )
-    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s*[:=]\s*[^\s,;&]+/gi, "$1=[已隐藏凭据]");
+    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret|cookie|session(?:[_-]?cookie)?)\s*[:=]\s*[^\s,;&，；。]+/gi, "$1=[已隐藏凭据]")
+    .replace(
+      /(?:^|[\s"'(])(?:\/?[^\s"'<>]+\/)*(?:auth|credentials?|cookies?)\.json\b/gi,
+      (candidate) => `${candidate[0]?.match(/\s|["'(]/) ? candidate[0] : ""}[已隐藏认证文件]`,
+    );
   redacted = redacted.replace(/https?:\/\/[^\s<>"']+/gi, (candidate) =>
     sanitizeUrl(candidate),
   );
@@ -463,7 +519,7 @@ function sanitizeUrl(value: string): string {
     url.username = "";
     url.password = "";
     for (const key of [...url.searchParams.keys()]) {
-      if (/(token|key|secret|password|signature|credential|auth)/i.test(key)) {
+      if (/(token|key|secret|password|signature|credential|auth|cookie|session)/i.test(key)) {
         url.searchParams.set(key, "[已隐藏凭据]");
       }
     }
@@ -692,6 +748,10 @@ function databaseFingerprint(store: WorkOrderStore): string {
       .list()
       .map(({ id, updatedAt }) => [id, updatedAt])
       .sort(([left], [right]) => left.localeCompare(right));
+  const executionIdentities = store
+    .listExecutionIdentities()
+    .map(({ id, status, updatedAt }) => [id, status, updatedAt])
+    .sort(([left], [right]) => left.localeCompare(right));
   const checkpoints = store.database
     .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_order_checkpoints")
     .get()?.count ?? 0;
@@ -702,11 +762,35 @@ function databaseFingerprint(store: WorkOrderStore): string {
     projects,
     projectMaterials,
     workOrders,
+    executionIdentities,
     checkpoints,
     decisions,
     executionSettings: store.getExecutionSettings(),
     executionMapView: store.getExecutionMapView(),
   });
+}
+
+function insertHistoricalExecutionIdentity(
+  store: WorkOrderStore,
+  identity: ExportedExecutionIdentityReference,
+  id: string,
+): void {
+  store.database
+    .query(`
+      INSERT INTO execution_identities (
+        id, tool, label, identity_status, home_kind, managed_home_path,
+        account_fingerprint, login_state, capabilities_json,
+        last_observed_at, created_at, updated_at, removed_at
+      ) VALUES (?, 'codex', ?, 'removed', ?, NULL, NULL, 'signed_out', '[]', NULL, ?, ?, ?)
+    `)
+    .run(
+      id,
+      identity.label,
+      identity.homeKind,
+      identity.createdAt,
+      identity.updatedAt,
+      identity.updatedAt,
+    );
 }
 
 function insertProject(store: WorkOrderStore, project: Project): void {
@@ -785,8 +869,25 @@ function insertWorkOrder(
   source: ExportedWorkOrder,
   id: string,
   copy: boolean,
+  identityTargetIds: ReadonlyMap<string, string>,
 ): void {
-  for (const sourceSession of source.sourceSessions) {
+  const sourceSessions = source.sourceSessions.map((sourceSession) => ({
+    kind: sourceSession.kind,
+    id: sourceSession.id,
+    lastActiveAt: sourceSession.lastActiveAt,
+    ...(sourceSession.lastReadAt !== undefined
+      ? { lastReadAt: sourceSession.lastReadAt }
+      : {}),
+    ...(sourceSession.executionIdentityId
+      ? {
+          executionIdentityId:
+            identityTargetIds.get(sourceSession.executionIdentityId) ??
+            sourceSession.executionIdentityId,
+        }
+      : {}),
+    version: 1 as const,
+  }));
+  for (const sourceSession of sourceSessions) {
     const owner = findSourceSessionOwner(store, sourceSession);
     if (owner) {
       throw new InvalidStateBundleError(
@@ -813,12 +914,27 @@ function insertWorkOrder(
     (maximum, checkpoint) => Math.max(maximum, checkpoint.runNumber),
     0,
   );
+  const executionIdentityId = source.executionIdentityId
+    ? identityTargetIds.get(source.executionIdentityId) ?? source.executionIdentityId
+    : null;
+  const sessionIdentityId = source.sessionIdentityId
+    ? identityTargetIds.get(source.sessionIdentityId) ?? source.sessionIdentityId
+    : null;
+  const sessionHandoff = source.sessionHandoff
+    ? {
+        ...source.sessionHandoff,
+        fromExecutionIdentityId:
+          identityTargetIds.get(source.sessionHandoff.fromExecutionIdentityId) ??
+          source.sessionHandoff.fromExecutionIdentityId,
+      }
+    : null;
   store.database
     .query(`
       INSERT INTO work_orders (
         id, title, project_id, project_materials_confirmed,
         repository_path, workspace_kind, materials_json,
         source_sessions_json, import_source_json, import_context_json,
+        execution_identity_id, session_identity_id, session_handoff_json,
         resource_plan_json, goal, acceptance, status,
         current_summary, plan_json, clarification_json, result_json,
         revision_note, worktree_path, execution_branch, base_commit, session_id,
@@ -826,8 +942,8 @@ function insertWorkOrder(
         runtime_ms, runtime_updated_at, max_run_minutes, last_error,
         created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?,
-        NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        NULL, NULL, NULL, ?, NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?, ?, ?
       )
     `)
     .run(
@@ -838,11 +954,14 @@ function insertWorkOrder(
       source.workspace?.path ?? "",
       source.workspace?.kind ?? null,
       JSON.stringify(source.materials),
-      JSON.stringify(source.sourceSessions),
-      source.sourceSessions[0]
-        ? JSON.stringify(source.sourceSessions[0])
+      JSON.stringify(sourceSessions),
+      sourceSessions[0]
+        ? JSON.stringify(sourceSessions[0])
         : null,
       source.importContext ? JSON.stringify(source.importContext) : null,
+      executionIdentityId,
+      sessionIdentityId,
+      sessionHandoff ? JSON.stringify(sessionHandoff) : null,
       JSON.stringify(resourcePlan),
       source.description,
       source.acceptance,
@@ -850,6 +969,7 @@ function insertWorkOrder(
       summary,
       executionMap ? JSON.stringify(executionMap) : null,
       source.pendingClarification ? JSON.stringify(source.pendingClarification) : null,
+      source.result ? JSON.stringify(source.result) : null,
       source.revisionNote,
       source.currentSessionId,
       runNumber,
@@ -936,14 +1056,19 @@ function parseBundle(value: unknown): LocalStateBundle {
   const bundle = object(value, "导出文件格式无法识别");
   if (
     bundle.format !== bundleFormat ||
-    (bundle.version !== 1 && bundle.version !== 2 && bundle.version !== 3)
+    (bundle.version !== 1 &&
+      bundle.version !== 2 &&
+      bundle.version !== 3 &&
+      bundle.version !== 4)
   ) {
     throw new InvalidStateBundleError("导出文件版本不受支持");
   }
   const version = bundle.version as BundleVersion;
   exactKeys(
     bundle,
-    version === 3
+    version === 4
+      ? ["format", "version", "exportedAt", "settings", "projects", "projectMaterials", "executionIdentities", "workOrders"]
+      : version === 3
       ? ["format", "version", "exportedAt", "settings", "projects", "projectMaterials", "workOrders"]
       : version === 2
       ? ["format", "version", "exportedAt", "settings", "projects", "workOrders"]
@@ -960,8 +1085,11 @@ function parseBundle(value: unknown): LocalStateBundle {
   const projects = version >= 2
     ? array(bundle.projects, parseProject, maxWorkOrders)
     : [];
-  const projectMaterials = version === 3
+  const projectMaterials = version >= 3
     ? array(bundle.projectMaterials, parseProjectMaterial, 10_000)
+    : [];
+  const executionIdentities = version === 4
+    ? array(bundle.executionIdentities, parseExecutionIdentityReference, maxExecutionIdentities)
     : [];
   const workOrders = bundle.workOrders.map((workOrder) => parseWorkOrder(workOrder, version));
   if (version === 1) assignLegacySourceOwnership(workOrders);
@@ -1029,6 +1157,23 @@ function parseBundle(value: unknown): LocalStateBundle {
       sourceSessionIds.add(key);
     }
   }
+  const executionIdentityIds = new Set(
+    executionIdentities.map((identity) => identity.id),
+  );
+  if (executionIdentityIds.size !== executionIdentities.length) {
+    throw new InvalidStateBundleError("Codex 账号引用标识不能重复");
+  }
+  for (const workOrder of workOrders) {
+    const referencedIdentityIds = [
+      workOrder.executionIdentityId,
+      workOrder.sessionIdentityId,
+      workOrder.sessionHandoff?.fromExecutionIdentityId ?? null,
+      ...workOrder.sourceSessions.map((source) => source.executionIdentityId ?? null),
+    ].filter((id): id is string => id !== null);
+    if (referencedIdentityIds.some((id) => !executionIdentityIds.has(id))) {
+      throw new InvalidStateBundleError("目标引用了导出文件中不存在的 Codex 账号");
+    }
+  }
   return {
     format: bundleFormat,
     version,
@@ -1036,6 +1181,7 @@ function parseBundle(value: unknown): LocalStateBundle {
     settings: { maxConcurrency, executionMapView },
     projects,
     projectMaterials,
+    executionIdentities,
     workOrders,
   };
 }
@@ -1091,6 +1237,28 @@ function parseProjectMaterial(value: unknown): ProjectMaterial {
   };
 }
 
+function parseExecutionIdentityReference(
+  value: unknown,
+): ExportedExecutionIdentityReference {
+  const identity = object(value, "Codex 账号引用格式无法识别");
+  exactKeys(identity, [
+    "id",
+    "tool",
+    "label",
+    "homeKind",
+    "createdAt",
+    "updatedAt",
+  ]);
+  return {
+    id: nonempty(identity.id),
+    tool: oneOf(identity.tool, ["codex"] as const),
+    label: nonempty(identity.label),
+    homeKind: oneOf(identity.homeKind, ["system", "managed"] as const),
+    createdAt: dateString(identity.createdAt),
+    updatedAt: dateString(identity.updatedAt),
+  };
+}
+
 function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrder {
   const item = object(value, "目标格式无法识别");
   const legacyKeys = [
@@ -1101,12 +1269,27 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   ];
   exactKeys(
     item,
-    version === 3
+    version === 4
+      ? [
+          ...legacyKeys,
+          "name",
+          "description",
+          "projectId",
+          "projectMaterialSelectionConfirmed",
+          "sourceSessions",
+          "importContext",
+          "currentSessionId",
+          "executionIdentityId",
+          "sessionIdentityId",
+          "sessionHandoff",
+          "result",
+        ]
+      : version === 3
       ? [...legacyKeys, "name", "description", "projectId", "projectMaterialSelectionConfirmed", "sourceSessions", "importContext", "currentSessionId"]
       : version === 2
       ? [...legacyKeys, "name", "description", "projectId", "sourceSessions", "currentSessionId"]
       : legacyKeys,
-    version === 3,
+    version >= 3,
   );
   const id = nonempty(item.id);
   const title = nonempty(item.title);
@@ -1125,14 +1308,26 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   );
   const resourcePlan = parseResourcePlan(item.resourcePlan);
   const maxRunMinutes = oneOf(item.maxRunMinutes, [30, 60, 120, 240] as const);
-  const sessionReferences = parseSessionReferences(item.sessionReferences);
+  const sessionReferences = parseSessionReferences(item.sessionReferences, version);
   const sourceSessions = version === 1
     ? sessionReferences.imported ? [sessionReferences.imported] : []
-    : array(item.sourceSessions, parseSessionSource, 20);
+    : array(
+        item.sourceSessions,
+        (source) => parseSessionSource(source, version === 4),
+        20,
+      );
   if (new Set(sourceSessions.map((source) => source.kind)).size > 1) {
     throw new InvalidStateBundleError("一个目标的来源会话必须来自同一个工具");
   }
-  const importContext = version === 3 && item.importContext !== undefined
+  const sourceExecutionIdentityIds = new Set(
+    sourceSessions
+      .map((source) => source.executionIdentityId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  if (sourceExecutionIdentityIds.size > 1) {
+    throw new InvalidStateBundleError("一个目标的来源会话必须来自同一个 Codex 账号");
+  }
+  const importContext = version >= 3 && item.importContext !== undefined
     ? parseImportContext(item.importContext)
     : null;
   if (importContext) {
@@ -1147,8 +1342,18 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   const currentSessionId = version === 1
     ? sessionReferences.active
     : nullableString(item.currentSessionId);
+  const executionIdentityId = version === 4
+    ? nullableString(item.executionIdentityId)
+    : null;
+  const sessionIdentityId = version === 4
+    ? nullableString(item.sessionIdentityId)
+    : null;
+  const sessionHandoff = version === 4
+    ? parseSessionHandoff(item.sessionHandoff)
+    : null;
   const executionMap = item.executionMap === null ? null : parsePlan(item.executionMap);
   const pendingClarification = parseClarification(item.pendingClarification);
+  const result = version === 4 ? parseResult(item.result) : null;
   const checkpoints = array(
     item.checkpoints,
     parseCheckpoint,
@@ -1161,7 +1366,7 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
     description,
     projectId: version >= 2 ? nullableString(item.projectId) : null,
     projectMaterialSelectionConfirmed:
-      version === 3 ? boolean(item.projectMaterialSelectionConfirmed) : false,
+      version >= 3 ? boolean(item.projectMaterialSelectionConfirmed) : false,
     title,
     goal,
     acceptance,
@@ -1175,9 +1380,13 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
     sourceSessions,
     importContext,
     currentSessionId,
+    executionIdentityId,
+    sessionIdentityId,
+    sessionHandoff,
     sessionReferences,
     executionMap,
     pendingClarification,
+    result,
     checkpoints,
     conversationDecisions,
     createdAt: dateString(item.createdAt),
@@ -1199,16 +1408,16 @@ function parseMaterial(value: unknown, version: BundleVersion): WorkOrderMateria
   const material = object(value, "素材引用格式无法识别");
   exactKeys(
     material,
-    version === 3
+    version >= 3
       ? ["id", "kind", "value", "projectMaterialId"]
       : ["id", "kind", "value"],
-    version === 3,
+    version >= 3,
   );
   return {
     id: nonempty(material.id),
     kind: oneOf(material.kind, workOrderMaterialKinds),
     value: nonempty(material.value),
-    ...(version === 3 && material.projectMaterialId !== undefined
+    ...(version >= 3 && material.projectMaterialId !== undefined
       ? { projectMaterialId: nonempty(material.projectMaterialId) }
       : {}),
   };
@@ -1225,19 +1434,38 @@ function parseResourcePlan(value: unknown): WorkOrderResourcePlan {
   };
 }
 
-function parseSessionReferences(value: unknown): ExportedWorkOrder["sessionReferences"] {
+function parseSessionReferences(
+  value: unknown,
+  version: BundleVersion,
+): ExportedWorkOrder["sessionReferences"] {
   const references = object(value, "会话引用格式无法识别");
   exactKeys(references, ["imported", "active"]);
   let imported: WorkOrderImportSource | null = null;
   if (references.imported !== null) {
-    imported = parseSessionSource(references.imported);
+    imported = parseSessionSource(references.imported, version === 4);
   }
   return { imported, active: nullableString(references.active) };
 }
 
-function parseSessionSource(value: unknown): WorkOrderImportSource {
+function parseSessionSource(
+  value: unknown,
+  includeIdentityReference = false,
+): WorkOrderImportSource {
   const source = object(value, "会话来源格式无法识别");
-  exactKeys(source, ["kind", "id", "lastActiveAt", "lastReadAt", "version"], true);
+  exactKeys(
+    source,
+    includeIdentityReference
+      ? [
+          "kind",
+          "id",
+          "lastActiveAt",
+          "lastReadAt",
+          "executionIdentityId",
+          "version",
+        ]
+      : ["kind", "id", "lastActiveAt", "lastReadAt", "version"],
+    true,
+  );
   if (
     !["codex_session", "claude_code_session"].includes(String(source.kind)) ||
     source.version !== 1
@@ -1253,7 +1481,84 @@ function parseSessionSource(value: unknown): WorkOrderImportSource {
       : source.lastReadAt === undefined
         ? {}
         : { lastReadAt: dateString(source.lastReadAt) }),
+    ...(includeIdentityReference && source.executionIdentityId !== undefined
+      ? { executionIdentityId: nonempty(source.executionIdentityId) }
+      : {}),
     version: 1,
+  };
+}
+
+function parseSessionHandoff(value: unknown): SessionHandoff | null {
+  if (value === null) return null;
+  const handoff = object(value, "会话交接历史格式无法识别");
+  exactKeys(handoff, [
+    "fromExecutionIdentityId",
+    "previousSessionId",
+    "summary",
+    "currentStageId",
+    "currentStageOutcome",
+    "createdAt",
+  ]);
+  return {
+    fromExecutionIdentityId: nonempty(handoff.fromExecutionIdentityId),
+    previousSessionId: nullableString(handoff.previousSessionId),
+    summary: string(handoff.summary),
+    currentStageId: nullableString(handoff.currentStageId),
+    currentStageOutcome: nullableString(handoff.currentStageOutcome),
+    createdAt: dateString(handoff.createdAt),
+  };
+}
+
+function parseResult(value: unknown): WorkOrderResult | null {
+  if (value === null) return null;
+  const result = object(value, "成果格式无法识别");
+  exactKeys(
+    result,
+    ["planVersion", "artifacts", "git", "verifications", "completedAt"],
+    true,
+  );
+  const git = object(result.git, "Git 成果格式无法识别");
+  exactKeys(git, ["diffStat", "statusShort"]);
+  const artifacts = result.artifacts === undefined
+    ? undefined
+    : array(result.artifacts, parseReference, 10_000);
+  return {
+    planVersion: integer(result.planVersion, 1, Number.MAX_SAFE_INTEGER),
+    ...(artifacts ? { artifacts } : {}),
+    git: {
+      diffStat: string(git.diffStat),
+      statusShort: string(git.statusShort),
+    },
+    verifications: array(result.verifications, (value) => {
+      const verification = object(value, "验证成果格式无法识别");
+      exactKeys(verification, [
+        "stageId",
+        "stageOutcome",
+        "command",
+        "status",
+        "exitCode",
+        "output",
+      ]);
+      return {
+        stageId: nonempty(verification.stageId),
+        stageOutcome: nonempty(verification.stageOutcome),
+        command: nullableString(verification.command),
+        status: oneOf(
+          verification.status,
+          ["passed", "failed", "not_configured"] as const,
+        ),
+        exitCode:
+          verification.exitCode === null
+            ? null
+            : integer(
+                verification.exitCode,
+                Number.MIN_SAFE_INTEGER,
+                Number.MAX_SAFE_INTEGER,
+              ),
+        output: string(verification.output),
+      };
+    }, 10_000),
+    completedAt: dateString(result.completedAt),
   };
 }
 
