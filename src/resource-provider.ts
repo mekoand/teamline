@@ -1,4 +1,5 @@
 import type { ExecutionIdentity } from "./execution-identity";
+import { codexProcessEnvironment } from "./codex-environment";
 
 export type ResourceAvailability =
   | "available"
@@ -60,6 +61,7 @@ export type ResourceProviderSnapshot = {
   codex: CodexResourceSignal;
   openaiApi: OpenAIResourceSignal;
   workOrderUsage: WorkOrderUsage[];
+  pendingPaidUsageWorkOrderId?: string | null;
 };
 
 export interface ResourceProvider {
@@ -253,9 +255,9 @@ export class CodexAppServerResourceProvider implements ResourceProvider {
     { bucket: CodexRateLimitBucket } | { conflict: true }
   > {
     const subprocess = Bun.spawn([this.executable, "app-server"], {
-      env: this.codexHome
-        ? { ...process.env, CODEX_HOME: this.codexHome }
-        : process.env,
+      env: codexProcessEnvironment(
+        this.codexHome ? { codexHome: this.codexHome } : {},
+      ),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -367,6 +369,7 @@ export class OpenAIOrganizationUsageProvider implements OpenAIUsageProvider {
 
   constructor(
     private readonly adminKey: string,
+    private readonly projectId?: string,
     private readonly fetcher: (request: Request) => Promise<Response> = fetch,
     private readonly now: () => Date = () => new Date(),
     private readonly cacheMs = 60_000,
@@ -389,6 +392,9 @@ export class OpenAIOrganizationUsageProvider implements OpenAIUsageProvider {
     const url = new URL("https://api.openai.com/v1/organization/costs");
     url.searchParams.set("start_time", String(periodStart.getTime() / 1_000));
     url.searchParams.set("limit", "31");
+    if (this.projectId) {
+      url.searchParams.append("project_ids", this.projectId);
+    }
     const controller = new AbortController();
     try {
       const response = await withTimeout(
@@ -434,7 +440,7 @@ export class OpenAIOrganizationUsageProvider implements OpenAIUsageProvider {
         source: "openai-usage-api",
         observedAt,
         message: null,
-        scope: "organization",
+        scope: this.projectId ? "project" : "organization",
         usage: {
           amount,
           unit: "usd",

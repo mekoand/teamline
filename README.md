@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="README.zh-CN.md">简体中文</a> ·
-  v2.0 ·
+  v2.1 ·
   Early access · Apple Silicon macOS
 </p>
 
@@ -27,6 +27,8 @@ Teamline's control service and interface run on your Mac, and Teamline does not 
 - Shows progress as a timeline or node graph without exposing every raw tool call by default.
 - Collects generated files, completion summaries, and validation results for review.
 - Tracks Codex availability and lets each goal choose a priority, pace, and run-time limit.
+- Keeps Codex accounts separate, observes each account's available quota windows, and binds a running goal to its account.
+- Can opt a goal into paid API fallback with global and per-goal limits when actual usage is available.
 - Organizes goals into lightweight projects with referenced or uploaded materials.
 
 ## How it works
@@ -54,7 +56,7 @@ The resource view shows the currently available Codex signal and the run prefere
 
 ## Current status
 
-Teamline is in early access. The current product version is `v2.0`.
+Teamline is in early access. The current product version is `v2.1`.
 
 The supported setup is:
 
@@ -76,6 +78,8 @@ bun run dev
 Open <http://127.0.0.1:4310>.
 
 Teamline stores its local database under `.teamline/` by default. Set `TEAMLINE_DATA_DIR` to use another location.
+
+Paid API fallback is optional and off by default. Provide a project-scoped `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`, and the matching `OPENAI_PROJECT_ID`. Use a project dedicated to Teamline: paid nodes are serialized, and the observed project-cost increase is assigned to the goal that ran. Teamline does not save the keys. It starts no paid run without a per-goal limit and the global monthly budget configured in the resource page. Provider cost reporting can be delayed, so the limits stop later nodes after observed usage reaches them; they are not exact hard caps. If actual usage cannot be attributed to the goal, Teamline waits instead of estimating it; a confirmed zero-cost or cross-month edge can be cleared manually from the resource page.
 
 Run the test suite with:
 

@@ -785,6 +785,7 @@ pre {
 
 .resource-runtime-panel {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -795,9 +796,59 @@ pre {
   background: var(--panel);
 }
 
+.paid-api-pending {
+  display: flex;
+  flex: 0 0 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
 .resource-runtime-panel h2 {
   margin: 3px 0 0;
   font-size: 17px;
+}
+
+.resource-runtime-controls,
+.resource-budget-control,
+.resource-budget-control label,
+.paid-api-row {
+  display: flex;
+  align-items: center;
+}
+
+.resource-runtime-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px 18px;
+}
+
+.resource-budget-control {
+  gap: 7px;
+}
+
+.resource-budget-control label {
+  gap: 7px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.resource-budget-control label > span,
+.paid-api-row label > span {
+  margin: 0;
+}
+
+.resource-budget-control input,
+.paid-api-row input[type="number"] {
+  width: 92px;
+  min-height: 30px;
+  padding: 0 7px;
+  font-size: 11px;
 }
 
 .goal-resource-settings form {
@@ -1135,6 +1186,23 @@ pre {
   color: var(--muted);
   font-size: 10px;
   font-weight: 450;
+}
+
+.paid-api-row {
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.paid-api-row .auto-run-toggle {
+  flex: 1;
+}
+
+.paid-api-row > label:last-child {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .section-heading {
@@ -2572,6 +2640,23 @@ dialog::backdrop {
   .resource-runtime-panel {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .resource-runtime-controls,
+  .paid-api-row {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .resource-budget-control {
+    justify-content: space-between;
+  }
+
+  .paid-api-pending {
+    align-items: flex-start;
+    flex-direction: column;
+    text-align: left;
   }
 
   .result-summary-list,

@@ -150,6 +150,10 @@ export type WorkOrderResourcePlan = {
   pace: WorkOrderPace;
   runWhenQuotaAvailable: boolean;
   autoRunReason: string | null;
+  paidApiFallbackEnabled: boolean;
+  paidApiLimitUsd: number | null;
+  lastPaidApiRunAt: string | null;
+  lastBillingMode: "subscription" | "paid_api" | null;
 };
 
 export type GitChangeSummary = {
@@ -365,6 +369,10 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
       pace: "balanced",
       runWhenQuotaAvailable: false,
       autoRunReason: null,
+      paidApiFallbackEnabled: false,
+      paidApiLimitUsd: null,
+      lastPaidApiRunAt: null,
+      lastBillingMode: null,
     },
     goal,
     acceptance,

@@ -5,6 +5,7 @@ import type {
   ExecutionIdentity,
   ExecutionIdentityObservation,
 } from "./execution-identity";
+import { codexProcessEnvironment } from "./codex-environment";
 
 export interface ExecutionIdentityEnvironment {
   create(identityId: string): Promise<{ managedHomePath: string }>;
@@ -113,7 +114,7 @@ export class LocalCodexIdentityEnvironment implements ExecutionIdentityEnvironme
     let subprocess: ReturnType<typeof Bun.spawn>;
     try {
       subprocess = Bun.spawn([this.executable, "login"], {
-        env: { ...process.env, CODEX_HOME: managedHomePath },
+        env: codexProcessEnvironment({ codexHome: managedHomePath }),
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
@@ -239,7 +240,7 @@ async function readCodexAccount(
   timeoutMs: number,
 ): Promise<Record<string, unknown> | null> {
   const subprocess = Bun.spawn([executable, "app-server"], {
-    env: { ...process.env, CODEX_HOME: codexHome },
+    env: codexProcessEnvironment({ codexHome }),
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

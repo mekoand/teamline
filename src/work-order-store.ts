@@ -42,6 +42,19 @@ import {
   workOrderMaterialKinds,
 } from "./work-order";
 
+export type PaidApiAttributionState = {
+  pending: {
+    workOrderId: string;
+    baselineUsd: number;
+    periodStart: string;
+    startedAt: string;
+  } | null;
+  observedByWorkOrder: Record<
+    string,
+    { amountUsd: number; observedAt: string }
+  >;
+};
+
 type WorkOrderRow = {
   id: string;
   title: string;
@@ -1226,6 +1239,8 @@ export class WorkOrderStore {
       priority: WorkOrderPriority;
       pace: WorkOrderPace;
       runWhenQuotaAvailable: boolean;
+      paidApiFallbackEnabled?: boolean;
+      paidApiLimitUsd?: number | null;
     },
   ): WorkOrder {
     const workOrder = this.get(id);
@@ -1251,6 +1266,8 @@ export class WorkOrderStore {
       priority: WorkOrderPriority;
       pace: WorkOrderPace;
       runWhenQuotaAvailable: boolean;
+      paidApiFallbackEnabled?: boolean;
+      paidApiLimitUsd?: number | null;
       maxRunMinutes?: number;
     },
   ): WorkOrder {
@@ -1337,6 +1354,130 @@ export class WorkOrderStore {
         id,
       );
     return this.get(id)!;
+  }
+
+  recordBillingStarted(
+    id: string,
+    billingMode: "subscription" | "paid_api",
+  ): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    const now = new Date().toISOString();
+    const resourcePlan = {
+      ...workOrder.resourcePlan,
+      lastBillingMode: billingMode,
+      lastPaidApiRunAt:
+        billingMode === "paid_api" ? now : workOrder.resourcePlan.lastPaidApiRunAt,
+    };
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET resource_plan_json = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(JSON.stringify(resourcePlan), now, id);
+    return this.get(id)!;
+  }
+
+  getPaidApiBudgetSettings(): { monthlyBudgetUsd: number | null } {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'paid-api-monthly-budget-usd'",
+      )
+      .get();
+    if (!row) return { monthlyBudgetUsd: null };
+    const value = Number(row.value);
+    return {
+      monthlyBudgetUsd: Number.isFinite(value) && value > 0 ? value : null,
+    };
+  }
+
+  savePaidApiBudgetSettings(monthlyBudgetUsd: number | null): {
+    monthlyBudgetUsd: number | null;
+  } {
+    if (
+      monthlyBudgetUsd !== null &&
+      (!Number.isFinite(monthlyBudgetUsd) || monthlyBudgetUsd <= 0)
+    ) {
+      throw new Error("月度预算必须大于 0 美元");
+    }
+    if (monthlyBudgetUsd === null) {
+      this.database
+        .query("DELETE FROM local_preferences WHERE key = 'paid-api-monthly-budget-usd'")
+        .run();
+    } else {
+      this.database
+        .query(`
+          INSERT INTO local_preferences (key, value, updated_at)
+          VALUES ('paid-api-monthly-budget-usd', ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `)
+        .run(String(monthlyBudgetUsd), new Date().toISOString());
+    }
+    return this.getPaidApiBudgetSettings();
+  }
+
+  getPaidApiAttributionState(): PaidApiAttributionState {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'paid-api-attribution-state'",
+      )
+      .get();
+    return normalizePaidApiAttributionState(row?.value);
+  }
+
+  claimPaidApiAttribution(
+    workOrderId: string,
+    baselineUsd: number,
+    periodStart: string,
+    startedAt: string,
+  ): boolean {
+    if (!Number.isFinite(baselineUsd) || baselineUsd < 0) return false;
+    const state = this.getPaidApiAttributionState();
+    if (state.pending) return false;
+    this.savePaidApiAttributionState({
+      ...state,
+      pending: { workOrderId, baselineUsd, periodStart, startedAt },
+    });
+    return true;
+  }
+
+  cancelPaidApiAttribution(workOrderId: string): void {
+    const state = this.getPaidApiAttributionState();
+    if (state.pending?.workOrderId !== workOrderId) return;
+    this.savePaidApiAttributionState({ ...state, pending: null });
+  }
+
+  completePaidApiAttribution(
+    workOrderId: string,
+    amountUsd: number,
+    observedAt: string,
+    mode: "absolute" | "increment",
+  ): void {
+    if (!Number.isFinite(amountUsd) || amountUsd < 0) return;
+    const state = this.getPaidApiAttributionState();
+    if (state.pending?.workOrderId !== workOrderId) return;
+    const previous = state.observedByWorkOrder[workOrderId]?.amountUsd ?? 0;
+    this.savePaidApiAttributionState({
+      pending: null,
+      observedByWorkOrder: {
+        ...state.observedByWorkOrder,
+        [workOrderId]: {
+          amountUsd: mode === "increment" ? previous + amountUsd : amountUsd,
+          observedAt,
+        },
+      },
+    });
+  }
+
+  private savePaidApiAttributionState(state: PaidApiAttributionState): void {
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('paid-api-attribution-state', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(JSON.stringify(state), new Date().toISOString());
   }
 
   activeRunIds(): string[] {
@@ -3651,6 +3792,43 @@ function normalizeSourceSessions(
   }
 }
 
+function normalizePaidApiAttributionState(
+  value: string | undefined,
+): PaidApiAttributionState {
+  if (!value) return { pending: null, observedByWorkOrder: {} };
+  try {
+    const stored = JSON.parse(value) as Partial<PaidApiAttributionState>;
+    const pending = stored.pending;
+    const normalizedPending =
+      pending &&
+      typeof pending.workOrderId === "string" &&
+      typeof pending.baselineUsd === "number" &&
+      Number.isFinite(pending.baselineUsd) &&
+      pending.baselineUsd >= 0 &&
+      typeof pending.periodStart === "string" &&
+      typeof pending.startedAt === "string"
+        ? pending
+        : null;
+    const observedByWorkOrder: PaidApiAttributionState["observedByWorkOrder"] = {};
+    for (const [workOrderId, observation] of Object.entries(
+      stored.observedByWorkOrder ?? {},
+    )) {
+      if (
+        observation &&
+        typeof observation.amountUsd === "number" &&
+        Number.isFinite(observation.amountUsd) &&
+        observation.amountUsd >= 0 &&
+        typeof observation.observedAt === "string"
+      ) {
+        observedByWorkOrder[workOrderId] = observation;
+      }
+    }
+    return { pending: normalizedPending, observedByWorkOrder };
+  } catch {
+    return { pending: null, observedByWorkOrder: {} };
+  }
+}
+
 function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {
   if (!value) {
     return {
@@ -3658,6 +3836,10 @@ function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {
       pace: "balanced",
       runWhenQuotaAvailable: false,
       autoRunReason: null,
+      paidApiFallbackEnabled: false,
+      paidApiLimitUsd: null,
+      lastPaidApiRunAt: null,
+      lastBillingMode: null,
     };
   }
   try {
@@ -3674,6 +3856,19 @@ function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {
         typeof stored.autoRunReason === "string" && stored.autoRunReason.trim()
           ? stored.autoRunReason
           : null,
+      paidApiFallbackEnabled: stored.paidApiFallbackEnabled === true,
+      paidApiLimitUsd:
+        typeof stored.paidApiLimitUsd === "number" &&
+        Number.isFinite(stored.paidApiLimitUsd) &&
+        stored.paidApiLimitUsd > 0
+          ? stored.paidApiLimitUsd
+          : null,
+      lastPaidApiRunAt:
+        typeof stored.lastPaidApiRunAt === "string" ? stored.lastPaidApiRunAt : null,
+      lastBillingMode:
+        stored.lastBillingMode === "subscription" || stored.lastBillingMode === "paid_api"
+          ? stored.lastBillingMode
+          : null,
     };
   } catch {
     return {
@@ -3681,6 +3876,10 @@ function normalizeResourcePlan(value: string | null): WorkOrderResourcePlan {
       pace: "balanced",
       runWhenQuotaAvailable: false,
       autoRunReason: null,
+      paidApiFallbackEnabled: false,
+      paidApiLimitUsd: null,
+      lastPaidApiRunAt: null,
+      lastBillingMode: null,
     };
   }
 }
@@ -3734,6 +3933,8 @@ function validateResourcePlan(value: {
   priority: WorkOrderPriority;
   pace: WorkOrderPace;
   runWhenQuotaAvailable: boolean;
+  paidApiFallbackEnabled?: boolean;
+  paidApiLimitUsd?: number | null;
 }): void {
   if (
     !workOrderPriorities.includes(value.priority) ||
@@ -3741,6 +3942,23 @@ function validateResourcePlan(value: {
     typeof value.runWhenQuotaAvailable !== "boolean"
   ) {
     throw new Error("资源方案格式无法识别");
+  }
+  if (
+    value.paidApiFallbackEnabled === true &&
+    (typeof value.paidApiLimitUsd !== "number" ||
+      !Number.isFinite(value.paidApiLimitUsd) ||
+      value.paidApiLimitUsd <= 0)
+  ) {
+    throw new Error("启用付费 API 前，请设置大于 0 美元的目标限额");
+  }
+  if (
+    value.paidApiLimitUsd !== undefined &&
+    value.paidApiLimitUsd !== null &&
+    (typeof value.paidApiLimitUsd !== "number" ||
+      !Number.isFinite(value.paidApiLimitUsd) ||
+      value.paidApiLimitUsd <= 0)
+  ) {
+    throw new Error("目标限额必须大于 0 美元");
   }
 }
 
@@ -3750,6 +3968,8 @@ function updatedResourcePlan(
     priority: WorkOrderPriority;
     pace: WorkOrderPace;
     runWhenQuotaAvailable: boolean;
+    paidApiFallbackEnabled?: boolean;
+    paidApiLimitUsd?: number | null;
   },
 ): WorkOrderResourcePlan {
   validateResourcePlan(input);
@@ -3760,6 +3980,14 @@ function updatedResourcePlan(
     autoRunReason: input.runWhenQuotaAvailable
       ? workOrder.resourcePlan.autoRunReason
       : null,
+    paidApiFallbackEnabled:
+      input.paidApiFallbackEnabled ?? workOrder.resourcePlan.paidApiFallbackEnabled,
+    paidApiLimitUsd:
+      input.paidApiLimitUsd === undefined
+        ? workOrder.resourcePlan.paidApiLimitUsd
+        : input.paidApiLimitUsd,
+    lastPaidApiRunAt: workOrder.resourcePlan.lastPaidApiRunAt,
+    lastBillingMode: workOrder.resourcePlan.lastBillingMode,
   };
 }
 

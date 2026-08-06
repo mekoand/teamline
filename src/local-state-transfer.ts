@@ -74,7 +74,10 @@ type ExportedWorkOrder = {
   revisionNote: string | null;
   workspace: WorkOrderWorkspace | null;
   materials: WorkOrderMaterial[];
-  resourcePlan: WorkOrderResourcePlan;
+  resourcePlan: Pick<
+    WorkOrderResourcePlan,
+    "priority" | "pace" | "runWhenQuotaAvailable" | "autoRunReason"
+  >;
   maxRunMinutes: number;
   sourceSessions: WorkOrderImportSource[];
   importContext: WorkOrderImportContext | null;
@@ -429,7 +432,12 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     revisionNote: workOrder.revisionNote,
     workspace: workOrder.workspace,
     materials: workOrder.materials,
-    resourcePlan: workOrder.resourcePlan,
+    resourcePlan: {
+      priority: workOrder.resourcePlan.priority,
+      pace: workOrder.resourcePlan.pace,
+      runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
+      autoRunReason: workOrder.resourcePlan.autoRunReason,
+    },
     maxRunMinutes: workOrder.maxRunMinutes,
     sourceSessions: workOrder.sourceSessions.map(exportSessionSource),
     importContext: workOrder.importContext,
@@ -1431,6 +1439,10 @@ function parseResourcePlan(value: unknown): WorkOrderResourcePlan {
     pace: oneOf(plan.pace, workOrderPaces),
     runWhenQuotaAvailable: boolean(plan.runWhenQuotaAvailable),
     autoRunReason: nullableString(plan.autoRunReason),
+    paidApiFallbackEnabled: false,
+    paidApiLimitUsd: null,
+    lastPaidApiRunAt: null,
+    lastBillingMode: null,
   };
 }
 

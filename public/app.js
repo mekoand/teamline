@@ -1121,15 +1121,22 @@ function renderResourceWorkspace() {
       </header>
       <section class="resource-overview">
         ${renderCodexResourceCard(resources.codex, resources.runningCount)}
-        ${renderApiResourceCard(resources.openaiApi)}
+        ${renderApiResourceCard(resources.openaiApi, resources.paidApi)}
       </section>
       ${Array.isArray(resources.codexAccounts) ? renderCodexAccountQuota(resources.codexAccounts) : ""}
       <section class="resource-runtime-panel">
         <div><p class="overline">运行设置</p><h2>本机并发</h2></div>
-        <label class="resource-concurrency-control" title="同时运行的目标上限">
-          <span>最大并发目标数</span>
-          <input id="max-concurrency" type="number" min="1" step="1" value="${state.executionSettings.maxConcurrency}" inputmode="numeric" aria-label="本机最大并发数" />
-        </label>
+        <div class="resource-runtime-controls">
+          <label class="resource-concurrency-control" title="同时运行的目标上限">
+            <span>最大并发目标数</span>
+            <input id="max-concurrency" type="number" min="1" step="1" value="${state.executionSettings.maxConcurrency}" inputmode="numeric" aria-label="本机最大并发数" />
+          </label>
+          <form id="paid-api-budget-form" class="resource-budget-control">
+            <label><span>API 月度预算</span><input name="monthlyBudgetUsd" type="number" min="0.01" step="0.01" value="${resources.paidApi?.budget?.monthlyBudgetUsd ?? ""}" placeholder="未设置" inputmode="decimal" aria-label="API 月度预算（美元）" /></label>
+            <button class="text-button" type="submit">保存</button>
+          </form>
+        </div>
+        ${resources.paidApi?.pending ? `<div class="paid-api-pending"><span>上一笔 API 费用仍在回传，新的付费执行已暂缓。</span><button class="text-button" type="button" data-clear-paid-api-pending="${escapeHtml(resources.paidApi.pending.workOrderId)}">确认无待回传费用并解除</button></div>` : ""}
       </section>
       <section class="resource-orders-panel">
         <div class="section-heading compact">
@@ -1224,14 +1231,15 @@ function renderQuotaWindow(label, window) {
   return `<div><span>${label}</span><strong>${formatRemaining(window)}</strong><small>${formatReset(window.resetsAt)}</small></div>`;
 }
 
-function renderApiResourceCard(api) {
+function renderApiResourceCard(api, paidApi) {
   const available = api.status === "available" && api.usage;
   return `
     <article class="resource-card ${available ? "available" : "unavailable"}">
-      <div class="resource-card-heading"><div><p class="overline">OpenAI API</p><h2>${available ? "账户用量" : resourceStatusLabel(api.status)}</h2></div><span class="subtle-label">可选连接</span></div>
+      <div class="resource-card-heading"><div><p class="overline">OpenAI API</p><h2>${available ? "账户用量" : resourceStatusLabel(api.status)}</h2></div><span class="subtle-label">${paidApi?.available ? "可用于付费执行" : "仅显示用量"}</span></div>
       ${available
         ? `<strong class="account-usage">${formatUsage(api.usage)}</strong><p class="resource-message">${scopeLabel(api.scope)}账户用量</p>`
         : `<p class="resource-message">${escapeHtml(api.message || "连接后可查看 API 用量和费用")}</p>`}
+      ${paidApi?.budget?.monthlyBudgetUsd ? `<p class="resource-message compact">月度预算 ${formatUsage({ amount: paidApi.budget.monthlyBudgetUsd, unit: "usd" })}。用量可能延迟，达到限额后停止后续节点。</p>` : ""}
     </article>`;
 }
 
@@ -1261,7 +1269,14 @@ function renderResourceOrder(workOrder) {
       ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : workOrder.status === "completed" ? '<p class="source-import-only">已完成目标保留当时的资源设置。</p>' : `<label class="auto-run-toggle">
         <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} ${locked ? "disabled" : ""} />
         <span><strong>额度充足时运行</strong><small>${escapeHtml(workOrder.autoRunReason || "每次只开始一轮，并受本轮时长限制")}</small></span>
-      </label>`}
+      </label>
+      <div class="paid-api-row">
+        <label class="auto-run-toggle compact">
+          <input type="checkbox" data-resource-paid-api data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.paidApiFallbackEnabled ? "checked" : ""} ${locked ? "disabled" : ""} />
+          <span><strong>订阅额度不足时使用付费 API</strong><small>默认关闭，只依据实际用量继续</small></span>
+        </label>
+        <label><span>目标限额（美元）</span><input data-resource-paid-limit data-work-order-id="${escapeHtml(workOrder.id)}" type="number" min="0.01" step="0.01" value="${workOrder.paidApiLimitUsd ?? ""}" placeholder="未设置" ${locked ? "disabled" : ""} /></label>
+      </div>`}
     </article>`;
 }
 
@@ -1273,8 +1288,10 @@ function resourceOptions(options, selected) {
 
 function bindResourceEvents() {
   document.querySelector("#max-concurrency")?.addEventListener("change", saveMaxConcurrency);
+  document.querySelector("#paid-api-budget-form")?.addEventListener("submit", savePaidApiBudget);
+  document.querySelector("[data-clear-paid-api-pending]")?.addEventListener("click", clearPaidApiPending);
   document.querySelector("#add-identity-form")?.addEventListener("submit", createAndLoginIdentity);
-  document.querySelectorAll("[data-resource-priority], [data-resource-pace], [data-resource-auto-run]")
+  document.querySelectorAll("[data-resource-priority], [data-resource-pace], [data-resource-auto-run], [data-resource-paid-api], [data-resource-paid-limit]")
     .forEach((control) => control.addEventListener("change", () => saveResourcePlan(control.dataset.workOrderId)));
   document.querySelectorAll("[data-login-identity]").forEach((button) => {
     button.addEventListener("click", () => startIdentityLogin(button.dataset.loginIdentity));
@@ -1282,6 +1299,29 @@ function bindResourceEvents() {
   document.querySelectorAll("[data-refresh-identity]").forEach((button) => {
     button.addEventListener("click", () => refreshExecutionIdentity(button.dataset.refreshIdentity, button));
   });
+}
+
+async function clearPaidApiPending(event) {
+  const button = event.currentTarget;
+  const workOrderId = button.dataset.clearPaidApiPending;
+  if (!workOrderId) return;
+  const confirmed = window.confirm(
+    "只有确认这次执行没有尚未回传的 API 费用时再解除。解除后，其他付费执行可能继续。",
+  );
+  if (!confirmed) return;
+  setBusy(button, "解除中…");
+  try {
+    await requestJson("/api/resources/paid-api-attribution/clear", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workOrderId, confirmNoPendingCharge: true }),
+    });
+    await refreshConsole({ polling: true });
+  } catch (error) {
+    resetBusy(button, "确认无待回传费用并解除");
+    state.resourceError = messageFrom(error, "无法解除 API 用量等待");
+    renderConsole();
+  }
 }
 
 async function createAndLoginIdentity(event) {
@@ -1470,8 +1510,10 @@ async function saveResourcePlan(id) {
   const priority = document.querySelector(`[data-resource-priority][data-work-order-id="${CSS.escape(id)}"]`);
   const pace = document.querySelector(`[data-resource-pace][data-work-order-id="${CSS.escape(id)}"]`);
   const autoRun = document.querySelector(`[data-resource-auto-run][data-work-order-id="${CSS.escape(id)}"]`);
-  if (!priority || !pace || !autoRun) return;
-  for (const control of [priority, pace, autoRun]) control.disabled = true;
+  const paidApi = document.querySelector(`[data-resource-paid-api][data-work-order-id="${CSS.escape(id)}"]`);
+  const paidLimit = document.querySelector(`[data-resource-paid-limit][data-work-order-id="${CSS.escape(id)}"]`);
+  if (!priority || !pace || !autoRun || !paidApi || !paidLimit) return;
+  for (const control of [priority, pace, autoRun, paidApi, paidLimit]) control.disabled = true;
   try {
     await requestJson(`/api/work-orders/${encodeURIComponent(id)}/resource-plan`, {
       method: "PUT",
@@ -1480,6 +1522,8 @@ async function saveResourcePlan(id) {
         priority: priority.value,
         pace: pace.value,
         runWhenQuotaAvailable: autoRun.checked,
+        paidApiFallbackEnabled: paidApi.checked,
+        paidApiLimitUsd: paidLimit.value ? Number(paidLimit.value) : null,
       }),
     });
     if (autoRun.checked) {
@@ -1489,6 +1533,25 @@ async function saveResourcePlan(id) {
   } catch (error) {
     state.resourceError = messageFrom(error, "无法保存资源安排");
     await refreshConsole({ polling: true });
+  }
+}
+
+async function savePaidApiBudget(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  const value = new FormData(event.currentTarget).get("monthlyBudgetUsd");
+  setBusy(button, "保存中…");
+  try {
+    await requestJson("/api/resources/paid-api-budget", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ monthlyBudgetUsd: value ? Number(value) : null }),
+    });
+    await refreshConsole({ polling: true });
+  } catch (error) {
+    resetBusy(button, "保存");
+    state.resourceError = messageFrom(error, "无法保存 API 月度预算");
+    renderConsole();
   }
 }
 
@@ -2168,6 +2231,11 @@ function renderGoalResourceSettings(workOrder) {
           <input type="checkbox" name="runWhenQuotaAvailable" ${plan.runWhenQuotaAvailable ? "checked" : ""} ${resourceEditable ? "" : "disabled"} />
           <span><strong>额度充足时运行</strong><small>${escapeHtml(autoRunCopy)}</small></span>
         </label>
+        <label class="auto-run-toggle compact">
+          <input type="checkbox" name="paidApiFallbackEnabled" ${plan.paidApiFallbackEnabled ? "checked" : ""} ${resourceEditable ? "" : "disabled"} />
+          <span><strong>订阅额度不足时使用付费 API</strong><small>需要全局月度预算和当前目标限额</small></span>
+        </label>
+        <label><span>当前目标付费限额（美元）</span><input name="paidApiLimitUsd" type="number" min="0.01" step="0.01" value="${plan.paidApiLimitUsd ?? ""}" placeholder="未设置" ${resourceEditable ? "" : "disabled"} /></label>
         ${runLimitEditable ? "" : '<p class="muted">单轮上限只能在待运行时修改。</p>'}
         ${resourceEditable
           ? '<button class="secondary-button full-button" type="submit">保存资源设置</button>'
@@ -2807,6 +2875,8 @@ function bindRenderedEvents() {
           priority: data.get("priority"),
           pace: data.get("pace"),
           runWhenQuotaAvailable: data.get("runWhenQuotaAvailable") === "on",
+          paidApiFallbackEnabled: data.get("paidApiFallbackEnabled") === "on",
+          paidApiLimitUsd: data.get("paidApiLimitUsd") ? Number(data.get("paidApiLimitUsd")) : null,
           ...(data.has("maxRunMinutes")
             ? { maxRunMinutes: Number(data.get("maxRunMinutes")) }
             : {}),
