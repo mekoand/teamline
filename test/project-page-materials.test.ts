@@ -376,7 +376,7 @@ describe("project page and project materials", () => {
     }
   });
 
-  test("round-trips project materials in bundle v3 while keeping v2 compatible", () => {
+  test("round-trips project materials in bundle v4 while keeping v2 compatible", () => {
     const source = fixture();
     const target = fixture();
     try {
@@ -401,7 +401,7 @@ describe("project page and project materials", () => {
       });
 
       const bundle = new LocalStateTransfer(source.store).export();
-      expect(bundle.version).toBe(3);
+      expect(bundle.version).toBe(4);
       expect(bundle.projectMaterials).toEqual([material]);
 
       const transfer = new LocalStateTransfer(target.store);
@@ -453,14 +453,20 @@ describe("project page and project materials", () => {
         workOrders: bundle.workOrders.map(({
           projectMaterialSelectionConfirmed: _projectMaterialSelectionConfirmed,
           importContext: _importContext,
+          executionIdentityId: _executionIdentityId,
+          sessionIdentityId: _sessionIdentityId,
+          sessionHandoff: _sessionHandoff,
+          result: _result,
           ...workOrder
         }) => ({
           ...workOrder,
           materials: workOrder.materials.map(({ projectMaterialId: _projectMaterialId, ...item }) => item),
         })),
         projectMaterials: undefined,
+        executionIdentities: undefined,
       };
       delete (legacyV2 as { projectMaterials?: unknown }).projectMaterials;
+      delete (legacyV2 as { executionIdentities?: unknown }).executionIdentities;
       const legacyTarget = fixture();
       try {
         const legacyPreview = new LocalStateTransfer(legacyTarget.store).preview(legacyV2);
