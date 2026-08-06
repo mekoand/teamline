@@ -89,6 +89,8 @@ type AppDependencies = {
     delayMs: number,
   ) => () => void;
   autoRunRetryMs?: number;
+  backgroundNow?: () => number;
+  wakeDetectionThresholdMs?: number;
   codexSessionProvider?: CodexSessionProvider;
   codexSessionProviderForIdentity?: (
     identity: ExecutionIdentity,
@@ -134,6 +136,8 @@ export function createApp({
   checkpointManager,
   autoRunRetryScheduler = scheduleTimeout,
   autoRunRetryMs = 60_000,
+  backgroundNow = Date.now,
+  wakeDetectionThresholdMs = Math.max(autoRunRetryMs, 5_000),
   codexSessionProvider,
   codexSessionProviderForIdentity,
   claudeCodeSessionProvider,
@@ -173,7 +177,9 @@ export function createApp({
   let autoRunCheckInFlight:
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
+  let backgroundRefreshInFlight: Promise<unknown> | null = null;
   let cancelAutoRunTimer: (() => void) | null = null;
+  let closed = false;
   let handleRequest!: (request: Request) => Promise<Response>;
   let scheduleAutoRunCheck!: (delayMs?: number) => void;
 
@@ -621,6 +627,23 @@ export function createApp({
     );
   };
 
+  const refreshExecutionIdentityStatus = async () => {
+    if (!executionIdentityEnvironment) return;
+    await Promise.all(
+      store
+        .listExecutionIdentities()
+        .filter((identity) => identity.status === "enabled")
+        .map(async (identity) => {
+          try {
+            const observation = await executionIdentityEnvironment.inspect(identity);
+            store.recordExecutionIdentityObservation(identity.id, observation);
+          } catch {
+            // Keep the last known account state when a wake refresh cannot inspect it.
+          }
+        }),
+    );
+  };
+
   const readResourceSnapshot = async () => {
     let snapshot;
     try {
@@ -648,6 +671,9 @@ export function createApp({
     return snapshot;
   };
   const runAutoRunOnce = () => {
+    if (closed) {
+      return Promise.resolve({ startedWorkOrderId: null, reason: "服务已关闭" });
+    }
     if (autoRunCheckInFlight) return autoRunCheckInFlight;
     cancelAutoRunTimer?.();
     cancelAutoRunTimer = null;
@@ -664,11 +690,6 @@ export function createApp({
         store.saveAutoRunReason(id, reason);
       }
       if (!decision.candidateId) {
-        if (
-          [...decision.reasons.values()].some((reason) => reason?.startsWith("额度"))
-        ) {
-          scheduleAutoRunCheck(autoRunRetryMs);
-        }
         return { startedWorkOrderId: null, reason: null };
       }
 
@@ -694,16 +715,20 @@ export function createApp({
       return { startedWorkOrderId: decision.candidateId, reason: null };
     })().finally(() => {
       autoRunCheckInFlight = null;
+      scheduleAutoRunCheck(autoRunRetryMs);
     });
     return autoRunCheckInFlight;
   };
   scheduleAutoRunCheck = (delayMs = 0) => {
+    if (closed) return;
     if (
       !store
         .list()
         .some(
           (workOrder) =>
-            workOrder.resourcePlan.runWhenQuotaAvailable && !isImportOnlyWorkOrder(workOrder),
+            workOrder.resourcePlan.runWhenQuotaAvailable &&
+            !isImportOnlyWorkOrder(workOrder) &&
+            (workOrder.status === "ready" || workOrder.status === "running"),
         )
     ) {
       cancelAutoRunTimer?.();
@@ -716,11 +741,18 @@ export function createApp({
       cancelAutoRunTimer = null;
     }
     let active = true;
+    const expectedAt = backgroundNow() + delayMs;
     const cancel = autoRunRetryScheduler(() => {
       if (!active) return;
       active = false;
       cancelAutoRunTimer = null;
-      void runAutoRunOnce();
+      const wokeFromSleep = backgroundNow() - expectedAt > wakeDetectionThresholdMs;
+      backgroundRefreshInFlight = (wokeFromSleep
+        ? refreshExecutionIdentityStatus().then(runAutoRunOnce)
+        : runAutoRunOnce()).finally(() => {
+          backgroundRefreshInFlight = null;
+        });
+      void backgroundRefreshInFlight.catch(() => undefined);
     }, delayMs);
     cancelAutoRunTimer = () => {
       if (!active) return;
@@ -2522,7 +2554,9 @@ export function createApp({
           );
         }
         try {
-          return Response.json({ workOrder: store.confirmDelivered(id) });
+          const workOrder = store.confirmDelivered(id);
+          scheduleAutoRunCheck();
+          return Response.json({ workOrder });
         } catch {
           return Response.json(
             { code: "WORK_ORDER_NOT_IN_REVIEW", error: "只有待验收的目标可以确认交付" },
@@ -3206,7 +3240,19 @@ export function createApp({
       return new Response("Not found", { status: 404 });
   };
   scheduleAutoRunCheck();
-  return { fetch: handleRequest };
+  return {
+    fetch: handleRequest,
+    async close() {
+      if (closed) return;
+      closed = true;
+      cancelAutoRunTimer?.();
+      cancelAutoRunTimer = null;
+      await Promise.all([
+        autoRunCheckInFlight?.catch(() => undefined),
+        backgroundRefreshInFlight?.catch(() => undefined),
+      ]);
+    },
+  };
 }
 
 async function consumeRunEvents(

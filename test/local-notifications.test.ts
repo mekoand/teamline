@@ -103,7 +103,7 @@ describe("local work-order notifications", () => {
       new Request("http://teamline.local/api/notification-settings"),
     );
     expect(await defaults.json()).toEqual({
-      settings: { autoRunStarted: true, autoRunStopped: true },
+      settings: { autoRunStarted: false, autoRunStopped: false },
     });
 
     const saved = await app.fetch(
@@ -150,6 +150,28 @@ describe("local work-order notifications", () => {
     ]);
   });
 
+  test("keeps completed history in the console without claiming it as a native notice", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const workOrder = externalWorkOrder(store);
+    store.completeExternalStage(workOrder.id, workOrder.plan!.stages[0]!.id, {
+      conclusion: "设计稿已经完成",
+    });
+    store.confirmDelivered(workOrder.id);
+    const app = createApp({ store });
+
+    const history = await app.fetch(
+      new Request("http://teamline.local/api/notifications"),
+    );
+    expect((await history.json()).notifications).toEqual([
+      expect.objectContaining({ kind: "completed", workOrderId: workOrder.id }),
+    ]);
+
+    const claim = await app.fetch(
+      new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
+    );
+    expect(await claim.json()).toEqual({ notifications: [] });
+  });
+
   test("notification API retains unread notices and marks only the opened work order read", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const first = externalWorkOrder(store);
@@ -178,7 +200,7 @@ describe("local work-order notifications", () => {
 
   test("an authorized auto-run records one start and one stop notice for its run", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
-    const created = store.create({ repositoryPath: "/tmp/teamline-source", goal: "自动执行" });
+    const created = store.create({ repositoryPath: tmpdir(), goal: "自动执行" });
     const ready = store.savePlan(created.id, [
       { outcome: "完成自动执行", scope: "src", verification: "人工检查" },
     ]);
@@ -187,6 +209,7 @@ describe("local work-order notifications", () => {
       pace: "balanced",
       runWhenQuotaAvailable: true,
     });
+    store.saveNotificationSettings({ autoRunStarted: true, autoRunStopped: true });
     let release!: () => void;
     const released = new Promise<void>((resolve) => {
       release = resolve;

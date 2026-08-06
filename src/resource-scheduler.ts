@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   RESOURCE_SIGNAL_STALE_AFTER_MS,
@@ -121,6 +121,7 @@ function blockingReason(
   }
   if (workOrder.status !== "ready" || !workOrder.plan) return "等待确认计划";
   if (!workOrder.workspace) return "等待选择工作空间";
+  if (!workspaceAvailable(workOrder.workspace.path)) return "工作空间不可用，等待重新检查";
   if (!hasRunnableStage(workOrder)) return "等待前置节点完成";
   if (!Number.isFinite(workOrder.maxRunMinutes) || workOrder.maxRunMinutes <= 0) {
     return "等待确认单轮运行上限";
@@ -143,6 +144,14 @@ function blockingReason(
     return "工作空间正在使用";
   }
   return null;
+}
+
+function workspaceAvailable(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function hasRunnableExternalStage(workOrder: WorkOrder): boolean {

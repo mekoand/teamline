@@ -72,6 +72,7 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   server.stop(true);
+  await app.close();
   await executionIdentityEnvironment.close();
   store.database.close();
 };
