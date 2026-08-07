@@ -4247,13 +4247,15 @@ button {
   .console-shell {
     grid-template-columns: 260px minmax(430px, 1fr);
   }
+}
 
+@media (max-width: 1120px) and (min-width: 980px) {
   .console-shell.context-open {
     grid-template-columns: 260px minmax(430px, 1fr) 290px;
   }
 }
 
-@media (max-width: 880px) {
+@media (max-width: 979px) {
   .console-shell.context-open,
   .console-shell.context-open.view-home,
   .console-shell.context-open.view-projects {

@@ -122,6 +122,9 @@ describe("personal console", () => {
     expect(script).toContain('event.key !== "Escape"');
     expect(script).toContain('contextElement.querySelector(\'[data-busy="true"]\')');
     expect(inspectorResponse.status).toBe(200);
+    expect(styles).toContain("@media (max-width: 1120px) and (min-width: 980px)");
+    expect(styles).toContain("@media (max-width: 979px)");
+    expect(styles).not.toContain("@media (max-width: 880px) {\n  .console-shell.context-open");
     expect(styles).toContain("@media (max-width: 680px)");
     expect(styles).toContain(".console-shell.context-open .context-backdrop");
     expect(styles).toContain("width: min(360px, calc(100vw - 28px))");
