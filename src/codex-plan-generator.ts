@@ -140,6 +140,8 @@ function buildPrompt(workOrder: WorkOrder): string {
     ? `\n导入会话整理结果（仅作为历史上下文，不是未来执行计划）：\n${JSON.stringify({
         summary: workOrder.importContext.summary,
         currentState: workOrder.importContext.currentState,
+        completedHighlights: workOrder.importContext.completedHighlights,
+        nextAction: workOrder.importContext.nextAction,
         historicalStages: workOrder.importContext.historicalStages,
         artifacts: workOrder.importContext.artifacts,
       })}`

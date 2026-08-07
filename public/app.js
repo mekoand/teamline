@@ -1684,6 +1684,7 @@ function renderImportedHistorySurface(workOrder, feedback) {
     error: "来源会话尚未整理。",
   };
   const ready = context.status === "ready";
+  const pending = context.status === "pending";
   const updateAvailable = state.sourceStatus?.hasUpdates;
   return `
     <section class="map-panel primary-work-surface import-history-surface">
@@ -1705,10 +1706,13 @@ function renderImportedHistorySurface(workOrder, feedback) {
                   ? renderExecutionTimeline(workOrder, [], context.historicalStages)
                   : `<div class="execution-map-graph structured-map">${context.historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}</div>`}`
              : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}`
-        : `<div class="plan-empty"><p>${escapeHtml(context.error || "来源会话等待整理。")}</p></div>`}
+        : pending
+          ? '<div class="plan-empty"><p>历史正在后台整理，完成后会自动更新。</p></div>'
+          : `<div class="plan-empty"><p>${escapeHtml(context.error || "历史整理失败，可以重试。")}</p></div>`}
       <div class="import-history-actions">
         ${ready && !isImportOnlyGoal(workOrder) ? '<button class="primary-button" data-continue-imported-goal type="button">继续这个目标</button>' : ""}
-        <button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>
+        ${pending ? "" : `<button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>`}
+        ${context.status === "failed" ? '<button class="text-button danger-text" data-delete-imported-goal type="button">删除目标</button>' : ""}
       </div>
       <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
     </section>`;
@@ -2271,7 +2275,10 @@ function renderImportedSessionContext(workOrder) {
           ),
         }, "当前执行会话") : ""}
       </div>
-      <button class="secondary-button full-button" data-reorganize-sessions type="button">${context.status === "ready" ? "重新整理来源" : "重试整理"}</button>
+      ${context.status === "pending"
+        ? '<p class="muted">历史正在后台整理。</p>'
+        : `<button class="secondary-button full-button" data-reorganize-sessions type="button">${context.status === "ready" ? "重新整理来源" : "重试整理"}</button>`}
+      ${context.status === "failed" ? '<button class="text-button danger-text" data-delete-imported-goal type="button">删除目标</button>' : ""}
       <p class="inline-feedback" id="session-entry-feedback" role="status"></p>
     </details>`;
 }
@@ -2741,6 +2748,22 @@ function bindRenderedEvents() {
       } catch (error) {
         resetBusy(button, state.selected.importContext?.status === "ready" ? "重新整理来源" : "重试整理");
         setFeedback("plan-feedback", messageFrom(error, "无法整理来源会话"), true);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-delete-imported-goal]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm("删除这个整理失败的目标？来源会话不会被删除。")) return;
+      setBusy(button, "正在删除…");
+      try {
+        await requestJson(`/api/work-orders/${encodedSelectedId()}`, { method: "DELETE" });
+        state.selected = null;
+        history.pushState({}, "", "/");
+        await refreshConsole();
+      } catch (error) {
+        resetBusy(button, "删除目标");
+        setFeedback("plan-feedback", messageFrom(error, "无法删除这个目标"), true);
       }
     });
   });
@@ -3465,7 +3488,8 @@ function scheduleRefresh() {
   }
   if (
     state.workOrders.some((workOrder) =>
-      ["running", "stopping", "verifying"].includes(workOrder.runStatus),
+      ["running", "stopping", "verifying"].includes(workOrder.runStatus) ||
+      workOrder.importContext?.status === "pending",
     )
   ) {
     state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 2_000);

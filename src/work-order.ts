@@ -128,6 +128,8 @@ export type WorkOrderImportContext = {
   status: "pending" | "ready" | "failed";
   summary: string | null;
   currentState: string | null;
+  completedHighlights?: string[];
+  nextAction?: string | null;
   historicalStages: ImportedHistoricalStage[];
   artifacts: PlanReference[];
   organizedAt: string | null;
@@ -377,7 +379,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     goal,
     acceptance,
     status: "draft",
-    currentSummary: input.importContext ? "正在整理来源会话" : "等待生成计划",
+    currentSummary: input.importContext ? "正在整理历史" : "等待生成计划",
     plan: null,
     pendingClarification: null,
     conversation: [],

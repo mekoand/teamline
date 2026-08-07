@@ -391,15 +391,17 @@ describe("V2 main-flow regression", () => {
       const imported = await responseJson(importedResponse);
       expect(importedResponse.status).toBe(201);
       expect(imported).toMatchObject({
-        outcome: "ready",
+        outcome: "pending",
         workOrder: {
           status: "draft",
           projectId: project.project.id,
-          importContext: {
-            status: "ready",
-            historicalStages: [{ id: "history-design", status: "completed" }],
-          },
+          importContext: { status: "pending" },
         },
+      });
+      await waitFor(() => store.get(imported.workOrder.id)?.importContext?.status === "ready");
+      expect(store.get(imported.workOrder.id)?.importContext).toMatchObject({
+        status: "ready",
+        historicalStages: [{ id: "history-design", status: "completed" }],
       });
       expect(organizationCalls).toBe(1);
 
