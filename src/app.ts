@@ -119,6 +119,10 @@ class PlanGenerationTimeoutError extends Error {}
 const staticFiles: Record<string, { path: string; type: string }> = {
   "/": { path: "public/index.html", type: "text/html; charset=utf-8" },
   "/app.js": { path: "public/app.js", type: "text/javascript; charset=utf-8" },
+  "/context-inspector.js": {
+    path: "public/context-inspector.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/result-artifacts.js": {
     path: "public/result-artifacts.js",
     type: "text/javascript; charset=utf-8",
@@ -2919,10 +2923,10 @@ export function createApp({
         }
         try {
           const body = (await request.json()) as { path?: string; reveal?: boolean };
-          const artifactPath = resolveOrdinaryFolderArtifact(workOrder, body.path);
+          const artifactPath = resolveCollectedArtifact(workOrder, body.path);
           if (!artifactPath) {
             return Response.json(
-              { code: "INVALID_ARTIFACT_PATH", error: "找不到这个普通文件夹成果" },
+              { code: "INVALID_ARTIFACT_PATH", error: "找不到这个成果文件" },
               { status: 400 },
             );
           }
@@ -4503,12 +4507,17 @@ function canonicalWorkspacePath(workspacePath: string): string {
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
 }
 
-function resolveOrdinaryFolderArtifact(
+function resolveCollectedArtifact(
   workOrder: WorkOrder,
   requestedPath: unknown,
 ): string | null {
+  const rootPath = workOrder.workspace?.kind === "directory"
+    ? workOrder.worktreePath || workOrder.workspace.path
+    : workOrder.workspace?.kind === "git"
+      ? workOrder.worktreePath
+      : null;
   if (
-    workOrder.workspace?.kind !== "directory" ||
+    !rootPath ||
     typeof requestedPath !== "string" ||
     !requestedPath.trim()
   ) {
@@ -4520,7 +4529,7 @@ function resolveOrdinaryFolderArtifact(
   );
   if (!reference) return null;
   try {
-    const root = realpathSync(workOrder.worktreePath || workOrder.workspace.path);
+    const root = realpathSync(rootPath);
     const artifactPath = realpathSync(reference.location);
     const childPath = relative(root, artifactPath);
     if (!childPath || childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath)) {

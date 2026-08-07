@@ -133,7 +133,7 @@ pre {
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template: 58px minmax(0, 1fr) / 292px minmax(470px, 1fr) 330px;
+  grid-template: 58px minmax(0, 1fr) / 292px minmax(470px, 1fr);
   background: var(--bg);
 }
 
@@ -1740,9 +1740,22 @@ textarea {
 }
 
 .context-panel {
+  display: none;
   padding: 24px 20px 44px;
   border-left: 1px solid var(--line);
   background: var(--panel);
+}
+
+.context-backdrop {
+  display: none;
+}
+
+.console-shell.context-open {
+  grid-template-columns: 292px minmax(470px, 1fr) 330px;
+}
+
+.console-shell.context-open .context-panel {
+  display: block;
 }
 
 .context-heading {
@@ -1752,6 +1765,10 @@ textarea {
 .context-heading h2 {
   margin-top: 5px;
   font-size: 17px;
+}
+
+.context-close-button {
+  flex: 0 0 auto;
 }
 
 .context-stage h3 {
@@ -1827,6 +1844,21 @@ textarea {
   font-size: 10px;
 }
 
+.result-artifact-card {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+
+.result-artifact-card:hover {
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.result-artifact-card small {
+  color: var(--accent);
+}
+
 .artifact-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1888,6 +1920,40 @@ textarea {
 
 .context-action form {
   margin-top: 18px;
+}
+
+.goal-context-button {
+  flex: 0 0 auto;
+}
+
+.primary-action-slot .context-action {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.primary-action-slot .context-action > p:last-child,
+.primary-action-slot .context-action > strong:last-child {
+  margin-bottom: 0;
+}
+
+.workspace-support .context-support {
+  margin-top: 20px;
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.goal-material-list {
+  margin-top: 14px;
+}
+
+.artifact-context-list dd,
+.artifact-context-list code {
+  overflow-wrap: anywhere;
 }
 
 .recovery-actions .secondary-button {
@@ -3927,14 +3993,6 @@ button {
     display: block;
   }
 
-  .console-shell.mobile-context-open .work-order-workspace {
-    display: none;
-  }
-
-  .console-shell.mobile-context-open .context-panel {
-    display: block;
-  }
-
   .console-shell.view-resources .context-panel {
     display: none;
   }
@@ -4185,5 +4243,68 @@ button {
 
   .context-heading h2 {
     max-width: 300px;
+  }
+}
+
+/* Context inspector */
+@media (max-width: 1120px) and (min-width: 881px) {
+  .console-shell {
+    grid-template-columns: 260px minmax(430px, 1fr);
+  }
+}
+
+@media (max-width: 1120px) and (min-width: 980px) {
+  .console-shell.context-open {
+    grid-template-columns: 260px minmax(430px, 1fr) 290px;
+  }
+}
+
+@media (max-width: 979px) {
+  .console-shell.context-open,
+  .console-shell.context-open.view-home,
+  .console-shell.context-open.view-projects {
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+
+  .console-shell.context-open .context-backdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 58px 0 0;
+    display: block;
+    background: rgba(25, 27, 24, 0.24);
+  }
+
+  .console-shell.context-open .context-panel {
+    position: fixed;
+    z-index: 31;
+    top: 58px;
+    right: 0;
+    bottom: 0;
+    display: block;
+    width: min(360px, calc(100vw - 28px));
+    overflow: auto;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    box-shadow: var(--shadow);
+  }
+}
+
+@media (max-width: 680px) {
+  .console-shell.context-open,
+  .console-shell.context-open.view-home,
+  .console-shell.context-open.view-projects {
+    grid-template: 58px minmax(0, 1fr) / minmax(0, 1fr);
+  }
+
+  .console-shell.context-open .work-order-workspace {
+    display: block;
+  }
+
+  .workspace-heading {
+    align-items: flex-start;
+  }
+
+  .goal-context-button {
+    width: 100%;
   }
 }

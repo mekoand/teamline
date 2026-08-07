@@ -65,9 +65,19 @@
         <div class="loading-state">正在读取本地目标…</div>
       </main>
 
-      <aside id="context-panel" class="context-panel" aria-label="详情">
-        <div class="loading-state">正在准备详情…</div>
-      </aside>
+      <button
+        id="context-backdrop"
+        class="context-backdrop"
+        type="button"
+        aria-label="关闭上下文检查栏"
+        tabindex="-1"
+      ></button>
+      <aside
+        id="context-panel"
+        class="context-panel"
+        aria-label="上下文检查栏"
+        aria-hidden="true"
+      ></aside>
     </div>
 
     <dialog id="create-dialog">

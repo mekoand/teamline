@@ -1,4 +1,12 @@
 import { gitArtifactPaths } from "./result-artifacts.js";
+import {
+  clearContextInspector,
+  closeContextInspector,
+  createContextInspectorState,
+  refreshContextInspector,
+  selectContextInspector,
+  setContextInspectorBusy,
+} from "./context-inspector.js";
 
 const visibleStatusLabels = {
   planning: "规划中",
@@ -40,7 +48,7 @@ const state = {
   homeHistoryFilter: "7",
   primaryView: null,
   progressView: "map",
-  mobileContextOpen: false,
+  inspector: createContextInspectorState(),
   events: [],
   executionSettings: { maxConcurrency: 2 },
   resources: null,
@@ -70,6 +78,7 @@ const listElement = document.querySelector("#work-order-list");
 const countElement = document.querySelector("#work-order-count");
 const workspaceElement = document.querySelector("#work-order-workspace");
 const contextElement = document.querySelector("#context-panel");
+const contextBackdrop = document.querySelector("#context-backdrop");
 const createDialog = document.querySelector("#create-dialog");
 const createForm = document.querySelector("#create-form");
 const formError = document.querySelector("#form-error");
@@ -167,6 +176,11 @@ function bindShellEvents() {
   document.querySelector("#create-project-select").addEventListener("change", refreshCreateProjectMaterials);
   createForm.querySelector('[name="name"]').addEventListener("blur", refreshCreateProjectMaterials);
   createForm.querySelector('[name="description"]').addEventListener("blur", refreshCreateProjectMaterials);
+  contextBackdrop.addEventListener("click", () => dismissContextInspector());
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    dismissContextInspector();
+  });
   window.addEventListener("popstate", () => {
     resetGoalSelection();
     refreshConsole();
@@ -187,7 +201,17 @@ function resetGoalSelection() {
   state.primaryView = null;
   state.progressView = "map";
   state.contextTab = "artifacts";
-  state.mobileContextOpen = false;
+  state.inspector = clearContextInspector();
+}
+
+function openContextInspector(selection) {
+  state.inspector = selectContextInspector(state.inspector, selection);
+}
+
+function dismissContextInspector() {
+  if (!state.inspector.open || state.inspector.busy) return;
+  state.inspector = closeContextInspector(state.inspector);
+  renderConsole();
 }
 
 function closeLocalState() {
@@ -377,6 +401,7 @@ async function refreshConsole({
       const { workOrder } = detail;
       state.selected = workOrder;
       state.sourceStatus = detail.sourceStatus ?? null;
+      state.inspector = refreshContextInspector(state.inspector);
       await refreshGoalProjectMaterials(workOrder);
       const requestedStageId = selectedStageFromPath();
       if (requestedStageId) {
@@ -386,6 +411,7 @@ async function refreshConsole({
         if (requestedStageIndex >= 0) {
           state.selectedStageIndex = requestedStageIndex;
           state.followCurrentStage = false;
+          openContextInspector({ type: "stage", id: requestedStageId });
           const canonicalUrl = new URL(window.location.href);
           canonicalUrl.searchParams.delete("stage");
           history.replaceState(
@@ -564,6 +590,7 @@ async function openLocalNotification(notification) {
     notificationDialog.close();
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
+    state.inspector = clearContextInspector();
     history.pushState({}, "", notification.targetUrl);
     await refreshConsole();
   }
@@ -623,8 +650,11 @@ function renderConsole(feedback = "") {
     isProjectsView() ? "view-projects" : "",
     isResourceView() ? "view-resources" : "",
     state.selected ? "view-goal" : "",
-    state.mobileContextOpen ? "mobile-context-open" : "",
+    state.inspector.open ? "context-open" : "",
   ].filter(Boolean).join(" ");
+  contextElement.setAttribute("aria-hidden", String(!state.inspector.open));
+  contextElement.setAttribute("aria-busy", String(state.inspector.busy));
+  contextElement.toggleAttribute("inert", state.inspector.busy);
   document.querySelector("#open-all-goals")?.classList.toggle("selected", isAllGoalsView());
   document.querySelector("#open-projects")?.classList.toggle("selected", isProjectsView());
   document.querySelector("#open-resources")?.classList.toggle("selected", isResourceView());
@@ -642,7 +672,7 @@ function renderConsole(feedback = "") {
   }
   if (isResourceView()) {
     workspaceElement.innerHTML = renderResourceWorkspace();
-    contextElement.innerHTML = renderResourceContext();
+    contextElement.innerHTML = "";
     document.querySelector("#retry-resources")?.addEventListener("click", () => {
       state.resourceError = "";
       state.resources = null;
@@ -660,18 +690,13 @@ function renderConsole(feedback = "") {
         <p>写下目标，生成计划，再确认并开始。</p>
         <button class="primary-button" id="empty-create" type="button">新建目标</button>
       </section>`;
-    contextElement.innerHTML = `
-      <section class="context-empty">
-        <p class="overline">详情</p>
-        <h2>等待选择</h2>
-        <p>新建目标后，这里显示当前节点和下一步操作。</p>
-      </section>`;
+    contextElement.innerHTML = "";
     document.querySelector("#empty-create")?.addEventListener("click", () => createDialog.showModal());
     return;
   }
 
   workspaceElement.innerHTML = renderWorkspace(state.selected, feedback);
-  contextElement.innerHTML = renderContext(state.selected);
+  contextElement.innerHTML = state.inspector.open ? renderContext(state.selected) : "";
   bindRenderedEvents();
 }
 
@@ -1006,12 +1031,14 @@ async function createProject(event) {
 function openProject(id) {
   history.pushState({}, "", `/projects/${encodeURIComponent(id)}`);
   state.projectDetail = null;
+  state.inspector = clearContextInspector();
   refreshConsole();
 }
 
 function openProjects() {
   history.pushState({}, "", "/projects");
   state.projectDetail = null;
+  state.inspector = clearContextInspector();
   refreshConsole();
 }
 
@@ -1619,18 +1646,14 @@ function renderWorkspace(workOrder, feedback) {
           <h1>${escapeHtml(workOrder.title)}</h1>
           <p>${escapeHtml(workOrder.currentSummary)}</p>
         </div>
+        <button class="secondary-button goal-context-button" id="open-goal-context" type="button">目标信息</button>
       </header>
-      <button class="secondary-button mobile-context-button" id="open-goal-context" type="button">${mobileContextActionLabel(workOrder)}</button>
+      <div class="primary-action-slot">${renderContextAction(workOrder)}</div>
       ${renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback)}
+      <div class="workspace-support">${renderContextSupport(workOrder)}</div>
+      <p class="inline-feedback" id="execution-feedback" role="status"></p>
+      <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
-}
-
-function mobileContextActionLabel(workOrder) {
-  if (isImportOnlyGoal(workOrder)) return "查看来源会话";
-  if (workOrder.pendingClarification) return "处理待回答问题";
-  if (workOrder.status === "review") return "查看验收操作";
-  if (workOrder.status === "interrupted") return "处理下一步";
-  return workOrder.plan?.stages?.length ? "查看当前节点详情" : "查看目标详情";
 }
 
 function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
@@ -1861,7 +1884,6 @@ function renderExecutionMap(workOrder, stages) {
           ${historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}
           ${stages.map((stage, index) => renderMapNode(workOrder, stage, index, stageById, singleStage)).join("")}
         </div>`}
-    ${renderTechnicalActivity(workOrder)}
     ${workOrder.runStatus && stages.every((stage) => stage.status === "planning")
       ? '<p class="map-evidence-note">暂未收到节点进展，计划状态保持不变。</p>'
       : ""}`;
@@ -2101,7 +2123,7 @@ function renderResultPanel(workOrder) {
         ${workOrder.workspace?.kind === "directory" ? '<p class="result-artifact-note">本轮新建或修改的文件，最多显示 100 项。</p>' : ""}
         <div class="result-artifact-grid">
           ${resultData.artifacts.length
-            ? resultData.artifacts.map((reference) => renderReference(reference, workOrder)).join("")
+            ? resultData.artifacts.map((reference) => renderResultArtifactCard(reference)).join("")
             : '<p class="result-empty">没有识别到单独的产物引用，请在工作空间中查看本轮变化。</p>'}
         </div>
       </section>
@@ -2132,6 +2154,16 @@ function renderResultPanel(workOrder) {
         <pre>${escapeHtml(workOrder.result.git.statusShort || "工作区没有未提交变化")}</pre>
       </details>
     </section>`;
+}
+
+function renderResultArtifactCard(reference) {
+  return `
+    <button class="reference-card result-artifact-card" type="button" data-result-artifact="${escapeHtml(reference.location)}">
+      <span>${escapeHtml(referenceTypeLabel(reference.type))}</span>
+      <strong>${escapeHtml(reference.label)}</strong>
+      <code>${escapeHtml(reference.location)}</code>
+      <small>查看详情</small>
+    </button>`;
 }
 
 function collectResultViewData(workOrder, historical) {
@@ -2177,30 +2209,111 @@ function gitArtifactReferences(workOrder) {
 }
 
 function renderContext(workOrder) {
-  const presentation = visibleStatus(workOrder, state.workOrders);
-  const stages = isImportOnlyGoal(workOrder)
-    ? []
-    : state.draftStages ?? workOrder.plan?.stages ?? [];
-  const selectedIndex = Math.min(state.selectedStageIndex, Math.max(0, stages.length - 1));
+  const selection = state.inspector.selection;
+  if (!selection || selection.type === "goal") return renderGoalContext(workOrder);
+  if (selection.type === "artifact") return renderArtifactContext(workOrder, selection.id);
+
+  const stages = state.draftStages ?? workOrder.plan?.stages ?? [];
+  const selectedIndex = stages.findIndex((stage) => stage.id === selection.id);
   const stage = stages[selectedIndex];
+  if (!stage) return renderUnavailableContext();
+  state.selectedStageIndex = selectedIndex;
   return `
     <section class="context-content">
-      <button class="mobile-back-button" id="back-to-goal" type="button">‹ 返回目标</button>
       <div class="context-heading">
-        <div><p class="overline">${stage ? `节点 ${selectedIndex + 1}` : "目标详情"}</p><h2>${escapeHtml(workOrder.title)}</h2></div>
-        <span class="status-dot ${stage?.status ?? presentation.status}" title="${escapeHtml(stage?.statusReason ?? presentation.reason)}"></span>
+        <div><p class="overline">节点 ${selectedIndex + 1}</p><h2>${escapeHtml(stage.outcome)}</h2></div>
+        ${renderContextCloseButton()}
       </div>
+      ${renderContextTabs()}
+      ${renderContextTabContent(workOrder, stage)}
+      <div class="context-section">${renderTechnicalActivity(workOrder) || '<p class="muted">这个节点还没有工具调用或技术日志。</p>'}</div>
+    </section>`;
+}
 
-      ${stage ? renderContextTabs() : ""}
-      ${stage ? renderContextTabContent(workOrder, stage) : `<p class="context-summary">${escapeHtml(workOrder.goal)}</p>`}
+function renderGoalContext(workOrder) {
+  return `
+    <section class="context-content">
+      <div class="context-heading">
+        <div><p class="overline">目标</p><h2>补充信息</h2></div>
+        ${renderContextCloseButton()}
+      </div>
+      ${renderGoalMaterials(workOrder)}
       ${workOrder.importContext ? renderImportedSessionContext(workOrder) : ""}
       ${renderGoalProjectContext(workOrder)}
       ${renderGoalResourceSettings(workOrder)}
-      ${renderContextAction(workOrder)}
-      ${renderContextSupport(workOrder)}
-      <p class="inline-feedback" id="execution-feedback" role="status"></p>
-      <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
+}
+
+function renderGoalMaterials(workOrder) {
+  const materials = workOrder.materials ?? [];
+  return `
+    <details class="context-disclosure" ${materials.length ? "open" : ""}>
+      <summary>目标素材 · ${materials.length} 项</summary>
+      <div class="reference-list goal-material-list">
+        ${materials.length
+          ? materials.map((material) => `
+              <article class="reference-card">
+                <span>${escapeHtml(projectMaterialKindLabel(material.kind))}</span>
+                <strong>${escapeHtml(material.value)}</strong>
+              </article>`).join("")
+          : '<p class="muted">这个目标还没有单独添加素材。</p>'}
+      </div>
+    </details>`;
+}
+
+function renderArtifactContext(workOrder, artifactId) {
+  const historical = workOrder.result?.planVersion !== workOrder.plan?.version;
+  const artifacts = workOrder.result ? collectResultViewData(workOrder, historical).artifacts : [];
+  const reference = artifacts.find((artifact) => artifact.location === artifactId);
+  if (!reference) return renderUnavailableContext();
+  const canOpen = canOpenResultArtifact(workOrder, reference);
+  return `
+    <section class="context-content">
+      <div class="context-heading">
+        <div><p class="overline">成果</p><h2>${escapeHtml(reference.label)}</h2></div>
+        ${renderContextCloseButton()}
+      </div>
+      <dl class="context-list artifact-context-list">
+        <div><dt>类型</dt><dd>${escapeHtml(referenceTypeLabel(reference.type))}</dd></div>
+        <div><dt>来源</dt><dd>${escapeHtml(artifactSourceLabel(workOrder, reference))}</dd></div>
+        <div><dt>位置</dt><dd><code>${escapeHtml(reference.location)}</code></dd></div>
+      </dl>
+      ${canOpen
+        ? `<div class="artifact-actions context-section"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>`
+        : '<p class="context-summary context-section">成果保留在原位置，当前无法直接从 Teamline 打开。</p>'}
+    </section>`;
+}
+
+function canOpenResultArtifact(workOrder, reference) {
+  return (workOrder.workspace?.kind === "directory" ||
+      (workOrder.workspace?.kind === "git" && Boolean(workOrder.worktreePath))) &&
+    reference.type === "file" &&
+    (workOrder.result?.artifacts ?? []).some(
+      (artifact) => artifact.type === "file" && artifact.location === reference.location,
+    );
+}
+
+function artifactSourceLabel(workOrder, reference) {
+  const stage = workOrder.plan?.stages?.find((candidate) =>
+    candidate.artifacts?.some((artifact) => artifact.location === reference.location),
+  );
+  if (stage) return `执行节点 · ${stage.outcome}`;
+  if (workOrder.importContext?.artifacts?.some((artifact) => artifact.location === reference.location)) {
+    return "来源会话";
+  }
+  return "目标成果";
+}
+
+function renderUnavailableContext() {
+  return `
+    <section class="context-content context-empty">
+      <div class="context-heading"><div><p class="overline">补充信息</p><h2>内容已更新</h2></div>${renderContextCloseButton()}</div>
+      <p>这个对象已经不在当前目标中，请重新选择。</p>
+    </section>`;
+}
+
+function renderContextCloseButton() {
+  return '<button class="icon-button context-close-button" id="close-context-inspector" type="button" aria-label="关闭上下文检查栏">×</button>';
 }
 
 function renderGoalResourceSettings(workOrder) {
@@ -2492,12 +2605,7 @@ function cleanCompletionSummary(summary) {
 }
 
 function renderReference(reference, workOrder) {
-  const canOpen =
-    workOrder?.workspace?.kind === "directory" &&
-    reference.type === "file" &&
-    (workOrder.result?.artifacts ?? []).some(
-      (artifact) => artifact.type === "file" && artifact.location === reference.location,
-    );
+  const canOpen = workOrder ? canOpenResultArtifact(workOrder, reference) : false;
   return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
 }
 
@@ -2646,17 +2754,19 @@ function renderContextAction(workOrder) {
 function bindRenderedEvents() {
   document.querySelector("#back-to-all-goals")?.addEventListener("click", openAllGoals);
   document.querySelector("#open-goal-context")?.addEventListener("click", () => {
-    state.mobileContextOpen = true;
+    openContextInspector({ type: "goal", id: state.selected.id });
     renderConsole();
   });
-  document.querySelector("#back-to-goal")?.addEventListener("click", () => {
-    state.mobileContextOpen = false;
-    renderConsole();
-  });
+  document.querySelector("#close-context-inspector")?.addEventListener("click", dismissContextInspector);
   document.querySelectorAll("[data-primary-view]").forEach((button) => {
     button.addEventListener("click", () => {
       state.primaryView = button.dataset.primaryView;
-      state.mobileContextOpen = false;
+      renderConsole();
+    });
+  });
+  document.querySelectorAll("[data-result-artifact]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openContextInspector({ type: "artifact", id: button.dataset.resultArtifact });
       renderConsole();
     });
   });
@@ -2692,7 +2802,8 @@ function bindRenderedEvents() {
     button.addEventListener("click", () => {
       state.selectedStageIndex = Number(button.dataset.stageIndex);
       state.followCurrentStage = false;
-      state.mobileContextOpen = matchMedia("(max-width: 680px)").matches;
+      const stage = state.selected?.plan?.stages?.[state.selectedStageIndex];
+      if (stage) openContextInspector({ type: "stage", id: stage.id });
       renderConsole();
     });
   });
@@ -2905,6 +3016,7 @@ function bindRenderedEvents() {
             : {}),
         }),
       });
+      resetBusy(button, "保存资源设置");
       await acceptWorkOrderResult(result.workOrder, "资源设置已保存。");
     } catch (error) {
       resetBusy(button, "保存资源设置");
@@ -2941,6 +3053,7 @@ function bindRenderedEvents() {
           }),
         },
       );
+      resetBusy(button, "标记节点完成");
       await acceptWorkOrderResult(result.workOrder, "外部节点已完成，后续节点可以继续。");
     } catch (error) {
       resetBusy(button, "标记节点完成");
@@ -3044,6 +3157,9 @@ function bindAction(selector, busyLabel, idleLabel, endpoint, pendingMessage) {
 async function acceptWorkOrderResult(workOrder, feedback = "") {
   state.draftStages = null;
   state.selected = workOrder;
+  state.inspector = setContextInspectorBusy(state.inspector, false);
+  contextElement.setAttribute("aria-busy", "false");
+  contextElement.toggleAttribute("inert", false);
   if (workOrder.runStatus === "running") state.followCurrentStage = true;
   await refreshConsole({ polling: true });
   if (feedback) setFeedback("plan-feedback", feedback, false);
@@ -3074,7 +3190,7 @@ async function createWorkOrder(event) {
     state.followCurrentStage = true;
   state.primaryView = null;
   state.progressView = "timeline";
-    state.mobileContextOpen = false;
+    state.inspector = clearContextInspector();
     await refreshConsole();
   } catch (error) {
     formError.textContent = messageFrom(error, "创建目标失败");
@@ -3237,7 +3353,7 @@ async function importSelectedSessions(event) {
       state.selectedStageIndex = 0;
       state.followCurrentStage = true;
       state.primaryView = null;
-      state.mobileContextOpen = false;
+      state.inspector = clearContextInspector();
     }
     await refreshConsole();
   } catch (error) {
@@ -3254,7 +3370,7 @@ async function selectWorkOrder(id) {
     state.followCurrentStage = true;
     state.contextTab = "artifacts";
     state.primaryView = null;
-    state.mobileContextOpen = false;
+    state.inspector = clearContextInspector();
     history.pushState({}, "", `/goals/${encodeURIComponent(id)}`);
   }
   try {
@@ -3451,6 +3567,7 @@ async function saveGoalProjectContext(event) {
       },
     );
     await refreshGoalProjectMaterials(workOrder);
+    resetBusy(button, "保存项目与素材");
     await acceptWorkOrderResult(workOrder);
   } catch (error) {
     resetBusy(button, "保存项目与素材");
@@ -3600,13 +3717,27 @@ function applyTheme(theme) {
 
 function setBusy(button, label) {
   if (!button) return;
+  if (button.closest("#context-panel")) {
+    button.dataset.contextInspectorBusy = "true";
+    state.inspector = setContextInspectorBusy(state.inspector, true);
+    contextElement.setAttribute("aria-busy", "true");
+    contextElement.toggleAttribute("inert", true);
+  }
   button.disabled = true;
+  button.dataset.busy = "true";
   button.textContent = label;
 }
 
 function resetBusy(button, label) {
   if (!button) return;
+  if (button.dataset.contextInspectorBusy === "true") {
+    delete button.dataset.contextInspectorBusy;
+    state.inspector = setContextInspectorBusy(state.inspector, false);
+    contextElement.setAttribute("aria-busy", "false");
+    contextElement.toggleAttribute("inert", false);
+  }
   button.disabled = false;
+  delete button.dataset.busy;
   button.textContent = label;
 }
 

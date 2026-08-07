@@ -4,8 +4,10 @@ import type {
   WorkOrder,
   WorkOrderResult,
 } from "./work-order";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { gitArtifactPaths } from "../public/result-artifacts.js";
 
 const maximumOutputLength = 4_000;
 
@@ -22,7 +24,9 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
       throw new Error("Git 目标缺少起始提交");
     }
 
-    const artifacts = await directoryArtifactReferences(workOrder);
+    const directoryArtifacts = workOrder.workspace?.kind === "directory"
+      ? await directoryArtifactReferences(workOrder)
+      : [];
     const verifications: VerificationResult[] = [];
     for (const stage of workOrder.plan.stages.filter(
       (candidate) => candidate.executionMethod === "codex",
@@ -67,6 +71,9 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
             statusShort: "结果保留在所选本地文件夹中",
           }
         : await gitSummary(workOrder.worktreePath, workOrder.baseCommit!);
+    const artifacts = workOrder.workspace?.kind === "directory"
+      ? directoryArtifacts
+      : gitResultArtifactReferences(workOrder, git.statusShort);
 
     return {
       planVersion: workOrder.plan.version,
@@ -76,6 +83,47 @@ export class LocalWorkOrderResultProcessor implements WorkOrderResultProcessor {
       completedAt: new Date().toISOString(),
     };
   }
+}
+
+function gitResultArtifactReferences(
+  workOrder: WorkOrder,
+  statusShort: string,
+): PlanReference[] {
+  if (!workOrder.worktreePath) return [];
+  let root: string;
+  try {
+    root = realpathSync(workOrder.worktreePath);
+  } catch {
+    return [];
+  }
+  const seen = new Set<string>();
+  const discovered = gitArtifactPaths(statusShort).flatMap((path, index) => {
+    try {
+      const artifactPath = realpathSync(join(root, path));
+      const childPath = relative(root, artifactPath);
+      if (
+        !childPath ||
+        childPath === ".." ||
+        childPath.startsWith(`..${sep}`) ||
+        isAbsolute(childPath) ||
+        !existsSync(artifactPath) ||
+        !statSync(artifactPath).isFile() ||
+        seen.has(artifactPath)
+      ) {
+        return [];
+      }
+      seen.add(artifactPath);
+      return [{
+        id: `git-result:${index}:${path}`,
+        type: "file" as const,
+        label: basename(path),
+        location: artifactPath,
+      }];
+    } catch {
+      return [];
+    }
+  });
+  return discovered.slice(0, maximumArtifacts);
 }
 
 const ignoredArtifactDirectories = new Set([
