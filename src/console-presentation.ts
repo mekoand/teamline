@@ -44,10 +44,23 @@ function presentStatus(
   }
   if (workOrder.importContext && !workOrder.plan) {
     if (workOrder.importContext.status === "pending") {
-      return { userStatus: "planning", statusReason: "正在整理来源会话" };
+      return { userStatus: "planning", statusReason: "正在整理历史" };
     }
     if (workOrder.importContext.status === "failed") {
-      return { userStatus: "planning", statusReason: "尚未整理" };
+      return {
+        userStatus: "planning",
+        statusReason: workOrder.importContext.error === "历史整理中断"
+          ? "历史整理中断"
+          : "历史整理失败",
+      };
+    }
+    if (workOrder.importContext.error) {
+      return {
+        userStatus: "planning",
+        statusReason: workOrder.importContext.error === "历史整理中断"
+          ? "历史整理中断"
+          : "历史整理失败",
+      };
     }
     return { userStatus: "planning", statusReason: "待生成后续计划" };
   }

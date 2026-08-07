@@ -6,9 +6,23 @@ import type {
   CodexSessionProvider,
 } from "../src/codex-session-discovery";
 import { WorkOrderStore } from "../src/work-order-store";
+import { presentConsoleWorkOrders } from "../src/console-presentation";
 
 function provider(read: () => CodexSessionDiscoveryResult): CodexSessionProvider {
   return { async discover() { return read(); } };
+}
+
+async function waitForImport(
+  store: WorkOrderStore,
+  id: string,
+  expected: "ready" | "failed" = "ready",
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const workOrder = store.get(id);
+    if (workOrder?.importContext?.status === expected) return workOrder;
+    await Bun.sleep(1);
+  }
+  throw new Error(`会话整理没有进入 ${expected}`);
 }
 
 const baseDiscovery: CodexSessionDiscoveryResult = {
@@ -42,6 +56,8 @@ const organized = {
   description: "完成设置页重构并整理发布说明",
   summary: "两个来源会话已经完成设计与主要实现，当前等待补齐验证。",
   currentState: "实现基本完成，验证尚未完成",
+  completedHighlights: ["设置页结构已确认", "主要页面已实现"],
+  nextAction: "补齐验证并确认发布结果",
   historicalStages: [
     {
       id: "design",
@@ -77,6 +93,211 @@ const singleSourceOrganization = {
 };
 
 describe("V2 single-goal Codex session import", () => {
+  test("creates the goal before background organization finishes", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    let scheduled: (() => void) | undefined;
+    let finishOrganization!: (value: typeof singleSourceOrganization) => void;
+    let organizerStarted = false;
+    const organization = new Promise<typeof singleSourceOrganization>((resolve) => {
+      finishOrganization = resolve;
+    });
+    const app = createApp({
+      store,
+      codexSessionProvider: provider(() => baseDiscovery),
+      sessionOrganizationScheduler(callback) { scheduled = callback; },
+      sessionOrganizer: {
+        async organize() {
+          organizerStarted = true;
+          return organization;
+        },
+      },
+    });
+
+    const response = await app.fetch(new Request("http://teamline.local/api/codex-sessions/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "后台整理目标", sessionIds: ["session-a"] }),
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.outcome).toBe("pending");
+    expect(organizerStarted).toBe(false);
+    expect(store.get(body.workOrder.id)?.currentSummary).toBe("正在整理历史");
+    expect(presentConsoleWorkOrders(store.list())[0]).toMatchObject({
+      userStatus: "planning",
+      statusReason: "正在整理历史",
+    });
+
+    scheduled?.();
+    await Bun.sleep(0);
+    expect(organizerStarted).toBe(true);
+    expect(store.get(body.workOrder.id)?.importContext?.status).toBe("pending");
+    finishOrganization(singleSourceOrganization);
+    const ready = await waitForImport(store, body.workOrder.id);
+    expect(ready.importContext).toMatchObject({ status: "ready" });
+  });
+
+  test("turns unfinished organization into a retryable interruption after restart", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const pending = store.create({
+      name: "中断的整理",
+      description: "中断的整理",
+      sourceSessions: [{
+        kind: "codex_session",
+        id: "session-a",
+        lastActiveAt: "2026-08-03T02:00:00.000Z",
+        version: 1,
+      }],
+      importContext: {
+        status: "pending",
+        summary: null,
+        currentState: null,
+        completedHighlights: [],
+        nextAction: null,
+        historicalStages: [],
+        artifacts: [],
+        organizedAt: null,
+        error: null,
+      },
+    });
+
+    createApp({ store });
+
+    expect(store.get(pending.id)?.importContext).toMatchObject({
+      status: "failed",
+      error: "历史整理中断",
+    });
+    expect(presentConsoleWorkOrders(store.list())[0]?.statusReason).toBe("历史整理中断");
+  });
+
+  test("bounds the new summary fields and accepts legacy contexts without them", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const app = createApp({
+      store,
+      codexSessionProvider: provider(() => baseDiscovery),
+      sessionOrganizer: {
+        async organize() {
+          return {
+            ...singleSourceOrganization,
+            description: `得到明确结果。${"不应进入目标".repeat(30)}`,
+            summary: "摘要".repeat(180),
+            currentState: "当前状态".repeat(40),
+            completedHighlights: Array.from({ length: 5 }, (_, index) =>
+              `已完成 ${index + 1} ${"内容".repeat(60)}`
+            ),
+            nextAction: "下一步".repeat(80),
+            historicalStages: Array.from({ length: 12 }, (_, index) => ({
+              id: `history-${index + 1}`,
+              outcome: `历史节点 ${index + 1} ${"名称".repeat(60)}`,
+              summary: "节点摘要".repeat(60),
+              status: "completed" as const,
+              sourceSessionIds: ["session-a"],
+            })),
+          };
+        },
+      },
+    });
+    const response = await app.fetch(new Request("http://teamline.local/api/codex-sessions/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "收紧整理字段", sessionIds: ["session-a"] }),
+    }));
+    const ready = await waitForImport(store, (await response.json()).workOrder.id);
+
+    expect(ready.description).toBe("得到明确结果。");
+    expect(ready.importContext?.summary.length).toBeLessThanOrEqual(240);
+    expect(ready.importContext?.currentState?.length).toBeLessThanOrEqual(100);
+    expect(ready.importContext?.completedHighlights).toHaveLength(3);
+    expect(ready.importContext?.completedHighlights.every((item) => item.length <= 80)).toBe(true);
+    expect(ready.importContext?.nextAction?.length).toBeLessThanOrEqual(100);
+    expect(ready.importContext?.historicalStages).toHaveLength(8);
+
+    const legacy = store.create({
+      name: "旧导入目标",
+      description: "旧导入目标",
+      sourceSessions: [{
+        kind: "codex_session",
+        id: "legacy-session",
+        lastActiveAt: "2026-08-01T00:00:00.000Z",
+        version: 1,
+      }],
+      importContext: {
+        status: "ready",
+        summary: "旧摘要",
+        currentState: "旧状态",
+        historicalStages: [],
+        artifacts: [],
+        organizedAt: "2026-08-01T01:00:00.000Z",
+        error: null,
+      } as never,
+    });
+    expect(store.get(legacy.id)?.importContext).toMatchObject({
+      completedHighlights: [],
+      nextAction: null,
+    });
+  });
+
+  test("upgrades a legacy import context when the source is reorganized", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const legacySource = {
+      ...baseDiscovery.sessions[0]!,
+      id: "legacy-session",
+      title: "旧来源会话",
+    };
+    const legacy = store.create({
+      name: "旧导入目标",
+      description: "旧导入目标",
+      sourceSessions: [{
+        kind: "codex_session",
+        id: legacySource.id,
+        lastActiveAt: legacySource.lastActiveAt,
+        version: 1,
+      }],
+      importContext: {
+        status: "ready",
+        summary: "旧摘要",
+        currentState: "旧状态",
+        historicalStages: [],
+        artifacts: [],
+        organizedAt: "2026-08-01T01:00:00.000Z",
+        error: null,
+      } as never,
+    });
+    const app = createApp({
+      store,
+      codexSessionProvider: provider(() => ({
+        ...baseDiscovery,
+        sessions: [legacySource],
+      })),
+      sessionOrganizer: {
+        async organize() {
+          return {
+            ...singleSourceOrganization,
+            completedHighlights: ["完成旧会话整理"],
+            nextAction: "生成后续计划",
+            historicalStages: singleSourceOrganization.historicalStages.map((stage) => ({
+              ...stage,
+              sourceSessionIds: [legacySource.id],
+            })),
+          };
+        },
+      },
+    });
+
+    const response = await app.fetch(new Request(
+      `http://teamline.local/api/work-orders/${legacy.id}/import-context/organize`,
+      { method: "POST" },
+    ));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).workOrder.importContext).toMatchObject({
+      status: "ready",
+      completedHighlights: ["完成旧会话整理"],
+      nextAction: "生成后续计划",
+    });
+  });
+
   test("combines multiple source sessions into one unstarted goal without a future plan", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const project = store.createProject("Personal Beta");
@@ -104,9 +325,11 @@ describe("V2 single-goal Codex session import", () => {
     const body = await response.json();
 
     expect(response.status).toBe(201);
-    expect(body.outcome).toBe("ready");
+    expect(body.outcome).toBe("pending");
     expect(store.list()).toHaveLength(1);
-    expect(body.workOrder).toMatchObject({
+    expect(body.workOrder.importContext).toMatchObject({ status: "pending" });
+    const ready = await waitForImport(store, body.workOrder.id);
+    expect(ready).toMatchObject({
       name: "发布 Personal Beta",
       description: organized.description,
       projectId: project.id,
@@ -125,11 +348,11 @@ describe("V2 single-goal Codex session import", () => {
         error: null,
       },
     });
-    expect(body.workOrder.sourceSessions).toEqual([
+    expect(ready.sourceSessions).toEqual([
       expect.objectContaining({ id: "session-a", lastReadAt: expect.any(String) }),
       expect.objectContaining({ id: "session-b", lastReadAt: expect.any(String) }),
     ]);
-    expect(JSON.stringify(body.workOrder)).not.toContain("session-a.jsonl");
+    expect(JSON.stringify(ready)).not.toContain("session-a.jsonl");
     expect(organizerInputs).toEqual([
       expect.objectContaining({
         name: "发布 Personal Beta",
@@ -164,10 +387,12 @@ describe("V2 single-goal Codex session import", () => {
     }));
 
     expect(response.status).toBe(201);
-    expect((await response.json()).workOrder.workspace).toEqual({
+    const workOrder = (await response.json()).workOrder;
+    expect(workOrder.workspace).toEqual({
       kind: "directory",
       path: "/tmp/shared-project",
     });
+    await waitForImport(store, workOrder.id);
   });
 
   test("continues a ready imported goal through the existing plan flow with an optional note", async () => {
@@ -202,7 +427,8 @@ describe("V2 single-goal Codex session import", () => {
         body: JSON.stringify({ name: "完成设置页", sessionIds: ["session-a"] }),
       },
     ));
-    const imported = (await importedResponse.json()).workOrder;
+    const importedGoal = (await importedResponse.json()).workOrder;
+    const imported = await waitForImport(store, importedGoal.id);
 
     const response = await app.fetch(new Request(
       `http://teamline.local/api/work-orders/${imported.id}/plan/generate`,
@@ -257,11 +483,12 @@ describe("V2 single-goal Codex session import", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "整理历史工作", sessionIds: ["session-a"] }),
     }));
-    const failed = await imported.json();
+    const pending = await imported.json();
+    const failedWorkOrder = await waitForImport(store, pending.workOrder.id, "failed");
 
     expect(imported.status).toBe(201);
-    expect(failed.outcome).toBe("failed");
-    expect(failed.workOrder).toMatchObject({
+    expect(pending.outcome).toBe("pending");
+    expect(failedWorkOrder).toMatchObject({
       status: "draft",
       plan: null,
       importContext: {
@@ -272,7 +499,7 @@ describe("V2 single-goal Codex session import", () => {
     });
 
     const retried = await app.fetch(new Request(
-      `http://teamline.local/api/work-orders/${failed.workOrder.id}/import-context/organize`,
+      `http://teamline.local/api/work-orders/${failedWorkOrder.id}/import-context/organize`,
       { method: "POST" },
     ));
     expect(retried.status).toBe(200);
@@ -281,6 +508,33 @@ describe("V2 single-goal Codex session import", () => {
       summary: organized.summary,
       error: null,
     });
+  });
+
+  test("deletes a failed import without deleting the source session", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const app = createApp({
+      store,
+      codexSessionProvider: provider(() => baseDiscovery),
+      sessionOrganizer: { async organize() { throw new Error("整理失败"); } },
+    });
+    const imported = await app.fetch(new Request("http://teamline.local/api/codex-sessions/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "可以删除", sessionIds: ["session-a"] }),
+    }));
+    const id = (await imported.json()).workOrder.id;
+    await waitForImport(store, id, "failed");
+
+    const deleted = await app.fetch(new Request(`http://teamline.local/api/work-orders/${id}`, {
+      method: "DELETE",
+    }));
+
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ deleted: true });
+    expect(store.get(id)).toBeNull();
+    expect(baseDiscovery.sessions.find((session) => session.id === "session-a")?.id).toBe(
+      "session-a",
+    );
   });
 
   test("preserves the last successful summary when reorganization fails", async () => {
@@ -302,6 +556,7 @@ describe("V2 single-goal Codex session import", () => {
       body: JSON.stringify({ name: "整理历史工作", sessionIds: ["session-a"] }),
     }));
     const id = (await imported.json()).workOrder.id;
+    await waitForImport(store, id);
     shouldFail = true;
 
     const response = await app.fetch(new Request(
@@ -329,7 +584,7 @@ describe("V2 single-goal Codex session import", () => {
       sessionOrganizer: {
         async organize() {
           organizations += 1;
-          return organized;
+          return singleSourceOrganization;
         },
       },
     });
@@ -339,6 +594,7 @@ describe("V2 single-goal Codex session import", () => {
       body: JSON.stringify({ name: "整理历史工作", sessionIds: ["session-a"] }),
     }));
     const id = (await imported.json()).workOrder.id;
+    await waitForImport(store, id);
     currentDiscovery = {
       ...baseDiscovery,
       sessions: baseDiscovery.sessions.map((session) => session.id === "session-a"

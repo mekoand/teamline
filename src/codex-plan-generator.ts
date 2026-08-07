@@ -6,6 +6,7 @@ import type { WorkOrder } from "./work-order";
 import { codexProcessEnvironment } from "./codex-environment";
 
 const schemaPath = resolve(import.meta.dir, "plan-output-schema.json");
+const planningModel = "gpt-5.6-sol";
 
 export class CodexPlanGenerator implements PlanGenerator {
   constructor(
@@ -33,6 +34,10 @@ export class CodexPlanGenerator implements PlanGenerator {
         [
           this.codexPath,
           "exec",
+          "--model",
+          planningModel,
+          "--config",
+          `model_reasoning_effort=${planningReasoningEffort(workOrder)}`,
           "--skip-git-repo-check",
           "--sandbox",
           "read-only",
@@ -94,6 +99,10 @@ export class CodexPlanGenerator implements PlanGenerator {
   }
 }
 
+function planningReasoningEffort(workOrder: WorkOrder): "medium" | "high" {
+  return workOrder.pendingClarification ? "high" : "medium";
+}
+
 function buildPrompt(workOrder: WorkOrder): string {
   const acceptance = workOrder.acceptance
     ? `\n完成要求：\n${workOrder.acceptance}`
@@ -140,6 +149,8 @@ function buildPrompt(workOrder: WorkOrder): string {
     ? `\n导入会话整理结果（仅作为历史上下文，不是未来执行计划）：\n${JSON.stringify({
         summary: workOrder.importContext.summary,
         currentState: workOrder.importContext.currentState,
+        completedHighlights: workOrder.importContext.completedHighlights,
+        nextAction: workOrder.importContext.nextAction,
         historicalStages: workOrder.importContext.historicalStages,
         artifacts: workOrder.importContext.artifacts,
       })}`

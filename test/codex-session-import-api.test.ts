@@ -14,6 +14,15 @@ function provider(result: CodexSessionDiscoveryResult): CodexSessionProvider {
   return { async discover() { return result; } };
 }
 
+async function waitForReadyImport(store: WorkOrderStore, id: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const workOrder = store.get(id);
+    if (workOrder?.importContext?.status === "ready") return workOrder;
+    await Bun.sleep(1);
+  }
+  throw new Error("会话整理没有完成");
+}
+
 const discovery: CodexSessionDiscoveryResult = {
   status: "partial",
   message: "部分会话信息不可用",
@@ -111,7 +120,8 @@ describe("Codex session import API", () => {
       },
     ));
     expect(importedResponse.status).toBe(201);
-    const imported = (await importedResponse.json()).workOrder;
+    const pending = (await importedResponse.json()).workOrder;
+    const imported = await waitForReadyImport(store, pending.id);
     expect(imported).toMatchObject({
       executionIdentityId: managedId,
       sourceSessions: [
@@ -170,9 +180,10 @@ describe("Codex session import API", () => {
     const body = await response.json();
 
     expect(response.status).toBe(201);
-    expect(body.outcome).toBe("ready");
+    expect(body.outcome).toBe("pending");
     expect(store.list()).toHaveLength(1);
-    expect(store.list()[0]).toMatchObject({
+    const ready = await waitForReadyImport(store, body.workOrder.id);
+    expect(ready).toMatchObject({
       name: "完成设置页面重构",
       importSource: {
         kind: "codex_session",
@@ -190,7 +201,7 @@ describe("Codex session import API", () => {
         summary: "设置页面已经完成主要重构",
       },
     });
-    expect(store.list()[0]?.materials).toEqual([]);
+    expect(ready.materials).toEqual([]);
     expect(store.list().some((workOrder) => workOrder.title.includes("产品文档"))).toBe(false);
     expect(starts).toBe(0);
   });
@@ -296,6 +307,8 @@ describe("Codex session import API", () => {
       );
       expect(response.status).toBe(201);
       const workOrderId = (await response.json()).workOrder.id;
+      await waitForReadyImport(firstStore, workOrderId);
+      await app.close();
       firstDatabase.close();
 
       const reopenedDatabase = new Database(databasePath);

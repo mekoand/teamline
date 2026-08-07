@@ -9,6 +9,8 @@ export type SessionOrganization = {
   description: string;
   summary: string;
   currentState: string;
+  completedHighlights?: string[];
+  nextAction?: string;
   historicalStages: WorkOrderImportContext["historicalStages"];
   artifacts: WorkOrderImportContext["artifacts"];
 };
@@ -28,6 +30,7 @@ export interface SessionOrganizer {
 }
 
 const schemaPath = resolve(import.meta.dir, "session-organization-schema.json");
+const organizationModel = "gpt-5.6-luna";
 
 export class CodexSessionOrganizer implements SessionOrganizer {
   constructor(private readonly codexPath = Bun.env.TEAMLINE_CODEX_PATH || "codex") {}
@@ -54,6 +57,10 @@ export class CodexSessionOrganizer implements SessionOrganizer {
         [
           this.codexPath,
           "exec",
+          "--model",
+          organizationModel,
+          "--config",
+          "model_reasoning_effort=medium",
           "--skip-git-repo-check",
           "--sandbox",
           "read-only",
@@ -151,10 +158,12 @@ function buildPrompt(input: SessionOrganizationInput): string {
 ${JSON.stringify(sources, null, 2)}
 
 请完整读取每个来源文件，再返回：
-- description：这个目标真正要得到的结果，适合作为后续生成计划的目标说明；
-- summary：简短的历史摘要；
-- currentState：现在已经做到哪里、还缺什么；
-- historicalStages：经过整理的少量关键历史节点。它们只是历史，不是未来可执行计划；每个节点引用实际相关的来源会话 ID；
+- description：一句面向结果的目标，不写历史过程、当前故障或解决方案，最多 120 个字符；
+- summary：供后续规划使用的内部历史摘要，最多 240 个字符；
+- currentState：一行说明现在做到哪里，最多 100 个字符；
+- completedHighlights：已经完成的关键内容，最多三项，每项最多 80 个字符；
+- nextAction：一行说明最合适的下一步，最多 100 个字符；
+- historicalStages：最多八个关键历史节点。节点名称最多 80 个字符，摘要最多 120 个字符；它们只是历史，不是未来可执行计划；每个节点引用实际相关的来源会话 ID；
 - artifacts：会话中明确出现的主要文件、文件夹、仓库、图片或链接。无法确认位置时不要猜。
 
 不要复制大段原始对话或日志，不要把每次工具调用当成节点。多个来源有冲突时在摘要中如实说明。只返回符合 JSON Schema 的结果。`;

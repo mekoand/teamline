@@ -1563,6 +1563,8 @@ export class WorkOrderStore {
       description: string;
       summary: string;
       currentState: string;
+      completedHighlights?: string[];
+      nextAction?: string;
       historicalStages: WorkOrderImportContext["historicalStages"];
       artifacts: PlanReference[];
     },
@@ -1577,16 +1579,29 @@ export class WorkOrderStore {
     if (JSON.stringify(expectedIds) !== JSON.stringify(observedIds)) {
       throw new Error("来源会话已经变化，请刷新后重试");
     }
-    const description = input.description.trim();
-    const summary = input.summary.trim();
-    const currentState = input.currentState.trim();
+    const description = conciseSentence(input.description, 120);
+    const summary = conciseText(input.summary, 240);
+    const currentState = conciseText(input.currentState, 100);
     if (!description || !summary || !currentState) {
       throw new Error("Codex 返回的会话整理结果不完整");
     }
     const historicalStages = normalizeImportedHistoricalStages(
       input.historicalStages,
       new Set(workOrder.sourceSessions.map((source) => source.id)),
+    ).slice(0, 8).map((stage) => ({
+      ...stage,
+      outcome: conciseText(stage.outcome, 80),
+      summary: conciseText(stage.summary, 120),
+    }));
+    const completedHighlights = conciseList(
+      input.completedHighlights ?? historicalStages
+        .filter((stage) => stage.status === "completed")
+        .map((stage) => stage.outcome),
+      3,
+      80,
     );
+    const nextAction = conciseText(input.nextAction ?? currentState, 100);
+    if (!nextAction) throw new Error("Codex 返回的会话整理结果不完整");
     const artifacts = normalizeReferences(input.artifacts);
     const now = new Date().toISOString();
     const sources = observedSources.map((source) => ({
@@ -1598,6 +1613,8 @@ export class WorkOrderStore {
       status: "ready",
       summary,
       currentState,
+      completedHighlights,
+      nextAction,
       historicalStages,
       artifacts,
       organizedAt: now,
@@ -1622,18 +1639,54 @@ export class WorkOrderStore {
     return this.get(id)!;
   }
 
+  markSessionOrganizationPending(id: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
+      throw new Error("这个目标没有可整理的来源会话");
+    }
+    const now = new Date().toISOString();
+    const importContext: WorkOrderImportContext = {
+      ...workOrder.importContext,
+      status: "pending",
+      error: null,
+    };
+    this.database
+      .query(`
+        UPDATE work_orders
+        SET import_context_json = ?, current_summary = '正在整理历史', updated_at = ?
+        WHERE id = ?
+      `)
+      .run(JSON.stringify(importContext), now, id);
+    return this.get(id)!;
+  }
+
+  markInterruptedSessionOrganizations(): WorkOrder[] {
+    return this.list()
+      .filter((workOrder) => workOrder.importContext?.status === "pending")
+      .map((workOrder) =>
+        this.markSessionOrganizationFailed(workOrder.id, "历史整理中断")
+      );
+  }
+
   markSessionOrganizationFailed(id: string, message: string): WorkOrder {
     const workOrder = this.get(id);
     if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
       throw new Error("这个目标没有可整理的来源会话");
     }
     const error = message.trim() || "Codex 暂时无法整理会话";
-    const importContext: WorkOrderImportContext = workOrder.importContext.status === "ready"
-      ? { ...workOrder.importContext, error }
+    const hasPreviousResult = Boolean(
+      workOrder.importContext.organizedAt &&
+      workOrder.importContext.summary &&
+      workOrder.importContext.currentState,
+    );
+    const importContext: WorkOrderImportContext = hasPreviousResult
+      ? { ...workOrder.importContext, status: "ready", error }
       : {
           status: "failed",
           summary: null,
           currentState: null,
+          completedHighlights: [],
+          nextAction: null,
           historicalStages: [],
           artifacts: [],
           organizedAt: null,
@@ -1648,13 +1701,35 @@ export class WorkOrderStore {
       `)
       .run(
         JSON.stringify(importContext),
-        workOrder.importContext.status === "ready"
-          ? workOrder.currentSummary
-          : "来源会话尚未整理",
+        hasPreviousResult
+          ? workOrder.importContext.currentState
+          : error === "历史整理中断"
+            ? "历史整理中断"
+            : "历史整理失败",
         now,
         id,
       );
     return this.get(id)!;
+  }
+
+  deleteFailedImportedWorkOrder(id: string): void {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    if (
+      workOrder.sourceSessions.length === 0 ||
+      workOrder.importContext?.status !== "failed" ||
+      workOrder.plan ||
+      workOrder.runStatus
+    ) {
+      throw new Error("只能删除历史整理失败且尚未运行的导入目标");
+    }
+    this.database.transaction(() => {
+      this.database.query("DELETE FROM local_notifications WHERE work_order_id = ?").run(id);
+      this.database.query("DELETE FROM work_order_conversation WHERE work_order_id = ?").run(id);
+      this.database.query("DELETE FROM work_order_checkpoints WHERE work_order_id = ?").run(id);
+      this.database.query("DELETE FROM run_events WHERE work_order_id = ?").run(id);
+      this.database.query("DELETE FROM work_orders WHERE id = ?").run(id);
+    })();
   }
 
   getProject(id: string): Project | null {
@@ -3703,6 +3778,27 @@ function sourceKey(source: Pick<WorkOrderImportSource, "kind" | "id">): string {
   return `${source.kind}:${source.id}`;
 }
 
+function conciseText(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  const text = value.replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function conciseSentence(value: unknown, maxLength: number): string {
+  const text = conciseText(value, maxLength);
+  const sentenceEnd = text.search(/[。！？!?]/);
+  return sentenceEnd >= 0 ? text.slice(0, sentenceEnd + 1) : text;
+}
+
+function conciseList(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => conciseText(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
 function normalizeImportContext(value: string | null): WorkOrderImportContext | null {
   if (!value) return null;
   try {
@@ -3711,6 +3807,11 @@ function normalizeImportContext(value: string | null): WorkOrderImportContext | 
       !["pending", "ready", "failed"].includes(stored.status ?? "") ||
       (stored.summary !== null && typeof stored.summary !== "string") ||
       (stored.currentState !== null && typeof stored.currentState !== "string") ||
+      (stored.completedHighlights !== undefined &&
+        (!Array.isArray(stored.completedHighlights) ||
+          stored.completedHighlights.some((item) => typeof item !== "string"))) ||
+      (stored.nextAction !== undefined && stored.nextAction !== null &&
+        typeof stored.nextAction !== "string") ||
       (stored.organizedAt !== null &&
         (typeof stored.organizedAt !== "string" || !Number.isFinite(Date.parse(stored.organizedAt)))) ||
       (stored.error !== null && typeof stored.error !== "string")
@@ -3727,6 +3828,10 @@ function normalizeImportContext(value: string | null): WorkOrderImportContext | 
       status: stored.status!,
       summary: stored.summary ?? null,
       currentState: stored.currentState ?? null,
+      completedHighlights: conciseList(stored.completedHighlights ?? [], 3, 80),
+      nextAction: stored.nextAction === null || stored.nextAction === undefined
+        ? null
+        : conciseText(stored.nextAction, 100) || null,
       historicalStages,
       artifacts: normalizeReferences(stored.artifacts ?? []),
       organizedAt: stored.organizedAt

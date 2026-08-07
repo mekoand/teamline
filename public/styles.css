@@ -2448,6 +2448,10 @@ dialog::backdrop {
   font-weight: 650;
 }
 
+.text-button.danger-text {
+  color: var(--danger);
+}
+
 .material-editor {
   margin: 20px 0 8px;
   padding: 16px;

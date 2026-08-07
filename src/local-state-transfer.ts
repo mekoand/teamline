@@ -1576,9 +1576,15 @@ function parseResult(value: unknown): WorkOrderResult | null {
 
 function parseImportContext(value: unknown): WorkOrderImportContext | null {
   if (value === null) return null;
-  const context = object(value, "会话整理结果格式无法识别");
+  const stored = object(value, "会话整理结果格式无法识别");
+  const context = {
+    ...stored,
+    completedHighlights: stored.completedHighlights ?? [],
+    nextAction: stored.nextAction ?? null,
+  };
   exactKeys(context, [
-    "status", "summary", "currentState", "historicalStages", "artifacts",
+    "status", "summary", "currentState", "completedHighlights", "nextAction",
+    "historicalStages", "artifacts",
     "organizedAt", "error",
   ]);
   const historicalStages = array(context.historicalStages, (item) => {
@@ -1599,6 +1605,8 @@ function parseImportContext(value: unknown): WorkOrderImportContext | null {
     status: oneOf(context.status, ["pending", "ready", "failed"] as const),
     summary: nullableString(context.summary),
     currentState: nullableString(context.currentState),
+    completedHighlights: array(context.completedHighlights, string, 3),
+    nextAction: nullableString(context.nextAction),
     historicalStages,
     artifacts: array(context.artifacts, parseReference, 10_000),
     organizedAt: context.organizedAt === null ? null : dateString(context.organizedAt),

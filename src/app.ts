@@ -101,6 +101,7 @@ type AppDependencies = {
   claudeCodeSessionProvider?: SessionProvider;
   sessionOrganizer?: SessionOrganizer;
   sessionOrganizationTimeoutMs?: number;
+  sessionOrganizationScheduler?: (callback: () => void) => void;
   dataDirectory?: string;
   executionIdentityEnvironment?: ExecutionIdentityEnvironment;
   openLocalArtifact?: (path: string, reveal: boolean) => Promise<void>;
@@ -147,6 +148,7 @@ export function createApp({
   claudeCodeSessionProvider,
   sessionOrganizer,
   sessionOrganizationTimeoutMs = 5 * 60 * 1000,
+  sessionOrganizationScheduler = scheduleBackgroundTask,
   dataDirectory = join(projectRoot, ".teamline"),
   executionIdentityEnvironment,
   openLocalArtifact = openLocalArtifactWithSystem,
@@ -154,6 +156,8 @@ export function createApp({
   const startingWorkOrderIds = new Set<string>();
   const planningWorkOrderIds = new Set<string>();
   const organizingWorkOrderIds = new Set<string>();
+  const organizationControllers = new Map<string, AbortController>();
+  const backgroundOrganizationPromises = new Set<Promise<unknown>>();
   const startingWorkspacePaths = new Map<string, string>();
   const startingExecutionIdentityIds = new Map<string, string>();
   const activeRuns = new Map<string, StartedCodexRun>();
@@ -186,6 +190,8 @@ export function createApp({
   let closed = false;
   let handleRequest!: (request: Request) => Promise<Response>;
   let scheduleAutoRunCheck!: (delayMs?: number) => void;
+
+  store.markInterruptedSessionOrganizations();
 
   const clearRunTimeout = (id: string) => {
     runTimeouts.get(id)?.();
@@ -277,14 +283,17 @@ export function createApp({
     return { outcome: "plan" as const, workOrder: saved };
   };
   const organizeImportedWorkOrder = async (id: string) => {
-    const workOrder = store.get(id);
+    let workOrder = store.get(id);
     if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
       throw new Error("这个目标没有可整理的来源会话");
     }
     if (organizingWorkOrderIds.has(id)) {
       throw new Error("来源会话正在整理，请稍候");
     }
+    workOrder = store.markSessionOrganizationPending(id);
     organizingWorkOrderIds.add(id);
+    const controller = new AbortController();
+    organizationControllers.set(id, controller);
     try {
       const sourceKinds = new Set(workOrder.sourceSessions.map((source) => source.kind));
       const sourceKind = workOrder.sourceSessions[0]!.kind;
@@ -315,7 +324,6 @@ export function createApp({
           }
           return { ...candidate, sourcePath: candidate.sourcePath };
         });
-        const controller = new AbortController();
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const organization = await Promise.race([
           sessionOrganizer.organize({
@@ -349,15 +357,35 @@ export function createApp({
           workOrder: store.applySessionOrganization(id, organization, observedSources),
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Codex 暂时无法整理会话";
+        const message = controller.signal.aborted || closed
+          ? "历史整理中断"
+          : error instanceof Error
+            ? error.message
+            : "Codex 暂时无法整理会话";
         return {
           outcome: "failed" as const,
           workOrder: store.markSessionOrganizationFailed(id, message),
         };
       }
     } finally {
+      organizationControllers.delete(id);
       organizingWorkOrderIds.delete(id);
     }
+  };
+  const scheduleImportedWorkOrderOrganization = (id: string) => {
+    sessionOrganizationScheduler(() => {
+      if (closed) return;
+      const task = organizeImportedWorkOrder(id)
+        .catch((error) => {
+          if (!store.get(id)) return;
+          store.markSessionOrganizationFailed(
+            id,
+            error instanceof Error ? error.message : "历史整理失败",
+          );
+        })
+        .finally(() => backgroundOrganizationPromises.delete(task));
+      backgroundOrganizationPromises.add(task);
+    });
   };
   const finishReason = (id: string) => {
     const reason = stopReasons.get(id);
@@ -1769,14 +1797,19 @@ export function createApp({
               status: "pending",
               summary: null,
               currentState: null,
+              completedHighlights: [],
+              nextAction: null,
               historicalStages: [],
               artifacts: [],
               organizedAt: null,
               error: null,
             },
           });
-          const result = await organizeImportedWorkOrder(workOrder.id);
-          return Response.json(result, { status: 201 });
+          scheduleImportedWorkOrderOrganization(workOrder.id);
+          return Response.json(
+            { outcome: "pending", workOrder },
+            { status: 201 },
+          );
         } catch (error) {
           return Response.json(
             {
@@ -3460,6 +3493,30 @@ export function createApp({
       }
 
       const workOrderMatch = url.pathname.match(/^\/api\/work-orders\/([^/]+)$/);
+      if (request.method === "DELETE" && workOrderMatch) {
+        const id = decodeURIComponent(workOrderMatch[1]);
+        if (organizingWorkOrderIds.has(id)) {
+          return Response.json(
+            { code: "SESSION_ORGANIZATION_IN_PROGRESS", error: "历史正在整理，请稍候" },
+            { status: 409 },
+          );
+        }
+        try {
+          store.deleteFailedImportedWorkOrder(id);
+          return Response.json({ deleted: true });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "无法删除这个目标";
+          return Response.json(
+            {
+              code: message === "找不到这个目标"
+                ? "WORK_ORDER_NOT_FOUND"
+                : "WORK_ORDER_DELETE_LOCKED",
+              error: message,
+            },
+            { status: message === "找不到这个目标" ? 404 : 409 },
+          );
+        }
+      }
       if (request.method === "GET" && workOrderMatch) {
         const workOrder = store.get(decodeURIComponent(workOrderMatch[1]));
         if (!workOrder) {
@@ -3615,10 +3672,13 @@ export function createApp({
       closed = true;
       cancelAutoRunTimer?.();
       cancelAutoRunTimer = null;
+      for (const controller of organizationControllers.values()) controller.abort();
       await Promise.all([
         autoRunCheckInFlight?.catch(() => undefined),
         backgroundRefreshInFlight?.catch(() => undefined),
+        ...[...backgroundOrganizationPromises].map((task) => task.catch(() => undefined)),
       ]);
+      store.markInterruptedSessionOrganizations();
     },
   };
 }
@@ -4401,6 +4461,10 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
   const timeout = setTimeout(callback, delayMs);
   timeout.unref?.();
   return () => clearTimeout(timeout);
+}
+
+function scheduleBackgroundTask(callback: () => void): void {
+  setTimeout(callback, 0);
 }
 
 function canonicalWorkspacePath(workspacePath: string): string {

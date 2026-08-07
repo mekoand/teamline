@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
@@ -41,6 +41,15 @@ const organization = {
   artifacts: [],
 };
 
+async function waitForReadyImport(store: WorkOrderStore, id: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const workOrder = store.get(id);
+    if (workOrder?.importContext?.status === "ready") return workOrder;
+    await Bun.sleep(1);
+  }
+  throw new Error("会话整理没有完成");
+}
+
 describe("non-Codex session import", () => {
   test("removes explicit sidechain records before Claude Code organization", () => {
     const filtered = filterClaudeCodeMainChain([
@@ -61,6 +70,7 @@ describe("non-Codex session import", () => {
     const workspace = join(root, "workspace");
     const sourcePath = join(root, "source.jsonl");
     const fakeCodex = join(root, "fake-codex");
+    const capturedArgumentsPath = join(root, "arguments.json");
     mkdirSync(workspace);
     writeFileSync(sourcePath, [
       JSON.stringify({ type: "user", sessionId: "session-a", message: "main request" }),
@@ -71,6 +81,7 @@ describe("non-Codex session import", () => {
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const args = process.argv.slice(2);
+writeFileSync(${JSON.stringify(capturedArgumentsPath)}, JSON.stringify(args));
 const outputPath = args[args.indexOf("--output-last-message") + 1];
 const workingDirectory = args[args.indexOf("--cd") + 1];
 const source = readdirSync(workingDirectory).find((name) => name.endsWith(".jsonl"));
@@ -106,6 +117,11 @@ writeFileSync(outputPath, JSON.stringify({
       expect(result.summary).toContain("main response");
       expect(result.summary).not.toContain("private subagent work");
       expect(JSON.stringify(result.historicalStages)).not.toContain("private subagent work");
+      const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
+      expect(argumentsUsed[argumentsUsed.indexOf("--model") + 1]).toBe("gpt-5.6-luna");
+      expect(argumentsUsed[argumentsUsed.indexOf("--config") + 1]).toBe(
+        "model_reasoning_effort=medium",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -189,8 +205,9 @@ writeFileSync(outputPath, JSON.stringify({
     const body = await response.json();
 
     expect(response.status).toBe(201);
-    expect(body.outcome).toBe("ready");
-    expect(body.workOrder).toMatchObject({
+    expect(body.outcome).toBe("pending");
+    const ready = await waitForReadyImport(store, body.workOrder.id);
+    expect(ready).toMatchObject({
       status: "draft",
       plan: null,
       sessionId: null,
@@ -268,6 +285,7 @@ writeFileSync(outputPath, JSON.stringify({
       }),
     }));
     const id = (await imported.json()).workOrder.id;
+    await waitForReadyImport(store, id);
     discovery = {
       ...claudeDiscovery,
       sessions: claudeDiscovery.sessions.map((session) => ({

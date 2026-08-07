@@ -6,6 +6,12 @@
     "description": { "type": "string" },
     "summary": { "type": "string" },
     "currentState": { "type": "string" },
+    "completedHighlights": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string" }
+    },
+    "nextAction": { "type": "string" },
     "historicalStages": {
       "type": "array",
       "items": {
@@ -45,5 +51,5 @@
       }
     }
   },
-  "required": ["description", "summary", "currentState", "historicalStages", "artifacts"]
+  "required": ["description", "summary", "currentState", "completedHighlights", "nextAction", "historicalStages", "artifacts"]
 }
