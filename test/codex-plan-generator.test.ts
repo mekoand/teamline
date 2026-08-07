@@ -86,10 +86,6 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
 
     expect(result.stages).toHaveLength(1);
     expect(result.stages[0]?.scope).toBe("RESULT.md");
-    expect(argumentsUsed[argumentsUsed.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
-    expect(argumentsUsed[argumentsUsed.indexOf("--config") + 1]).toBe(
-      "model_reasoning_effort=medium",
-    );
     expect(argumentsUsed).toContain("--skip-git-repo-check");
     expect(argumentsUsed[argumentsUsed.indexOf("--cd") + 1]).toContain("teamline-plan-");
     expect(argumentsUsed.at(-1)).toContain("历史工作已经完成需求确认");
@@ -127,16 +123,6 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     const database = new Database(":memory:");
     cleanup.push(() => database.close());
     const workOrder = new WorkOrderStore(database).create({ goal: "继续调整现有成果" });
-    workOrder.pendingClarification = {
-      questions: [{
-        id: "scope",
-        prompt: "需要保留哪些既有内容？",
-        reason: "范围会改变后续计划",
-        target: "plan",
-      }],
-      requiresPlanConfirmation: true,
-      createdAt: "2026-08-04T02:30:00.000Z",
-    };
     workOrder.plan = {
       version: 2,
       updatedAt: "2026-08-04T03:00:00.000Z",
@@ -180,10 +166,6 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
     const prompt = argumentsUsed.at(-1) ?? "";
 
-    expect(argumentsUsed[argumentsUsed.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
-    expect(argumentsUsed[argumentsUsed.indexOf("--config") + 1]).toBe(
-      "model_reasoning_effort=high",
-    );
     expect(prompt).toContain('"status":"completed"');
     expect(prompt).toContain('"statusReason":"自动验证通过"');
     expect(prompt).toContain('"artifacts":[{"type":"file","label":"approved-output.pdf"}]');

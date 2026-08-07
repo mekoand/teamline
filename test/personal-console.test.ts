@@ -28,6 +28,7 @@ describe("personal console", () => {
     expect(script).toContain('localStorage.setItem("teamline-theme"');
     expect(script).toContain('"/api/execution-settings"');
     expect(script).toContain("state.workOrders.some((workOrder)");
+    expect(script).toContain('workOrder.importContext?.status === "pending"');
     expect(script).toContain("最近完成节点");
     expect(script).toContain("继续当前现场");
     expect(script).toContain("从最近节点重新执行");

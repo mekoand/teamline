@@ -171,6 +171,53 @@ describe("V2 single-goal Codex session import", () => {
     expect(presentConsoleWorkOrders(store.list())[0]?.statusReason).toBe("历史整理中断");
   });
 
+  test("close interrupts background discovery that never finishes", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    let discoveryCalls = 0;
+    let scheduled: (() => void) | undefined;
+    let rejectDiscovery!: (error: Error) => void;
+    const stuckDiscovery = new Promise<never>((_, reject) => {
+      rejectDiscovery = reject;
+    });
+    const app = createApp({
+      store,
+      codexSessionProvider: {
+        async discover() {
+          discoveryCalls += 1;
+          if (discoveryCalls === 1) return baseDiscovery;
+          return stuckDiscovery;
+        },
+      },
+      sessionOrganizationScheduler(callback) { scheduled = callback; },
+      sessionOrganizer: { async organize() { return singleSourceOrganization; } },
+    });
+    const imported = await app.fetch(new Request(
+      "http://teamline.local/api/codex-sessions/import",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "发现阶段中断", sessionIds: ["session-a"] }),
+      },
+    ));
+    const id = (await imported.json()).workOrder.id;
+    scheduled?.();
+    await Bun.sleep(0);
+    expect(discoveryCalls).toBe(2);
+
+    const closeResult = await Promise.race([
+      app.close().then(() => "closed"),
+      Bun.sleep(100).then(() => "timed-out"),
+    ]);
+
+    expect(closeResult).toBe("closed");
+    expect(store.get(id)?.importContext).toMatchObject({
+      status: "failed",
+      error: "历史整理中断",
+    });
+    rejectDiscovery(new Error("延迟失败"));
+    await Bun.sleep(0);
+  });
+
   test("bounds the new summary fields and accepts legacy contexts without them", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const app = createApp({

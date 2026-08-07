@@ -315,7 +315,11 @@ export function createApp({
         return { outcome: "failed" as const, workOrder: failed };
       }
       try {
-        const discovered = await sourceProvider.discover();
+        const discovered = await discoverSessionsWithin(
+          sourceProvider,
+          controller.signal,
+          sessionOrganizationTimeoutMs,
+        );
         const candidates = new Map(discovered.sessions.map((session) => [session.id, session]));
         const sessions = workOrder.sourceSessions.map((source) => {
           const candidate = candidates.get(source.id);
@@ -4465,6 +4469,33 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
 
 function scheduleBackgroundTask(callback: () => void): void {
   setTimeout(callback, 0);
+}
+
+async function discoverSessionsWithin(
+  provider: SessionProvider,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<Awaited<ReturnType<SessionProvider["discover"]>>> {
+  if (signal.aborted) throw new Error("历史整理中断");
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_, reject) => {
+    abort = () => reject(new Error("历史整理中断"));
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  const timedOut = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error("会话发现超时，请重试")),
+      timeoutMs,
+    );
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([provider.discover(), interrupted, timedOut]);
+  } finally {
+    clearTimeout(timeout);
+    if (abort) signal.removeEventListener("abort", abort);
+  }
 }
 
 function canonicalWorkspacePath(workspacePath: string): string {

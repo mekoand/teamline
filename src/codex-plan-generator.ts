@@ -6,7 +6,6 @@ import type { WorkOrder } from "./work-order";
 import { codexProcessEnvironment } from "./codex-environment";
 
 const schemaPath = resolve(import.meta.dir, "plan-output-schema.json");
-const planningModel = "gpt-5.6-sol";
 
 export class CodexPlanGenerator implements PlanGenerator {
   constructor(
@@ -34,10 +33,6 @@ export class CodexPlanGenerator implements PlanGenerator {
         [
           this.codexPath,
           "exec",
-          "--model",
-          planningModel,
-          "--config",
-          `model_reasoning_effort=${planningReasoningEffort(workOrder)}`,
           "--skip-git-repo-check",
           "--sandbox",
           "read-only",
@@ -97,10 +92,6 @@ export class CodexPlanGenerator implements PlanGenerator {
       rmSync(temporaryDirectory, { recursive: true, force: true });
     }
   }
-}
-
-function planningReasoningEffort(workOrder: WorkOrder): "medium" | "high" {
-  return workOrder.pendingClarification ? "high" : "medium";
 }
 
 function buildPrompt(workOrder: WorkOrder): string {

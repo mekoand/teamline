@@ -3488,7 +3488,8 @@ function scheduleRefresh() {
   }
   if (
     state.workOrders.some((workOrder) =>
-      ["running", "stopping", "verifying"].includes(workOrder.runStatus),
+      ["running", "stopping", "verifying"].includes(workOrder.runStatus) ||
+      workOrder.importContext?.status === "pending",
     )
   ) {
     state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 2_000);
