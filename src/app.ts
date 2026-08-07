@@ -118,6 +118,10 @@ class PlanGenerationTimeoutError extends Error {}
 const staticFiles: Record<string, { path: string; type: string }> = {
   "/": { path: "public/index.html", type: "text/html; charset=utf-8" },
   "/app.js": { path: "public/app.js", type: "text/javascript; charset=utf-8" },
+  "/context-inspector.js": {
+    path: "public/context-inspector.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/result-artifacts.js": {
     path: "public/result-artifacts.js",
     type: "text/javascript; charset=utf-8",

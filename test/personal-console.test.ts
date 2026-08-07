@@ -103,24 +103,58 @@ describe("personal console", () => {
     expect(script).not.toContain('state.executionIdentities.identities.filter(\n    (identity) => identity.status !== "removed"');
   });
 
-  test("uses stepped 390px navigation with explicit return paths and balanced Chinese wrapping", async () => {
+  test("uses a dismissible narrow-screen inspector with balanced Chinese wrapping", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [page, script, styles, inspectorResponse] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/context-inspector.js")),
+    ]);
+
+    expect(script).toContain('class="mobile-back-button"');
+    expect(script).toContain('id="back-to-all-goals"');
+    expect(script).toContain('id="open-goal-context"');
+    expect(page).toContain('id="context-backdrop"');
+    expect(page).toContain('aria-label="上下文检查栏"');
+    expect(script).toContain("selectContextInspector");
+    expect(script).toContain("closeContextInspector");
+    expect(script).toContain('event.key !== "Escape"');
+    expect(script).toContain('contextElement.querySelector(\'[data-busy="true"]\')');
+    expect(inspectorResponse.status).toBe(200);
+    expect(styles).toContain("@media (max-width: 680px)");
+    expect(styles).toContain(".console-shell.context-open .context-backdrop");
+    expect(styles).toContain("width: min(360px, calc(100vw - 28px))");
+    expect(styles).toContain("text-wrap: balance");
+    expect(styles).toContain("word-break: auto-phrase");
+  });
+
+  test("keeps primary actions in the work surface and limits the inspector to selected context", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const [script, styles] = await Promise.all([
       app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
       app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
     ]);
 
-    expect(script).toContain('class="mobile-back-button"');
-    expect(script).toContain('id="back-to-all-goals"');
-    expect(script).toContain('id="back-to-goal"');
-    expect(script).toContain('id="open-goal-context"');
-    expect(script).toContain("mobileContextActionLabel");
-    expect(script).toContain('state.mobileContextOpen = true');
-    expect(script).toContain("mobileContextOpen");
-    expect(styles).toContain("@media (max-width: 680px)");
-    expect(styles).toContain(".console-shell.mobile-context-open");
-    expect(styles).toContain("text-wrap: balance");
-    expect(styles).toContain("word-break: auto-phrase");
+    const contextStart = script.indexOf("function renderContext(workOrder)");
+    const contextEnd = script.indexOf("function renderGoalResourceSettings", contextStart);
+    const contextRenderer = script.slice(contextStart, contextEnd);
+    const mapStart = script.indexOf("function renderExecutionMap(workOrder, stages)");
+    const mapEnd = script.indexOf("function renderMapNode", mapStart);
+    const mapRenderer = script.slice(mapStart, mapEnd);
+    expect(script).toContain('<div class="primary-action-slot">${renderContextAction(workOrder)}</div>');
+    expect(script).toContain('<div class="workspace-support">${renderContextSupport(workOrder)}</div>');
+    expect(contextRenderer).not.toContain("renderContextAction(workOrder)");
+    expect(contextRenderer).not.toContain("renderContextSupport(workOrder)");
+    expect(contextRenderer).toContain('selection.type === "artifact"');
+    expect(contextRenderer).toContain("renderGoalContext(workOrder)");
+    expect(contextRenderer).toContain("renderContextTabContent(workOrder, stage)");
+    expect(contextRenderer).toContain("renderTechnicalActivity(workOrder)");
+    expect(mapRenderer).not.toContain("renderTechnicalActivity(workOrder)");
+    expect(script).toContain('data-result-artifact="${escapeHtml(reference.location)}"');
+    expect(script).toContain('openContextInspector({ type: "stage", id: stage.id })');
+    expect(styles).toContain(".console-shell.context-open");
+    expect(styles).toContain(".primary-action-slot .context-action");
   });
 
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {
