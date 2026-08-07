@@ -131,6 +131,19 @@ describe("result review persistence", () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-result-processor-"));
     try {
       initializeRepository(directory);
+      const staleArtifactPath = join(directory, "stale.md");
+      writeFileSync(staleArtifactPath, "old\n");
+      git(directory, "add", "stale.md");
+      git(
+        directory,
+        "-c",
+        "user.name=Teamline Tests",
+        "-c",
+        "user.email=teamline@example.test",
+        "commit",
+        "-m",
+        "add stale fixture",
+      );
       writeFileSync(join(directory, "README.md"), "# After\n");
       writeFileSync(join(directory, "untracked.txt"), "new\n");
       const store = new WorkOrderStore(new Database(":memory:"));
@@ -139,12 +152,27 @@ describe("result review persistence", () => {
         'test "$(cat command-order.txt)" = first; printf beta',
         undefined,
       ]);
+      const previousResult = resultFixture(workOrder);
+      previousResult.artifacts = [{
+        id: "previous:stale.md",
+        type: "file",
+        label: "stale.md",
+        location: staleArtifactPath,
+      }];
 
-      const result = await new LocalWorkOrderResultProcessor().process(workOrder);
+      const result = await new LocalWorkOrderResultProcessor().process({
+        ...workOrder,
+        result: previousResult,
+      });
 
       expect(result.git.diffStat).toContain("README.md");
       expect(result.git.statusShort).toContain("M README.md");
       expect(result.git.statusShort).toContain("?? untracked.txt");
+      expect(result.artifacts).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "file", location: realpathSync(join(directory, "README.md")) }),
+        expect.objectContaining({ type: "file", location: realpathSync(join(directory, "untracked.txt")) }),
+      ]));
+      expect(result.artifacts?.some((artifact) => artifact.location === staleArtifactPath)).toBe(false);
       expect(result.verifications.map((verification) => verification.status)).toEqual([
         "passed",
         "passed",
@@ -340,6 +368,91 @@ describe("result review persistence", () => {
       expect(opened).toHaveLength(2);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+      rmSync(outsideDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("opens only collected Git worktree artifacts and rejects paths outside the worktree", async () => {
+    const worktree = mkdtempSync(join(tmpdir(), "teamline-open-git-artifact-"));
+    const outsideDirectory = mkdtempSync(join(tmpdir(), "teamline-outside-git-artifact-"));
+    try {
+      initializeRepository(worktree);
+      const artifactPath = join(worktree, "RESULT.md");
+      const uncollectedPath = join(worktree, "not-a-result.md");
+      const outsidePath = join(outsideDirectory, "outside.md");
+      const linkedPath = join(worktree, "linked.md");
+      writeFileSync(artifactPath, "done\n");
+      writeFileSync(uncollectedPath, "not collected\n");
+      writeFileSync(outsidePath, "outside\n");
+      symlinkSync(outsidePath, linkedPath);
+
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const workOrder = resultWorkOrder(store, worktree, ["true"]);
+      store.markStarted(workOrder.id);
+      const verifying = store.beginResultProcessing(workOrder.id, "Codex 已正常结束");
+      const stage = verifying.plan!.stages[0]!;
+      store.completeReview(workOrder.id, {
+        planVersion: verifying.plan!.version,
+        artifacts: [{
+          id: "git-result:RESULT.md",
+          type: "file",
+          label: "RESULT.md",
+          location: artifactPath,
+        }, {
+          id: "git-result:linked.md",
+          type: "file",
+          label: "linked.md",
+          location: linkedPath,
+        }],
+        git: { diffStat: "2 files changed", statusShort: "?? RESULT.md\n?? linked.md" },
+        verifications: [{
+          stageId: stage.id,
+          stageOutcome: stage.outcome,
+          command: "true",
+          status: "passed",
+          exitCode: 0,
+          output: "（无输出）",
+        }],
+        completedAt: new Date().toISOString(),
+      });
+
+      const opened: Array<{ path: string; reveal: boolean }> = [];
+      const app = createApp({
+        store,
+        openLocalArtifact: async (path, reveal) => {
+          opened.push({ path, reveal });
+        },
+      });
+      for (const reveal of [false, true]) {
+        const response = await app.fetch(new Request(
+          `http://teamline.local/api/work-orders/${workOrder.id}/artifacts/open`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path: artifactPath, reveal }),
+          },
+        ));
+        expect(response.status).toBe(200);
+      }
+      expect(opened).toEqual([
+        { path: realpathSync(artifactPath), reveal: false },
+        { path: realpathSync(artifactPath), reveal: true },
+      ]);
+
+      for (const path of [uncollectedPath, linkedPath, outsidePath]) {
+        const response = await app.fetch(new Request(
+          `http://teamline.local/api/work-orders/${workOrder.id}/artifacts/open`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path, reveal: false }),
+          },
+        ));
+        expect(response.status).toBe(400);
+      }
+      expect(opened).toHaveLength(2);
+    } finally {
+      rmSync(worktree, { recursive: true, force: true });
       rmSync(outsideDirectory, { recursive: true, force: true });
     }
   });

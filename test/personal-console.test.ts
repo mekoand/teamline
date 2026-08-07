@@ -120,7 +120,9 @@ describe("personal console", () => {
     expect(script).toContain("selectContextInspector");
     expect(script).toContain("closeContextInspector");
     expect(script).toContain('event.key !== "Escape"');
-    expect(script).toContain('contextElement.querySelector(\'[data-busy="true"]\')');
+    expect(script).toContain("state.inspector.busy");
+    expect(script).toContain('contextElement.toggleAttribute("inert", state.inspector.busy)');
+    expect(script).toContain("setContextInspectorBusy(state.inspector, false)");
     expect(inspectorResponse.status).toBe(200);
     expect(styles).toContain("@media (max-width: 1120px) and (min-width: 980px)");
     expect(styles).toContain("@media (max-width: 979px)");
@@ -155,6 +157,7 @@ describe("personal console", () => {
     expect(contextRenderer).toContain("renderTechnicalActivity(workOrder)");
     expect(mapRenderer).not.toContain("renderTechnicalActivity(workOrder)");
     expect(script).toContain('data-result-artifact="${escapeHtml(reference.location)}"');
+    expect(script).toContain('workOrder.workspace?.kind === "git" && Boolean(workOrder.worktreePath)');
     expect(script).toContain('openContextInspector({ type: "stage", id: stage.id })');
     expect(styles).toContain(".console-shell.context-open");
     expect(styles).toContain(".primary-action-slot .context-action");

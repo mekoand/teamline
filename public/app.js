@@ -5,6 +5,7 @@ import {
   createContextInspectorState,
   refreshContextInspector,
   selectContextInspector,
+  setContextInspectorBusy,
 } from "./context-inspector.js";
 
 const visibleStatusLabels = {
@@ -208,7 +209,7 @@ function openContextInspector(selection) {
 }
 
 function dismissContextInspector() {
-  if (!state.inspector.open || contextElement.querySelector('[data-busy="true"]')) return;
+  if (!state.inspector.open || state.inspector.busy) return;
   state.inspector = closeContextInspector(state.inspector);
   renderConsole();
 }
@@ -652,6 +653,8 @@ function renderConsole(feedback = "") {
     state.inspector.open ? "context-open" : "",
   ].filter(Boolean).join(" ");
   contextElement.setAttribute("aria-hidden", String(!state.inspector.open));
+  contextElement.setAttribute("aria-busy", String(state.inspector.busy));
+  contextElement.toggleAttribute("inert", state.inspector.busy);
   document.querySelector("#open-all-goals")?.classList.toggle("selected", isAllGoalsView());
   document.querySelector("#open-projects")?.classList.toggle("selected", isProjectsView());
   document.querySelector("#open-resources")?.classList.toggle("selected", isResourceView());
@@ -2278,7 +2281,8 @@ function renderArtifactContext(workOrder, artifactId) {
 }
 
 function canOpenResultArtifact(workOrder, reference) {
-  return workOrder.workspace?.kind === "directory" &&
+  return (workOrder.workspace?.kind === "directory" ||
+      (workOrder.workspace?.kind === "git" && Boolean(workOrder.worktreePath))) &&
     reference.type === "file" &&
     (workOrder.result?.artifacts ?? []).some(
       (artifact) => artifact.type === "file" && artifact.location === reference.location,
@@ -2594,12 +2598,7 @@ function cleanCompletionSummary(summary) {
 }
 
 function renderReference(reference, workOrder) {
-  const canOpen =
-    workOrder?.workspace?.kind === "directory" &&
-    reference.type === "file" &&
-    (workOrder.result?.artifacts ?? []).some(
-      (artifact) => artifact.type === "file" && artifact.location === reference.location,
-    );
+  const canOpen = workOrder ? canOpenResultArtifact(workOrder, reference) : false;
   return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
 }
 
@@ -2994,6 +2993,7 @@ function bindRenderedEvents() {
             : {}),
         }),
       });
+      resetBusy(button, "保存资源设置");
       await acceptWorkOrderResult(result.workOrder, "资源设置已保存。");
     } catch (error) {
       resetBusy(button, "保存资源设置");
@@ -3030,6 +3030,7 @@ function bindRenderedEvents() {
           }),
         },
       );
+      resetBusy(button, "标记节点完成");
       await acceptWorkOrderResult(result.workOrder, "外部节点已完成，后续节点可以继续。");
     } catch (error) {
       resetBusy(button, "标记节点完成");
@@ -3133,6 +3134,9 @@ function bindAction(selector, busyLabel, idleLabel, endpoint, pendingMessage) {
 async function acceptWorkOrderResult(workOrder, feedback = "") {
   state.draftStages = null;
   state.selected = workOrder;
+  state.inspector = setContextInspectorBusy(state.inspector, false);
+  contextElement.setAttribute("aria-busy", "false");
+  contextElement.toggleAttribute("inert", false);
   if (workOrder.runStatus === "running") state.followCurrentStage = true;
   await refreshConsole({ polling: true });
   if (feedback) setFeedback("plan-feedback", feedback, false);
@@ -3540,6 +3544,7 @@ async function saveGoalProjectContext(event) {
       },
     );
     await refreshGoalProjectMaterials(workOrder);
+    resetBusy(button, "保存项目与素材");
     await acceptWorkOrderResult(workOrder);
   } catch (error) {
     resetBusy(button, "保存项目与素材");
@@ -3688,6 +3693,12 @@ function applyTheme(theme) {
 
 function setBusy(button, label) {
   if (!button) return;
+  if (button.closest("#context-panel")) {
+    button.dataset.contextInspectorBusy = "true";
+    state.inspector = setContextInspectorBusy(state.inspector, true);
+    contextElement.setAttribute("aria-busy", "true");
+    contextElement.toggleAttribute("inert", true);
+  }
   button.disabled = true;
   button.dataset.busy = "true";
   button.textContent = label;
@@ -3695,6 +3706,12 @@ function setBusy(button, label) {
 
 function resetBusy(button, label) {
   if (!button) return;
+  if (button.dataset.contextInspectorBusy === "true") {
+    delete button.dataset.contextInspectorBusy;
+    state.inspector = setContextInspectorBusy(state.inspector, false);
+    contextElement.setAttribute("aria-busy", "false");
+    contextElement.toggleAttribute("inert", false);
+  }
   button.disabled = false;
   delete button.dataset.busy;
   button.textContent = label;
