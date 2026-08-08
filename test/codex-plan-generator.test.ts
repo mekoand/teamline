@@ -87,6 +87,8 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     expect(result.stages).toHaveLength(1);
     expect(result.stages[0]?.scope).toBe("RESULT.md");
     expect(argumentsUsed).toContain("--skip-git-repo-check");
+    expect(argumentsUsed[argumentsUsed.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
+    expect(argumentsUsed).toContain("model_reasoning_effort=medium");
     expect(argumentsUsed[argumentsUsed.indexOf("--cd") + 1]).toContain("teamline-plan-");
     expect(argumentsUsed.at(-1)).toContain("历史工作已经完成需求确认");
     expect(argumentsUsed.at(-1)).toContain("等待形成后续执行计划");

@@ -7,6 +7,11 @@ import {
   selectContextInspector,
   setContextInspectorBusy,
 } from "./context-inspector.js";
+import {
+  completedGoalHighlights,
+  defaultGoalWorkbenchView,
+  visibleGoalConversation,
+} from "./goal-workbench.js";
 
 const visibleStatusLabels = {
   planning: "规划中",
@@ -87,9 +92,6 @@ const resourceSummaryElement = document.querySelector("#resource-summary");
 const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
 const sessionImportError = document.querySelector("#session-import-error");
-const continueGoalDialog = document.querySelector("#continue-goal-dialog");
-const continueGoalForm = document.querySelector("#continue-goal-form");
-const continueGoalError = document.querySelector("#continue-goal-error");
 const notificationDialog = document.querySelector("#notification-dialog");
 const localStateDialog = document.querySelector("#local-state-dialog");
 
@@ -150,9 +152,6 @@ function bindShellEvents() {
   });
   document.querySelector("#close-session-import").addEventListener("click", closeSessionImport);
   document.querySelector("#cancel-session-import").addEventListener("click", closeSessionImport);
-  document.querySelector("#close-continue-goal").addEventListener("click", closeContinueGoal);
-  document.querySelector("#cancel-continue-goal").addEventListener("click", closeContinueGoal);
-  continueGoalForm.addEventListener("submit", continueImportedGoal);
   document.querySelector("#session-search").addEventListener("input", (event) => {
     state.sessionSearch = event.currentTarget.value;
     renderSessionCandidates();
@@ -1632,11 +1631,25 @@ function renderWorkspace(workOrder, feedback) {
   const presentation = visibleStatus(workOrder, state.workOrders);
   const stages = state.draftStages ?? workOrder.plan?.stages ?? null;
   const canEditPlan = state.draftStages !== null;
+  const highlights = completedGoalHighlights(workOrder);
+  const currentState = workOrder.importContext?.status === "ready"
+    ? workOrder.importContext.currentState || workOrder.currentSummary
+    : workOrder.currentSummary;
+  const nextAction = workOrder.importContext?.status === "ready" && !workOrder.plan
+    ? workOrder.importContext.nextAction || homeNextStep(workOrder, presentation)
+    : homeNextStep(workOrder, presentation);
+  const canEditImportedGoal = Boolean(
+    workOrder.importContext &&
+    !isImportOnlyGoal(workOrder) &&
+    !workOrder.plan &&
+    !workOrder.runStatus &&
+    ["draft", "ready"].includes(workOrder.status),
+  );
   return `
     <section class="workspace-content">
       <button class="mobile-back-button" id="back-to-all-goals" type="button">‹ 全部目标</button>
-      <header class="workspace-heading">
-        <div>
+      <header class="workspace-heading goal-workbench-heading">
+        <div class="goal-workbench-title">
           <div class="status-line">
             <span class="status-pill ${presentation.status}">${visibleStatusLabels[presentation.status]}</span>
             ${presentation.reason === visibleStatusLabels[presentation.status]
@@ -1644,56 +1657,73 @@ function renderWorkspace(workOrder, feedback) {
               : `<span>${escapeHtml(presentation.reason)}</span>`}
           </div>
           <h1>${escapeHtml(workOrder.title)}</h1>
-          <p>${escapeHtml(workOrder.currentSummary)}</p>
+          ${canEditImportedGoal
+            ? `<label class="goal-statement-editor"><span>一句话目标</span><textarea id="workbench-goal-input" rows="2" maxlength="500">${escapeHtml(workOrder.goal)}</textarea></label>`
+            : `<p class="goal-statement">${escapeHtml(workOrder.goal)}</p>`}
+          <dl class="goal-snapshot-facts">
+            <div><dt>当前</dt><dd>${escapeHtml(currentState)}</dd></div>
+            <div><dt>下一步</dt><dd>${escapeHtml(nextAction)}</dd></div>
+          </dl>
+          ${highlights.length
+            ? `<div class="goal-completed-highlights"><span>已完成</span><ul>${highlights.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
+            : ""}
         </div>
         <button class="secondary-button goal-context-button" id="open-goal-context" type="button">目标信息</button>
       </header>
       <div class="primary-action-slot">${renderContextAction(workOrder)}</div>
       ${renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback)}
-      <div class="workspace-support">${renderContextSupport(workOrder)}</div>
       <p class="inline-feedback" id="execution-feedback" role="status"></p>
       <p class="inline-feedback" id="result-feedback" role="status"></p>
     </section>`;
 }
 
 function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
-  if (isImportOnlyGoal(workOrder) || (workOrder.importContext && !stages && !canEditPlan)) {
-    return renderImportedHistorySurface(workOrder, feedback);
-  }
-  const hasResult = Boolean(workOrder.result);
-  const defaultView = "map";
-  const activeView = hasResult ? (state.primaryView ?? defaultView) : "map";
-  if (activeView === "result") {
-    return `
-      <section class="primary-work-surface">
-        <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
-          <button type="button" data-primary-view="map" role="tab" aria-selected="false">执行图</button>
-          <button type="button" data-primary-view="result" role="tab" aria-selected="true" class="active">成果与验证</button>
-        </div>
-        ${renderResultPanel(workOrder)}
-      </section>`;
+  const presentation = visibleStatus(workOrder, state.workOrders);
+  const activeView = state.primaryView ?? defaultGoalWorkbenchView(presentation.status);
+  const tabs = [
+    ["progress", "进展"],
+    ["conversation", "对话"],
+    ["result", "成果"],
+  ];
+  let content;
+  if (activeView === "conversation") {
+    content = renderConversationPanel(workOrder) || '<section class="workbench-empty"><p>还没有需要确认的对话。</p></section>';
+  } else if (activeView === "result") {
+    content = workOrder.result
+      ? renderResultPanel(workOrder)
+      : renderImportedResultPanel(workOrder) || '<section class="workbench-empty"><p>目标完成后，产物与验证结果会显示在这里。</p></section>';
+  } else {
+    content = isImportOnlyGoal(workOrder) || (workOrder.importContext && !stages && !canEditPlan)
+      ? renderImportedHistorySurface(workOrder, feedback)
+      : renderProgressSurface(workOrder, stages, canEditPlan, feedback);
   }
   return `
-    <section class="map-panel primary-work-surface">
+    <section class="primary-work-surface goal-workbench-surface">
+      <div class="main-surface-tabs" role="tablist" aria-label="目标工作台">
+        ${tabs.map(([id, label]) => `<button type="button" data-primary-view="${id}" role="tab" aria-selected="${activeView === id}" class="${activeView === id ? "active" : ""}">${label}</button>`).join("")}
+      </div>
+      ${content}
+    </section>`;
+}
+
+function renderProgressSurface(workOrder, stages, canEditPlan, feedback) {
+  return `
+    <section class="map-panel workbench-tab-panel">
       <div class="primary-surface-heading">
         <div class="section-heading">
           <div>
-            <p class="overline">目标主体</p>
-            <h2>${stages ? (canEditPlan ? "编辑执行计划" : "执行图") : "准备执行计划"}</h2>
+            <p class="overline">进展</p>
+            <h2>${stages ? (canEditPlan ? "编辑执行计划" : "执行节点") : "准备执行计划"}</h2>
           </div>
           <div class="map-heading-actions">
             ${workOrder.plan && !canEditPlan ? renderMapViewControls(workOrder) : ""}
             ${workOrder.plan ? `<span class="subtle-label">版本 ${workOrder.plan.version}</span>` : ""}
           </div>
         </div>
-        ${hasResult ? `
-          <div class="main-surface-tabs" role="tablist" aria-label="目标主体">
-            <button type="button" data-primary-view="map" role="tab" aria-selected="true" class="active">执行图</button>
-            <button type="button" data-primary-view="result" role="tab" aria-selected="false">成果与验证</button>
-          </div>` : ""}
       </div>
         ${workOrder.revisionNote ? `<aside class="notice"><strong>补充要求</strong><p>${escapeHtml(workOrder.revisionNote)}</p></aside>` : ""}
         ${renderPlanArea(workOrder, stages, canEditPlan)}
+        ${renderProgressSecondaryActions(workOrder)}
         <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
     </section>`;
 }
@@ -1710,30 +1740,21 @@ function renderImportedHistorySurface(workOrder, feedback) {
   const pending = context.status === "pending";
   const updateAvailable = state.sourceStatus?.hasUpdates;
   return `
-    <section class="map-panel primary-work-surface import-history-surface">
+    <section class="map-panel workbench-tab-panel import-history-surface">
       <div class="primary-surface-heading">
         <div class="section-heading">
-          <div><p class="overline">来源会话</p><h2>${ready ? "历史进展" : "尚未整理"}</h2></div>
+          <div><p class="overline">进展</p><h2>${ready ? "历史进展" : "尚未整理"}</h2></div>
           <span class="subtle-label">${workOrder.sourceSessions.length} 个来源</span>
         </div>
       </div>
       ${updateAvailable ? '<aside class="notice import-update-notice"><strong>来源会话有新内容</strong><p>重新整理后会更新摘要和历史节点。</p></aside>' : ""}
       ${ready
-        ? `<div class="import-summary"><p>${escapeHtml(context.summary)}</p><strong>${escapeHtml(context.currentState)}</strong></div>
-           ${context.historicalStages.length
-             ? `<div class="progress-view-switch" role="tablist" aria-label="历史进展展示方式">
-                  <button type="button" data-progress-view="timeline" role="tab" aria-selected="${state.progressView === "timeline"}" class="${state.progressView === "timeline" ? "active" : ""}">时间线</button>
-                  <button type="button" data-progress-view="map" role="tab" aria-selected="${state.progressView === "map"}" class="${state.progressView === "map" ? "active" : ""}">节点图</button>
-                </div>
-                ${state.progressView === "timeline"
-                  ? renderExecutionTimeline(workOrder, [], context.historicalStages)
-                  : `<div class="execution-map-graph structured-map">${context.historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}</div>`}`
-             : '<p class="muted">没有可确认的历史节点，仍会保留整理后的摘要。</p>'}`
+        ? `${renderHistoricalProgress(context.historicalStages, workOrder)}
+           ${context.historicalStages.length ? "" : '<p class="muted">没有可确认的历史节点。</p>'}`
         : pending
           ? '<div class="plan-empty"><p>历史正在后台整理，完成后会自动更新。</p></div>'
           : `<div class="plan-empty"><p>${escapeHtml(context.error || "历史整理失败，可以重试。")}</p></div>`}
       <div class="import-history-actions">
-        ${ready && !isImportOnlyGoal(workOrder) ? '<button class="primary-button" data-continue-imported-goal type="button">继续这个目标</button>' : ""}
         ${pending ? "" : `<button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>`}
         ${context.status === "failed" ? '<button class="text-button danger-text" data-delete-imported-goal type="button">删除目标</button>' : ""}
       </div>
@@ -1797,13 +1818,8 @@ function renderPlanArea(workOrder, stages, canEditPlan) {
   if (!stages) {
     return `
       <div class="plan-empty">
-        <p>${workOrder.workspace
-          ? "所选工作空间和素材会发送给当前模型服务；生成计划不会修改文件。"
-          : "所选素材会发送给当前模型服务；执行文件夹可在启动前选择。"}</p>
-        <div class="button-row">
-          <button class="primary-button" id="generate-plan" type="button">生成计划</button>
-          <button class="secondary-button" id="manual-plan" type="button">手动填写</button>
-        </div>
+        <p>计划生成后会在这里显示，你也可以直接手动填写。</p>
+        <button class="secondary-button" id="manual-plan" type="button">手动填写计划</button>
       </div>`;
   }
   if (canEditPlan) return renderPlanForm(stages);
@@ -1818,7 +1834,7 @@ function renderConversationPanel(workOrder) {
   const stages = workOrder.plan?.stages ?? [];
   const stage = stages[Math.min(state.selectedStageIndex, Math.max(0, stages.length - 1))];
   const editable = !workOrder.runStatus && ["draft", "ready"].includes(workOrder.status);
-  const messages = workOrder.conversation ?? [];
+  const messages = visibleGoalConversation(workOrder.conversation);
   return `
     <section class="conversation-panel" aria-labelledby="conversation-heading">
       <div class="section-heading compact conversation-heading">
@@ -1878,10 +1894,11 @@ function renderExecutionMap(workOrder, stages) {
       <button type="button" data-progress-view="timeline" role="tab" aria-selected="${timeline}" class="${timeline ? "active" : ""}">时间线</button>
       <button type="button" data-progress-view="map" role="tab" aria-selected="${!timeline}" class="${timeline ? "" : "active"}">节点图</button>
     </div>
+    ${historicalStages.length ? renderHistoricalProgress(historicalStages, workOrder) : ""}
+    ${historicalStages.length ? '<div class="history-execution-boundary"><span>从这里开始由 Teamline 推进</span></div>' : ""}
     ${timeline
-      ? renderExecutionTimeline(workOrder, stages, historicalStages)
+      ? renderExecutionTimeline(workOrder, stages)
       : `<div class="execution-map-graph structured-map" data-map-mode="graph">
-          ${historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}
           ${stages.map((stage, index) => renderMapNode(workOrder, stage, index, stageById, singleStage)).join("")}
         </div>`}
     ${workOrder.runStatus && stages.every((stage) => stage.status === "planning")
@@ -1917,18 +1934,34 @@ function renderHistoricalMapNode(stage, index) {
     </article>`;
 }
 
-function renderExecutionTimeline(workOrder, stages, historicalStages) {
+function renderHistoricalProgress(historicalStages, workOrder) {
+  if (!historicalStages.length) return "";
+  const timeline = state.progressView === "timeline";
+  return `
+    <details class="historical-progress">
+      <summary>导入前历史 · ${historicalStages.length} 个节点</summary>
+      ${timeline
+        ? `<div class="execution-timeline historical-timeline">${renderHistoricalTimelineItems(historicalStages)}</div>`
+        : `<div class="execution-map-graph structured-map historical-map">${historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}</div>`}
+      ${workOrder.importContext?.summary ? `<p class="historical-summary">${escapeHtml(workOrder.importContext.summary)}</p>` : ""}
+    </details>`;
+}
+
+function renderHistoricalTimelineItems(historicalStages) {
+  return historicalStages.map((stage, index) => `
+    <article class="timeline-item historical">
+      <span class="timeline-marker"></span>
+      <div class="timeline-card">
+        <div class="timeline-heading"><span class="history-badge">历史推断</span><span>历史节点 ${index + 1}</span></div>
+        <strong>${escapeHtml(stage.outcome)}</strong>
+        <p>${escapeHtml(stage.summary)}</p>
+      </div>
+    </article>`).join("");
+}
+
+function renderExecutionTimeline(workOrder, stages) {
   return `
     <div class="execution-timeline">
-      ${historicalStages.map((stage, index) => `
-        <article class="timeline-item historical">
-          <span class="timeline-marker"></span>
-          <div class="timeline-card">
-            <div class="timeline-heading"><span class="history-badge">历史推断</span><span>历史节点 ${index + 1}</span></div>
-            <strong>${escapeHtml(stage.outcome)}</strong>
-            <p>${escapeHtml(stage.summary)}</p>
-          </div>
-        </article>`).join("")}
       ${stages.map((stage, index) => renderTimelineStage(workOrder, stage, index)).join("")}
       ${renderUnscopedReports(workOrder)}
     </div>`;
@@ -2147,12 +2180,45 @@ function renderResultPanel(workOrder) {
           <h3>仍需处理</h3>
           <ul>${resultData.incomplete.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </section>` : ""}
+      ${workOrder.status === "review" ? `
+        <details class="result-revision">
+          <summary>还需要调整</summary>
+          <form id="revision-form">
+            <label><span>补充要求</span><textarea name="revisionNote" rows="3" required placeholder="说明还需要调整什么"></textarea></label>
+            <button class="secondary-button" id="revise-work-order" type="submit">生成后续计划</button>
+          </form>
+        </details>` : ""}
       <details class="result-technical-details">
         <summary>工作区变化</summary>
         ${workOrder.workspace?.kind === "directory" ? "<p>普通文件夹不提供 Git 变化记录，请直接检查当前目录。</p>" : ""}
         <pre>${escapeHtml(workOrder.result.git.diffStat || "没有已记录的差异统计")}</pre>
         <pre>${escapeHtml(workOrder.result.git.statusShort || "工作区没有未提交变化")}</pre>
       </details>
+    </section>`;
+}
+
+function renderImportedResultPanel(workOrder) {
+  const context = workOrder.importContext;
+  if (context?.status !== "ready") return "";
+  const artifacts = context.artifacts ?? [];
+  const highlights = completedGoalHighlights(workOrder);
+  return `
+    <section class="result-panel workbench-tab-panel imported-result-panel">
+      <div class="section-heading compact">
+        <div><p class="overline">来源成果</p><h2>已整理内容</h2></div>
+        <span class="result-state">导入历史</span>
+      </div>
+      ${highlights.length
+        ? `<section class="result-section"><h3>已完成</h3><ul class="result-highlight-list">${highlights.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`
+        : ""}
+      <section class="result-section">
+        <h3>产物</h3>
+        <div class="result-artifact-grid">
+          ${artifacts.length
+            ? artifacts.map((reference) => renderResultArtifactCard(reference)).join("")
+            : '<p class="result-empty">来源会话中没有识别到明确的成果引用。</p>'}
+        </div>
+      </section>
     </section>`;
 }
 
@@ -2263,7 +2329,9 @@ function renderGoalMaterials(workOrder) {
 
 function renderArtifactContext(workOrder, artifactId) {
   const historical = workOrder.result?.planVersion !== workOrder.plan?.version;
-  const artifacts = workOrder.result ? collectResultViewData(workOrder, historical).artifacts : [];
+  const artifacts = workOrder.result
+    ? collectResultViewData(workOrder, historical).artifacts
+    : workOrder.importContext?.artifacts ?? [];
   const reference = artifacts.find((artifact) => artifact.location === artifactId);
   if (!reference) return renderUnavailableContext();
   const canOpen = canOpenResultArtifact(workOrder, reference);
@@ -2616,12 +2684,18 @@ function renderContextAction(workOrder) {
   if (state.draftStages !== null) {
     return '<section class="context-action"><p class="overline">正在编辑计划</p><strong>先保存计划再继续</strong><p>执行和成果登记会使用保存后的节点。</p></section>';
   }
+  if (workOrder.pendingClarification) {
+    return '<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="show-conversation" type="button">回答问题</button></section>';
+  }
+  if (!workOrder.plan && !workOrder.runStatus) {
+    return `<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="generate-plan" type="button">${workOrder.importContext ? "生成后续计划" : "生成执行计划"}</button></section>`;
+  }
   if (
     workOrder.status === "ready" &&
     !workOrder.runStatus &&
     workOrder.plan?.confirmationRequired
   ) {
-    return '<section class="context-action"><p class="overline">下一步</p><strong>检查并确认计划</strong><p>请在执行列表中选择“编辑计划”，确认节点、工作空间和资源后保存。</p></section>';
+    return '<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="review-plan" type="button">检查并确认计划</button></section>';
   }
   const stage = workOrder.plan?.stages?.[state.selectedStageIndex];
   const needsStageConfirmation = workOrder.plan?.stages?.some(
@@ -2717,38 +2791,39 @@ function renderContextAction(workOrder) {
       </section>`;
   }
   if (workOrder.runStatus === "running") {
-    return `<section class="context-action"><p>Codex 正在所选工作区中运行。</p><button class="secondary-button full-button" id="interrupt-work-order" type="button">中断运行</button></section>`;
+    return '<section class="context-action"><p class="overline">正在推进</p><button class="primary-button" id="focus-current-stage" type="button">查看当前节点</button></section>';
   }
   if (workOrder.runStatus === "stopping" || workOrder.runStatus === "verifying") {
     return `<section class="context-action"><p>${escapeHtml(workOrder.currentSummary)}</p><button class="secondary-button full-button" type="button" disabled>处理中…</button></section>`;
   }
   if (workOrder.status === "interrupted") {
-    const latestCheckpoint = currentPlanCheckpoints(workOrder).at(-1);
-    const canReexecute = workOrder.workspace?.kind === "git" && latestCheckpoint;
     return `
       <section class="context-action recovery-actions">
-        <p>选择如何处理当前中断。</p>
         <button class="primary-button full-button" id="continue-work-order" type="button">继续当前现场</button>
-        ${canReexecute
-          ? `<button class="secondary-button full-button" id="reexecute-work-order" type="button">${latestCheckpoint.kind === "stage" ? "从最近节点重新执行" : "从起始位置重新执行"}</button>`
-          : '<p class="muted">普通文件夹暂不提供检查点回退。</p>'}
       </section>`;
   }
   if (workOrder.status === "review") {
     return `
       <section class="context-action">
-        <p>结果已整理完成，需要你确认是否符合目标。</p>
         <button class="primary-button full-button" id="deliver-work-order" type="button">确认完成</button>
-        <form id="revision-form">
-          <label><span>继续调整</span><textarea name="revisionNote" rows="3" required placeholder="说明还需要调整什么"></textarea></label>
-          <button class="secondary-button full-button" id="revise-work-order" type="submit">生成后续计划</button>
-        </form>
       </section>`;
   }
   if (workOrder.status === "delivered") {
-    return '<section class="context-action completed-action"><strong>这个目标已经确认完成。</strong><p>计划、运行记录和验收结果仍保存在本机。</p></section>';
+    return '<section class="context-action completed-action"><button class="secondary-button" id="show-results" type="button">查看成果</button></section>';
   }
   return "";
+}
+
+function renderProgressSecondaryActions(workOrder) {
+  if (workOrder.runStatus === "running") {
+    return '<div class="progress-secondary-actions"><button class="text-button" id="interrupt-work-order" type="button">中断运行</button></div>';
+  }
+  if (workOrder.status !== "interrupted") return "";
+  const latestCheckpoint = currentPlanCheckpoints(workOrder).at(-1);
+  const canReexecute = workOrder.workspace?.kind === "git" && latestCheckpoint;
+  return `<div class="progress-secondary-actions">${canReexecute
+    ? `<button class="secondary-button" id="reexecute-work-order" type="button">${latestCheckpoint.kind === "stage" ? "从最近节点重新执行" : "从起始位置重新执行"}</button>`
+    : '<p class="muted">普通文件夹暂不提供检查点回退。</p>'}</div>`;
 }
 
 function bindRenderedEvents() {
@@ -2763,6 +2838,27 @@ function bindRenderedEvents() {
       state.primaryView = button.dataset.primaryView;
       renderConsole();
     });
+  });
+  document.querySelector("#show-conversation")?.addEventListener("click", () => {
+    state.primaryView = "conversation";
+    renderConsole();
+  });
+  document.querySelector("#show-results")?.addEventListener("click", () => {
+    state.primaryView = "result";
+    renderConsole();
+  });
+  document.querySelector("#focus-current-stage")?.addEventListener("click", () => {
+    state.primaryView = "progress";
+    state.followCurrentStage = true;
+    state.selectedStageIndex = preferredStageIndex(state.selected);
+    const stage = state.selected.plan?.stages?.[state.selectedStageIndex];
+    if (stage) openContextInspector({ type: "stage", id: stage.id });
+    renderConsole();
+  });
+  document.querySelector("#review-plan")?.addEventListener("click", () => {
+    state.primaryView = "progress";
+    state.draftStages = state.selected.plan?.stages.map((stage) => ({ ...stage })) ?? [];
+    renderConsole();
   });
   document.querySelectorAll("[data-result-artifact]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -2836,13 +2932,6 @@ function bindRenderedEvents() {
   });
   document.querySelector("#goal-project-form")?.addEventListener("submit", saveGoalProjectContext);
 
-  document.querySelector("[data-continue-imported-goal]")?.addEventListener("click", () => {
-    continueGoalError.textContent = "";
-    continueGoalForm.reset();
-    continueGoalDialog.showModal();
-    document.querySelector("#confirm-continue-goal").focus();
-  });
-
   document.querySelectorAll("[data-reorganize-sessions]").forEach((button) => {
     button.addEventListener("click", async () => {
       setBusy(button, "正在整理…");
@@ -2905,8 +2994,12 @@ function bindRenderedEvents() {
     setBusy(button, "正在生成…");
     setFeedback("plan-feedback", "生成计划通常需要 30–90 秒，Codex 正在整理目标和素材。", false);
     try {
+      const goal = document.querySelector("#workbench-goal-input")?.value;
       const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/plan/generate`, {
         method: "POST",
+        ...(goal !== undefined
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ goal }) }
+          : {}),
       });
       state.draftStages = null;
       await acceptWorkOrderResult(
@@ -2914,7 +3007,7 @@ function bindRenderedEvents() {
         result.outcome === "clarification" ? "还需要你确认一项关键信息。" : "计划已经生成，你可以继续编辑。",
       );
     } catch (error) {
-      resetBusy(button, "生成计划");
+      resetBusy(button, state.selected?.importContext ? "生成后续计划" : "生成执行计划");
       setFeedback("plan-feedback", messageFrom(error, "生成计划失败，你仍然可以手动填写。"), true);
     }
   });
@@ -3110,7 +3203,7 @@ function bindRenderedEvents() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ revisionNote }),
       });
-      state.primaryView = "map";
+      state.primaryView = "progress";
       await acceptWorkOrderResult(
         result.workOrder,
         result.outcome === "clarification"
@@ -3230,40 +3323,6 @@ function closeSessionImport() {
   sessionImportDialog.close();
   sessionImportForm.reset();
   sessionImportError.textContent = "";
-}
-
-function closeContinueGoal() {
-  continueGoalDialog.close();
-  continueGoalForm.reset();
-  continueGoalError.textContent = "";
-  resetBusy(document.querySelector("#confirm-continue-goal"), "确认并生成计划");
-}
-
-async function continueImportedGoal(event) {
-  event.preventDefault();
-  const button = document.querySelector("#confirm-continue-goal");
-  const continuationNote = String(
-    new FormData(continueGoalForm).get("continuationNote") ?? "",
-  ).trim();
-  continueGoalError.textContent = "";
-  setBusy(button, "正在生成…");
-  try {
-    const result = await requestJson(`/api/work-orders/${encodedSelectedId()}/plan/generate`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ continuationNote }),
-    });
-    closeContinueGoal();
-    await acceptWorkOrderResult(
-      result.workOrder,
-      result.outcome === "clarification"
-        ? "还需要你确认一项关键信息。"
-        : "后续计划已生成，请检查并确认。",
-    );
-  } catch (error) {
-    resetBusy(button, "确认并生成计划");
-    continueGoalError.textContent = messageFrom(error, "无法生成后续计划，请重试。");
-  }
 }
 
 function renderSessionCandidates() {

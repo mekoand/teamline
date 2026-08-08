@@ -46,6 +46,10 @@ export class CodexPlanGenerator implements PlanGenerator {
           "--color",
           "never",
           "--ephemeral",
+          "--model",
+          "gpt-5.6-sol",
+          "-c",
+          "model_reasoning_effort=medium",
           buildPrompt(workOrder),
         ],
         {

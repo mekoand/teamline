@@ -123,6 +123,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     path: "public/context-inspector.js",
     type: "text/javascript; charset=utf-8",
   },
+  "/goal-workbench.js": {
+    path: "public/goal-workbench.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/result-artifacts.js": {
     path: "public/result-artifacts.js",
     type: "text/javascript; charset=utf-8",
@@ -3195,7 +3199,7 @@ export function createApp({
       );
       if (request.method === "POST" && generatePlanMatch) {
         const id = decodeURIComponent(generatePlanMatch[1]);
-        const workOrder = store.get(id);
+        let workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
@@ -3227,8 +3231,11 @@ export function createApp({
         planningWorkOrderIds.add(id);
         try {
           const body = request.headers.get("content-type")?.includes("application/json")
-            ? await request.json() as { continuationNote?: unknown }
+            ? await request.json() as { continuationNote?: unknown; goal?: unknown }
             : {};
+          if (typeof body.goal === "string") {
+            workOrder = store.updatePlanningGoal(id, body.goal);
+          }
           const continuationNote = typeof body.continuationNote === "string"
             ? body.continuationNote.trim() || undefined
             : undefined;
