@@ -2908,13 +2908,11 @@ dialog::backdrop {
 }
 
 /* V2 information hierarchy */
-.console-shell.view-home,
-.console-shell.view-projects {
+.console-shell.view-home {
   grid-template-columns: 292px minmax(0, 1fr);
 }
 
-.console-shell.view-home .context-panel,
-.console-shell.view-projects .context-panel {
+.console-shell.view-home .context-panel {
   display: none;
 }
 
@@ -3363,6 +3361,8 @@ dialog::backdrop {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel);
+  color: var(--text);
+  text-align: left;
 }
 
 .project-material-card > span,
@@ -3386,14 +3386,77 @@ dialog::backdrop {
   line-height: 1.55;
 }
 
-.project-result-card {
-  color: var(--text);
-  text-align: left;
-}
-
+.project-material-card:hover,
 .project-result-card:hover {
   border-color: var(--faint);
   background: var(--panel-soft);
+}
+
+.inspector-selection-button {
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.identity-quota-heading.inspector-selection-button,
+.resource-order-title.inspector-selection-button {
+  width: 100%;
+}
+
+.resource-order-title.inspector-selection-button {
+  padding: 0;
+}
+
+.resource-order-title.inspector-selection-button > span:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.resource-order-title.inspector-selection-button .row-arrow {
+  margin-left: auto;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.project-context-value,
+.context-reference-list {
+  display: grid;
+  gap: 8px;
+}
+
+.project-context-value > span,
+.context-section > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.project-context-value p,
+.project-context-value code,
+.context-reference-list code {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.context-reference-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.context-reference-list li {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.context-quota-windows {
+  margin-top: 18px;
 }
 
 .project-add-disclosure {

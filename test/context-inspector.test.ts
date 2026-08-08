@@ -56,6 +56,19 @@ describe("context inspector state", () => {
     });
   });
 
+  test("returns an open goal inspector to the default state when navigating to resources", () => {
+    const goalInspector = selectContextInspector(createContextInspectorState(), {
+      type: "goal",
+      id: "goal-a",
+    });
+
+    const resourceNavigationState = clearContextInspector(goalInspector);
+
+    expect(resourceNavigationState.open).toBe(false);
+    expect(resourceNavigationState.selection).toBeNull();
+    expect(resourceNavigationState.closedByUser).toBe(false);
+  });
+
   test("keeps a busy inspector locked across polling until the operation settles", () => {
     const selected = selectContextInspector(createContextInspectorState(), {
       type: "goal",
