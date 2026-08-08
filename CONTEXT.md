@@ -1,297 +1,301 @@
-# AI 工作控制
+# AI Work Control
 
-这个产品面向依赖一个或多个 AI 工具持续完成编码、产品设计、文档协作或调研工作的个人与小团队。它关注工作如何被安排、执行和恢复，而不只关注单个工具的使用量。
+[简体中文](./CONTEXT.zh-CN.md)
 
-## 产品边界
+Teamline is for individuals and small teams that rely on one or more AI tools to carry coding, product design, documentation, or research work over time. It focuses on how work is arranged, executed, and recovered, not only on the usage of an individual tool.
 
-**工作控制层**:
-位于用户与现有 AI 工具之间，负责工作目标的计划、资源决策、授权、状态、恢复与验收证据。实际内容生成和工具调用由现有 AI 工具完成。
-_Avoid_: AI 编码 Agent、模型网关、工具切换器
+English terms in this file are canonical for engineering and product documentation. The Chinese term shown beside each heading is the corresponding `zh-CN` interface term.
 
-**AI-native 团队运行系统**:
-产品的长期形态，围绕 AI 工作的目标、资源供给、团队规则和能力改进，帮助团队把 AI 转化为稳定生产能力。它可以扩展资源经营、团队能力建设与管理治理，但不替代代码仓库、需求系统、财务系统、知识库或通用学习平台。
-_Avoid_: AI 工具大全、企业协作套件、通用项目管理
+## Product Boundary
 
-**执行端**:
-运行在开发者电脑或团队自有环境中的组件，连接现有 AI 编码工具并执行已经授权的工作目标。目标与检查点模型不依赖操作系统，进程、文件系统和凭据操作由各平台执行端适配；在线控制台通过执行端控制本地工作，而不是从浏览器直接操作用户电脑。源代码、仓库凭据、模型会话和完整执行记录默认保留在执行端或原有系统中。
-_Avoid_: 云端 Agent、托管开发环境、远程 IDE
+**Work control layer** (`工作控制层`):
+The layer between users and existing AI tools that owns work-goal planning, resource decisions, authorization, state, recovery, and acceptance evidence. Existing AI tools still generate content and invoke tools.
+_Avoid_: AI coding agent, model gateway, tool switcher
 
-**执行工具接入**:
-Teamline 通过具备可验证控制能力的接入面连接现有 AI 编码工具，能力至少涵盖指定执行工作区、执行生命周期、结构化状态、上下文恢复和授权边界。每项能力必须标记为可阻止、可检测、仅提示或不支持；暂停与终止进程树、执行围栏和新增权限拦截未得到可靠验证时，该接入不能被称为受控执行。接入面可以是 CLI、本地协议、官方 SDK/API 或工具提供的扩展接口；产品模型不与某一种界面绑定，也不把 UI 自动化视为深度接入。
-_Avoid_: 仅以 CLI 定义接入、界面自动化、工具切换器
+**AI-native team operating system** (`AI-native 团队运行系统`):
+The product's long-term form. It organizes AI-work goals, resource supply, team rules, and capability improvement so teams can turn AI into dependable production capacity. It may expand into resource operations, team capability development, and management governance, but it does not replace code repositories, requirement systems, finance systems, knowledge bases, or general learning platforms.
+_Avoid_: AI tool catalog, enterprise collaboration suite, general project management
 
-**个人本地控制台**:
-面向单个开发者的完整工作控制产品。其产品边界包括目标、计划确认、个人规则、资源方案、运行总览、检查点、恢复、执行图和验收证据。创建目标只要求描述预期结果、选择所需素材或工作空间，并可选填写验收要求；用户点击生成计划时授予规划授权，Codex 生成计划草案，Teamline 套用默认执行授权和验证方式，用户再在一张确认页中确认阶段、影响范围、网络权限和验证方式，高级项默认折叠。个人内核 v0 只用一个仓库、一种工具和一个活动目标验证闭环；个人 Alpha 必须允许至少两个目标在相互隔离的工作区中并行运行，并发上限由本机资源和用户设置决定。它默认免费、无需账号并只保存本地数据，与团队版共用目标和执行引擎，但不包含多人治理能力。
-_Avoid_: 额度监控器、团队版试用、功能残缺的免费版
+**Execution host** (`执行端`):
+A component on a developer's computer or in a team-owned environment that connects to existing AI coding tools and executes authorized work goals. The goal and checkpoint model is operating-system independent; each platform host adapts process, filesystem, and credential operations. An online console controls local work through the execution host rather than operating the user's computer directly from the browser. Source code, repository credentials, model sessions, and complete execution records remain on the host or in their original systems by default.
+_Avoid_: cloud agent, hosted development environment, remote IDE
 
-**恢复逻辑原型**:
-进入正式实现前用于验证检查点、暂停保存点、执行围栏和恢复状态转换的可丢弃终端原型，不接真实 Codex，也不属于产品版本。它可以临时使用 Bun 等现有运行时，但不形成正式技术栈决定。
-_Avoid_: 个人内核 v0、正式实现、产品 Demo
+**Execution-tool integration** (`执行工具接入`):
+The integration surface through which Teamline connects to an existing AI coding tool with verifiable control. Its capabilities cover at least selecting the execution workspace, owning the execution lifecycle, obtaining structured state, restoring context, and applying authorization boundaries. Each capability must be classified as able to block, able to detect, advisory only, or unsupported. An integration is not managed execution unless pausing and terminating a process tree, execution fencing, and intercepting new permission requests are reliably validated. The surface may be a CLI, local protocol, official SDK or API, or tool extension; the product model is not bound to one interface and does not treat UI automation as deep integration.
+_Avoid_: CLI-defined integration, UI automation, tool switcher
 
-**个人内核 v0**:
-在 Apple Silicon macOS 上以单仓库、Codex、单个活动目标和本地网页跑通受控目标闭环的首个正式工程切片。它在目标中记录 Codex、可识别的模型、最长运行时间和可选用量或费用提醒阈值；运行时间可以硬暂停，其他资源信号只有在来源可靠且能够归因时才允许执行动作。
-_Avoid_: 恢复逻辑原型、个人 Alpha、团队 MVP
+**Personal local console** (`个人本地控制台`):
+A complete work-control product for one developer. Its boundary includes goals, plan confirmation, personal rules, resource plans, an execution overview, checkpoints, recovery, execution graphs, and acceptance evidence. Creating a goal only requires the expected result, the necessary materials or workspace, and optional acceptance requirements. Selecting Generate plan grants planning authorization; Codex drafts the plan; Teamline applies default execution authorization and validation methods; and the user confirms stages, impact scope, network permission, and validation on one page with advanced options collapsed by default. Personal kernel v0 validates the loop with one repository, one tool, and one active goal. Personal Alpha must allow at least two goals to run in isolated workspaces, with concurrency limited by local resources and user settings. The personal console is free, accountless, and local by default. It shares the goal and execution engine with the team edition but excludes multi-person governance.
+_Avoid_: quota monitor, team-edition trial, deliberately incomplete free edition
 
-**个人 Alpha**:
-第一个交给真实个人用户持续使用的版本，在个人内核 v0 之上支持至少两个相互隔离的并行目标，并可以通过可选资源适配器接入 CC Switch 等现有本地工具。
-_Avoid_: 单目标原型、团队试用版
+**Recovery-logic prototype** (`恢复逻辑原型`):
+A disposable terminal prototype used before formal implementation to validate checkpoints, pause savepoints, execution fencing, and recovery state transitions. It does not connect to real Codex and is not a product release. It may temporarily use an existing runtime such as Bun without deciding the production stack.
+_Avoid_: Personal kernel v0, production implementation, product demo
 
-**个人版 V2**:
-在个人目标闭环已经可用后，围绕目标创建与导入、项目整理、执行图、成果和资源安排提升完整体验的本地版本。它不增加账号、云端同步或团队治理。
-_Avoid_: 团队版、个人云端版、完整多工具版本
+**Personal kernel v0** (`个人内核 v0`):
+The first production engineering slice that completes a managed goal loop on Apple Silicon macOS with one repository, Codex, one active goal, and a local web interface. It records Codex, an identifiable model, maximum run time, and optional usage or cost alert thresholds for the goal. Run time can cause a hard pause; other resource signals may cause actions only when their source is reliable and they can be attributed to the goal.
+_Avoid_: recovery-logic prototype, Personal Alpha, team MVP
 
-**团队付费 MVP**:
-复用已经验证的个人执行内核，增加团队规则、多人权限、交接、共享资源约束和集中控制面的首个付费版本。
-_Avoid_: 个人 Alpha、企业私有版、通用协作套件
+**Personal Alpha** (`个人 Alpha`):
+The first version intended for sustained use by real individual users. On top of Personal kernel v0, it supports at least two isolated goals in parallel and may connect to existing local tools such as CC Switch through optional resource adapters.
+_Avoid_: single-goal prototype, team trial
 
-**本地网页版**:
-由个人本地控制台在本机提供、通过浏览器访问的界面。它与桌面封装共享同一前端和本地服务，不代表数据上传到云端。第一阶段不提供独立的个人云端网页服务。
-_Avoid_: 云端个人版、远程状态页、必须登录的网页
+**Personal edition V2** (`个人版 V2`):
+A local release that improves goal creation and import, project organization, execution graphs, results, and resource arrangements after the personal goal loop works. It does not add accounts, cloud synchronization, or team governance.
+_Avoid_: team edition, personal cloud edition, complete multi-tool edition
 
-## 用户角色
+**Paid team MVP** (`团队付费 MVP`):
+The first paid release. It reuses the validated personal execution kernel and adds team rules, multi-person permissions, handoff, shared resource constraints, and a centralized control plane.
+_Avoid_: Personal Alpha, private enterprise edition, general collaboration suite
 
-**重度个人开发者**:
-同时订阅并频繁使用多种 AI 编码工具，经常把需要持续多轮的开发工作交给 AI 完成的个人。它是早期设计伙伴、个人版使用者和产品传播入口。
-_Avoid_: 普通个人用户、泛开发者、Power User
+**Local web interface** (`本地网页版`):
+The browser interface served on the user's computer by the personal local console. It shares a frontend and local service with any desktop wrapper and does not imply that data is uploaded to the cloud. The first phase does not provide a separate hosted personal web service.
+_Avoid_: cloud personal edition, remote status page, sign-in-required web app
 
-**小型 AI 编码团队**:
-由个人创业者、早期创业团队或企业内部小组构成，以多个 AI 编码工作流共同完成产品交付的一小群人。它是产品的主要商业客户。
-_Avoid_: 泛企业客户、所有研发团队、团队用户
+## User Roles
 
-**首个付费团队**:
-由创始人或技术负责人直接带队的 2–8 人软件团队，已经让多个成员并行使用一个或多个 AI 编码工具，经常同时推进至少三项持续数小时或数天的开发工作。企业内部团队仍在目标市场内，但不是第一阶段的产品与销售约束。
-_Avoid_: 所有小团队、重度个人用户、企业试点
+**Heavy individual developer** (`重度个人开发者`):
+An individual who subscribes to and frequently uses several AI coding tools and often delegates development work that takes multiple rounds. This person is an early design partner, personal-edition user, and path for product adoption.
+_Avoid_: ordinary individual user, generic developer, power user
 
-**企业私有版**:
-面向中国企业、部署在客户自有网络与基础设施中的候选商业版本。目标是沿用同一套目标、规则、资源与验收模型，并增加企业身份、权限、审计留存、网络出口控制、离线运维及国内工具适配；能否不形成客户专属分叉，需要在团队 SaaS 验证后单独验证。
-_Avoid_: 私有代码分支、定制项目、首个付费 MVP
+**Small AI coding team** (`小型 AI 编码团队`):
+A small group of solo founders, early-stage startup members, or an internal company unit that ships products through several AI coding workflows. This is the product's primary commercial customer.
+_Avoid_: generic enterprise customer, every engineering team, team user
 
-**工作控制者**:
-在小型 AI 编码团队中发起工作目标、确认计划、处理异常并验收结果的人，通常是创始人、技术负责人或承担交付责任的开发者。
-_Avoid_: 管理员、项目经理、普通成员
+**First paid team** (`首个付费团队`):
+A two-to-eight-person software team led directly by a founder or technical lead. Several members already use one or more AI coding tools in parallel, and the team often advances at least three pieces of work lasting hours or days at the same time. Internal enterprise teams remain in the target market but do not constrain the first product and sales phase.
+_Avoid_: every small team, heavy individual developer, enterprise pilot
 
-**目标负责人**:
-一个工作目标当前唯一承担闭环责任的人，负责确认目标边界和计划、处理授权与异常，并推动结果进入验收。实际执行者和验收人可以不同，负责人变化必须通过明确交接完成。
-_Avoid_: 多负责人、默认项目负责人、当前执行 Agent
+**Private enterprise edition** (`企业私有版`):
+A candidate commercial edition for Chinese enterprises, deployed in customer-owned networks and infrastructure. It aims to reuse the same goal, rule, resource, and acceptance model while adding enterprise identity, permissions, audit retention, network-egress control, offline operations, and support for Chinese tools. Whether it can avoid customer-specific forks must be validated separately after the team SaaS is proven.
+_Avoid_: private code branch, custom project, first paid MVP
 
-**目标交接**:
-目标负责人或当前执行者基于阶段检查点或完整的暂停保存点，把后续推进责任明确转给另一名成员或执行端的动作。交接必须带上当前状态、生效规则集、未解决风险和恢复入口。
-_Avoid_: 转发消息、共享聊天记录、重新开始
+**Work controller** (`工作控制者`):
+The person in a small AI coding team who initiates work goals, confirms plans, handles exceptions, and accepts results. Usually a founder, technical lead, or developer accountable for delivery.
+_Avoid_: administrator, project manager, ordinary member
 
-**目标转入团队**:
-个人用户主动把一项本地目标纳入团队控制面的动作。个人目标不会自动上传；转入时形成不可变的基线，并同步团队治理所需的计划、来源引用、资源方案、当前检查点、状态、规则版本和证据摘要。转入前的工作明确标记为非受控历史，团队规则只覆盖基线之后的执行。
-_Avoid_: 自动同步个人工作、后台上传、历史补记合规
+**Goal owner** (`目标负责人`):
+The one person currently accountable for closing a work goal. The owner confirms its boundary and plan, handles authorization and exceptions, and advances the result to acceptance. Executors and acceptors may differ, but ownership changes require an explicit handoff.
+_Avoid_: multiple owners, default project owner, current executing agent
 
-**团队控制台**:
-为小型 AI 编码团队定义和执行共同运行规则的协同产品。共享的工作状态、执行资源、授权、异常和验收证据是支撑规则生效的上下文，而不是产品的主要价值。
-_Avoid_: 团队看板、项目管理工具、协作平台
+**Goal handoff** (`目标交接`):
+An explicit transfer of responsibility for advancing a goal from its owner or current executor to another member or execution host, based on a stage checkpoint or complete pause savepoint. The handoff carries current state, the effective rule set, unresolved risks, and the recovery entry point.
+_Avoid_: forwarding a message, sharing chat history, restarting
 
-**团队控制面**:
-团队控制台在云端共享的结构化控制数据，包括目标状态、规则版本、授权与例外、检查结果和验收摘要。它通过执行端协调工作，但默认不保存源代码、仓库凭据、完整模型会话或完整执行记录。
-_Avoid_: 代码托管、云端工作区、全量日志仓库
+**Move goal to team** (`目标转入团队`):
+The deliberate action by which an individual user brings a local goal under the team control plane. Personal goals are never uploaded automatically. The move creates an immutable baseline and synchronizes only the plan, source references, resource plan, current checkpoint, state, rule version, and evidence summary needed for team governance. Earlier work is explicitly marked as unmanaged history, and team rules apply only after the baseline.
+_Avoid_: automatic personal-work sync, background upload, retroactive compliance record
 
-**运行总览**:
-团队控制台的主界面，按需要处理、运行中、受阻、待验收等状态展示团队当前的工作目标，并突出负责人、执行端、等待的决定和资源风险。它服务于发现下一项需要人介入的工作，而不是维护项目计划。
-_Avoid_: 项目看板、任务列表、团队动态流
+**Team console** (`团队控制台`):
+The collaborative product through which a small AI coding team defines and applies shared operating rules. Shared work state, execution resources, authorization, exceptions, and acceptance evidence provide the context needed for those rules; they are not the product's primary value by themselves.
+_Avoid_: team board, project-management tool, collaboration platform
 
-**执行图**:
-控制台根据已确认计划和实际运行记录为单个目标生成的进展视图。顺序工作显示为时间线，存在并行或依赖时显示为节点图；用户可以查看节点详情，但不需要手工绘制或调整布局。
-_Avoid_: 执行地图、无限画布、工作流编辑器、流程建模工具
+**Team control plane** (`团队控制面`):
+The structured control data shared in the cloud by the team console, including goal state, rule versions, authorization and exceptions, check results, and acceptance summaries. It coordinates work through execution hosts but does not store source code, repository credentials, complete model sessions, or complete execution records by default.
+_Avoid_: code hosting, cloud workspace, full-log repository
 
-**团队运行规则**:
-团队对 AI 编码工作如何计划、执行和验收所作的共同约定，可以按成员或角色、项目或代码库、工具或模型、执行环境以及目标类型生效。
-_Avoid_: 提示词、团队文档、个人偏好
+**Execution overview** (`运行总览`):
+The main team-console view. It groups current work goals by Needs response, Running, and Review-ready, including blocker reasons under Needs response, and highlights the owner, execution host, pending decision, and resource risks. Its purpose is to find the next work that needs human involvement, not to maintain a project plan.
+_Avoid_: project board, task list, team activity feed
 
-**已发布团队规则**:
-在团队控制台中经过确认、带有版本并可被工作目标引用的团队运行规则。团队控制台是这类规则及其版本历史的唯一权威来源；仓库、工具或其他系统中已有的规则不会因此变成控制台里的第二份可编辑副本。
-_Avoid_: 同步规则副本、所有外部规则
+**Execution graph** (`执行图`):
+A progress view generated for one goal from its confirmed plan and actual execution record. Sequential work appears as a timeline; parallel or dependent work appears as a node graph. Users inspect node details but do not draw the flow or adjust its layout manually.
+_Avoid_: execution map, infinite canvas, workflow editor, process-modeling tool
 
-**可验证规则**:
-具有明确适用范围和机器可判断条件的规则，例如允许的工具与环境、预算限制、受限路径与命令、批准条件、必需检查、验收证据和验收角色。只有这类规则可以被产品声明为自动执行或验证。
-_Avoid_: 任意自然语言规则、模型自评遵守
+**Team operating rule** (`团队运行规则`):
+A shared agreement about how the team plans, executes, and accepts AI coding work. It may apply by member or role, project or repository, tool or model, execution environment, and goal type.
+_Avoid_: prompt, team document, personal preference
 
-**规则验证方式**:
-执行端对一条规则实际具备的能力，分为执行前阻止、执行后检测、收集证据、人工确认和不支持。结构化不等于能够阻止；控制台必须按实际能力显示已验证、部分验证或无法判断。
-_Avoid_: 一律合规、模型自评、仅因受控启动即视为落实
+**Published team rule** (`已发布团队规则`):
+A confirmed and versioned team operating rule in the team console that work goals can reference. The console is the sole authoritative source for this rule and its version history. Rules already maintained in repositories, tools, or other systems do not become a second editable copy in the console.
+_Avoid_: synchronized rule copy, every external rule
 
-**指导性规则**:
-来自仓库、工具或文档的自然语言约定，可以被引用、传递给 AI 并展示给人，但在未转换为可判断条件或得到人工确认前，产品不能声称已经自动执行。
-_Avoid_: 已验证规则、隐藏提示词、默认已遵守
+**Verifiable rule** (`可验证规则`):
+A rule with an explicit scope and machine-evaluable conditions, such as allowed tools and environments, budget limits, restricted paths and commands, approval conditions, required checks, acceptance evidence, and acceptance roles. Only these rules may be described as automatically enforced or verified.
+_Avoid_: arbitrary natural-language rule, model self-assessment
 
-**规则适用范围**:
-一条团队运行规则所约束的成员、项目、工具、执行环境或工作目标集合。同一项工作可能同时命中多个范围的规则。
-_Avoid_: 跨工具规则、全局设置
+**Rule verification method** (`规则验证方式`):
+The execution host's actual capability for a rule: block before execution, detect after execution, collect evidence, obtain human confirmation, or unsupported. Being structured does not imply that a rule can be blocked. The console reports verified, partially verified, or indeterminate according to the real capability.
+_Avoid_: universal compliance, model self-assessment, compliance inferred from managed start
 
-**生效规则集**:
-工作目标确认计划时，由控制台根据适用范围解析团队、仓库、工具及其他来源的规则，并连同来源和版本固化下来的不可变约束集合。外部来源后续变化时，当前目标只会被标记为规则可能过期，不会被静默改写。
-_Avoid_: 规则副本、实时同步规则、最新规则
+**Advisory rule** (`指导性规则`):
+A natural-language convention from a repository, tool, or document that may be referenced, passed to AI, and shown to people. Until it is converted into evaluable conditions or confirmed by a person, the product cannot claim it was automatically enforced.
+_Avoid_: verified rule, hidden prompt, assumed compliance
 
-**规则冲突**:
-同一工作目标命中的规则无法同时满足，且不存在明确的更严格约束。控制台不得静默选择来源、时间较新或自行推断的一条规则，必须在计划确认前交给工作控制者处理。
-_Avoid_: 自动覆盖、仓库优先、最新优先
+**Rule scope** (`规则适用范围`):
+The members, projects, tools, execution environments, or work goals constrained by a team operating rule. One piece of work may match several scopes.
+_Avoid_: cross-tool rule, global setting
 
-**规则例外**:
-工作控制者对已发布团队规则作出的有限放宽，必须限定成员、项目、目标或时间范围，并记录原因、批准人和失效条件。AI 与执行工具不能自行创建或批准规则例外。
-_Avoid_: 临时忽略、永久豁免、Agent 自主放行
+**Effective rule set** (`生效规则集`):
+The immutable set of constraints resolved when a work goal's plan is confirmed. The console selects applicable rules from team, repository, tool, and other sources and preserves each source and version. Later changes to an external source only mark the current goal as potentially stale; they do not silently rewrite it.
+_Avoid_: rule copy, real-time rule synchronization, latest rules
 
-## 信息所有权
+**Rule conflict** (`规则冲突`):
+A case where rules applying to the same work goal cannot all be satisfied and no clearly stricter constraint exists. The console must not silently choose by source, recency, or inference. The work controller resolves the conflict before plan confirmation.
+_Avoid_: automatic override, repository wins, newest wins
 
-**权威来源**:
-某一类信息唯一允许被正式创建和修改的系统。权威来源按信息对象划分，不要求所有信息都集中在同一个产品中。
-_Avoid_: 全局 SOT、同步主库
+**Rule exception** (`规则例外`):
+A limited relaxation of a published team rule by a work controller. It is scoped to a member, project, goal, or time period and records its reason, approver, and expiry condition. AI and execution tools cannot create or approve exceptions.
+_Avoid_: temporary ignore, permanent waiver, agent-approved bypass
 
-**来源快照**:
-工作目标确认计划时，对外部需求或文档所引用版本的不可变记录。外部来源变化时，现有计划被标记为可能失效，而不是被静默覆盖。
-_Avoid_: 文档副本、双向同步数据
+## Information Ownership
 
-## 工作与结果
+**Authoritative source** (`权威来源`):
+The one system allowed to formally create and modify a class of information. Authority is assigned by information object; it does not require all information to be centralized in one product.
+_Avoid_: global source of truth, synchronized primary store
 
-**人工协调负担**:
-开发者为了推进多个 AI 编码工作，不得不亲自跟踪状态、上下文、资源、执行工具和恢复入口所投入的注意力。它是用户开始寻找工作控制层的首要触发问题。
-_Avoid_: 单纯无人值守、Quota 痛点、多工具管理
+**Source snapshot** (`来源快照`):
+An immutable record of the version of an external requirement or document referenced when a work goal's plan is confirmed. A later source change marks the existing plan as potentially stale instead of silently overwriting it.
+_Avoid_: document copy, bidirectionally synchronized data
 
-**工作目标**:
-用户交给 AI 工具完成的一项有明确边界、预期结果和验收方式的工作，是产品管理工作的基本单位，界面中简称“目标”；编码、产品设计、文档协作和调研都可以形成目标。目标不再嵌套，同一验收结果内的拆分使用执行阶段，需要独立运行和验收的工作建立为另一个目标。
-_Avoid_: 使命、愿景、大任务、子目标、仅限编码工作、仅限长程工作
+## Work and Results
 
-**执行会话**:
-AI 工具围绕一个目标发生的一段连续交互与执行记录。一个目标可以保留多个来源会话和历史执行会话，但同一来源会话只归入一个目标。
-_Avoid_: 目标、会话任务、多个原会话共同继续
+**Manual coordination burden** (`人工协调负担`):
+The attention a developer spends personally tracking the state, context, resources, execution tool, and recovery entry point of several pieces of AI coding work. It is the primary trigger that leads users to seek a work control layer.
+_Avoid_: unattended execution alone, quota pain, multi-tool management
 
-**来源会话**:
-用户从 Codex 导入、用于还原目标历史的一段本地会话。来源会话保留在原系统中，Teamline 只保存引用和整理结果；多个来源会话归入同一目标后，后续工作从新的执行会话继续。
-_Avoid_: 当前执行会话、完整会话副本、双向同步会话
+**Work goal** (`工作目标`; interface: `目标`):
+The basic unit of work managed by the product: a bounded piece of work delegated to an AI tool with an expected result and an acceptance method. Coding, product design, documentation, and research may all form goals. Goals do not nest. Use execution stages for parts of one accepted result; create another goal when work requires independent execution and acceptance.
+_Avoid_: mission, vision, large task, subgoal, coding-only work, long-running work only
 
-**目标对话**:
-用户围绕整个目标与 Teamline 发生的一条连续交流记录，可以包含整体讨论和针对当前节点的补充。执行节点引用相关消息，但不各自建立独立聊天室。
-_Avoid_: 节点聊天室、Codex 会话列表、通用聊天
+**Execution session** (`执行会话`):
+A continuous interaction and execution record produced by an AI tool around one goal. A goal may retain several source sessions and historical execution sessions, but each source session belongs to only one goal.
+_Avoid_: goal, session task, continuing several original sessions together
 
-**项目**:
-围绕一个持续主题或交付方向整理多个相关目标的上层集合，用于汇总各目标的进展、素材和成果。项目没有自己的执行计划、工作状态或完成百分比，一个目标最多属于一个项目。
-_Avoid_: 目标组合、组合目标、父目标、大目标、项目文件夹、嵌套项目
+**Source session** (`来源会话`):
+A local Codex session imported by the user to reconstruct a goal's history. It remains in its original system; Teamline stores only a reference and organized results. After several source sessions are grouped into one goal, later work continues in a new execution session.
+_Avoid_: current execution session, complete session copy, bidirectional session sync
 
-**素材**:
-帮助理解或推进目标的来源内容，可以是新建文本、上传的文件或图片，也可以引用仓库、文件夹、链接或另一个目标。素材归属于独立目标或项目；独立目标加入项目时，其素材自动进入项目范围，而被引用的目标只提供名称、进展与成果。
-_Avoid_: 全局素材库、共同素材、附件、知识库、上下文副本
+**Goal conversation** (`目标对话`):
+One continuous user-visible conversation with Teamline about the entire goal. It may contain whole-goal discussion and additions for the current node. Execution nodes reference relevant messages but do not create separate chatrooms.
+_Avoid_: node chatroom, Codex session list, general chat
 
-**执行计划**:
-工作控制层拥有并进行版本管理的结构化执行计划，包含阶段目标、依赖、影响范围、检查点、验证方式、资源方案和失败恢复入口。取得规划授权后，个人内核 v0 由 Codex 根据当前上下文提出结构化草案，用户可以修改或改为手动填写；只有经人确认的计划版本能够获得执行授权。Teamline 不在个人内核 v0 另建独立的云端规划模型。
-_Avoid_: Agent 临时计划、外部任务副本、自动生效的拆分结果
+**Project** (`项目`):
+A top-level collection that organizes related goals around a continuing theme or delivery direction and summarizes their progress, materials, and results. A project has no execution plan, work state, or completion percentage of its own. A goal belongs to at most one project.
+_Avoid_: goal bundle, composite goal, parent goal, large goal, project folder, nested project
 
-**规划授权**:
-用户通过“生成计划”动作，允许 Codex 读取生成计划所需的目标描述、所选素材，以及已选工作空间中的必要上下文，并在界面已经披露接收服务与数据范围的前提下发送这些信息。规划授权不允许修改本地内容、启动受控执行或取得计划之外的额外网络权限。
-_Avoid_: 执行授权、后台预读、默认同意
+**Material** (`素材`):
+Source content that helps explain or advance a goal. It may be new text, an uploaded file or image, or a reference to a repository, folder, link, or another goal. Materials belong to an independent goal or project. When an independent goal joins a project, its materials enter the project scope automatically; a referenced goal exposes only its name, progress, and results.
+_Avoid_: global material library, shared material, attachment, knowledge base, context copy
 
-**执行阶段**:
-执行计划中能够独立验证的一个中间结果，至少说明阶段结果、预计影响范围和验证方式。执行阶段分为 AI 节点和外部节点，不按运行时间、对话轮次或文件数量划分。
-_Avoid_: 固定时段、一次对话、模型自行认定的进度
+**Execution plan** (`执行计划`):
+A structured, versioned plan owned by the work control layer. It includes stage outcomes, dependencies, impact scope, checkpoints, validation methods, resource plans, and failure-recovery entry points. After planning authorization is granted, Personal kernel v0 asks Codex to propose a structured draft from current context; the user can edit it or switch to manual entry. Only a human-confirmed plan version can receive execution authorization. Teamline does not add a separate cloud planning model in Personal kernel v0.
+_Avoid_: agent's temporary plan, external-task copy, automatically effective decomposition
 
-**AI 节点**:
-由已接入的 AI 工具执行并上报进展的执行阶段。V2 只把 Codex 作为完整执行接入，其他工具在具备同等上报能力前不显示为实时受控节点。
-_Avoid_: 所有自动化步骤、模型的一次回复
+**Planning authorization** (`规划授权`):
+The permission granted by the Generate plan action. Codex may read the goal description, selected materials, and necessary context from the selected workspace and send that information only after the interface discloses the receiving service and data scope. Planning authorization does not permit local writes, managed execution, or network access beyond the plan request.
+_Avoid_: execution authorization, background prereading, implied consent
 
-**外部节点**:
-由用户或 Teamline 尚未接入的外部工具完成的执行阶段。用户通过补充结果、文件或链接完成节点，V2 不继续细分外部工具类型。
-_Avoid_: AI 节点、工具专用工作流、审批节点类型
+**Execution stage** (`执行阶段`):
+An independently verifiable intermediate result in an execution plan. It states at least the stage result, expected impact scope, and validation method. Stages are AI nodes or external nodes; they are not divided by elapsed time, conversation round, or file count.
+_Avoid_: fixed time block, one conversation, model-assessed progress
 
-**执行工作区**:
-Teamline 用于推进单个目标的本地位置。Git 仓库使用与目标执行分支和检查点绑定的独立 worktree；普通文件夹直接作为执行位置，不提供 Git 隔离、版本记录或回滚。它可以承载代码、文档或其他本地内容，但不构成文件系统、凭据、网络或子进程安全沙箱。
-_Avoid_: 多目标共享的工作目录、默认项目目录、安全沙箱
+**AI node** (`AI 节点`):
+An execution stage run by an integrated AI tool that reports progress. V2 treats only Codex as a complete execution integration. Other tools do not appear as live managed nodes until they provide equivalent reporting capabilities.
+_Avoid_: every automated step, one model response
 
-**检查点**:
-Teamline 在执行开始前记录起始基线，并在执行阶段按计划验证通过后创建阶段检查点。阶段检查点既是可寻址的恢复位置，也证明对应阶段已经完成；它绑定目标、计划版本、阶段、执行租约、Git tree hash 和顺序号。系统不会通过时间间隔、文件变化或 AI 推断检查点。
-_Avoid_: 暂停保存点、自动保存、任意快照、WIP commit、崩溃现场
+**External node** (`外部节点`):
+An execution stage completed by a user or by a tool Teamline has not integrated. The user completes it by adding a result, file, or link. V2 does not subdivide external tools into more node types.
+_Avoid_: AI node, tool-specific workflow, approval-node type
 
-**暂停保存点**:
-执行进程已经停稳后，Teamline 在主动暂停或交接时保存的完整可恢复现场。它可以作为安全接续位置，但不能证明当前执行阶段已经完成；保存不完整时不得覆盖此前的阶段检查点或起始基线。
-_Avoid_: 阶段检查点、阶段完成证据、崩溃现场
+**Execution workspace** (`执行工作区`):
+The local location Teamline uses to advance one goal. A Git repository uses an isolated worktree bound to the goal's execution branch and checkpoints. An ordinary folder is used directly and provides no Git isolation, version history, or rollback. Either may contain code, documents, or other local content, but neither is a filesystem, credential, network, or subprocess security sandbox.
+_Avoid_: working directory shared by goals, default project directory, security sandbox
 
-**待处理现场**:
-执行意外中断后，执行工作区中位于最后完整恢复位置之后的文件变化。Teamline 必须保留它，但不能把它自动认定为阶段检查点、暂停保存点或可靠恢复依据。
-_Avoid_: 检查点、已保存进度、可自动恢复状态
+**Checkpoint** (`检查点`):
+Teamline records a starting baseline before execution and creates a stage checkpoint only after the planned validation passes for an execution stage. A stage checkpoint is both an addressable recovery position and evidence that the stage completed. It is bound to the goal, plan version, stage, execution lease, Git tree hash, and sequence number. Time intervals, file changes, and AI inference do not create checkpoints.
+_Avoid_: pause savepoint, autosave, arbitrary snapshot, WIP commit, crash residue
 
-**执行中断**:
-执行工具意外退出或执行租约失效后，目标等待用户选择恢复路径的情况。它是目标进入“需响应”的原因，不是独立的一级状态。
-_Avoid_: 一级目标状态、已暂停、已取消
+**Pause savepoint** (`暂停保存点`):
+A complete recoverable state saved by Teamline during an intentional pause or handoff after the execution process has stopped. It is a safe continuation position but does not prove that the current stage completed. An incomplete save must not overwrite an earlier stage checkpoint or starting baseline.
+_Avoid_: stage checkpoint, stage-completion evidence, crash residue
 
-**安全恢复**:
-Teamline 确认旧进程树已被围栏并保留待处理现场后，从最新的完整恢复位置建立干净执行状态并取得新执行租约的默认路径。完整恢复位置可以是暂停保存点、阶段检查点或起始基线；暂停保存不完整时退回此前的阶段检查点或起始基线，且不自动混入其后的文件变化。无法确认旧进程停止时，目标保持“需响应”并注明执行中断，不得声称安全恢复。
-_Avoid_: 继续现场、重新开始、丢弃现场
+**Unresolved working residue** (`待处理现场`):
+File changes in the execution workspace after the last complete recovery position when execution stops unexpectedly. Teamline preserves them but does not automatically treat them as a stage checkpoint, pause savepoint, or reliable recovery basis.
+_Avoid_: checkpoint, saved progress, automatically recoverable state
 
-**现场接续**:
-用户明确选择利用待处理现场继续推进的非保证恢复路径。Teamline 必须先展示现场与最后完整恢复位置的差异，并且不能把接续结果冒充为可靠自动恢复。
-_Avoid_: 安全恢复、自动恢复、检查点恢复
+**Execution interruption** (`执行中断`):
+A condition in which the goal awaits a user's choice of recovery path after the execution tool exits unexpectedly or its execution lease expires. It is a reason for the Needs response state, not a top-level state of its own.
+_Avoid_: top-level goal state, paused, canceled
 
-**目标状态**:
-目标对用户只显示规划中、待运行、运行中、需响应、待验收和已完成六个一级状态。额度不足、执行中断、等待外部结果和计划变更等情况作为状态原因展示。
-_Avoid_: 已导入、已中断、受阻等额外一级状态
+**Safe recovery** (`安全恢复`):
+The default recovery path. Teamline confirms that the old process tree is fenced, preserves unresolved working residue, builds clean execution state from the latest complete recovery position, and acquires a new execution lease. A complete recovery position may be a pause savepoint, stage checkpoint, or starting baseline. An incomplete pause save falls back to the prior stage checkpoint or starting baseline without automatically mixing in later file changes. If Teamline cannot confirm that the old process stopped, the goal remains Needs response with an execution-interruption reason and Teamline must not claim safe recovery.
+_Avoid_: continue from residue, start over, discard residue
 
-**目标闭环**:
-工作目标从创建、计划确认和授权执行，经过执行、响应与恢复，最终由用户确认完成的过程。它是产品 MVP 必须验证的最小价值闭环。
-_Avoid_: Quota MVP、监控闭环、一次执行
+**Continue from residue** (`现场接续`):
+A non-guaranteed recovery path explicitly chosen by the user to continue using unresolved working residue. Teamline first shows the difference between the residue and the last complete recovery position and never presents the result as reliable automatic recovery.
+_Avoid_: safe recovery, automatic recovery, checkpoint recovery
 
-**长程开发工作**:
-需要跨越多个 AI 编码会话或执行阶段才能完成，并且必须保留目标、进度与验收状态的一项开发工作。
-_Avoid_: 长任务、Prompt、一次会话
+**Goal state** (`目标状态`):
+The six top-level states shown to users: Planning (`规划中`), Queued (`待运行`), Running (`运行中`), Needs response (`需响应`), Review-ready (`待验收`), and Completed (`已完成`). Insufficient quota, execution interruption, waiting for an external result, and plan changes appear as state reasons.
+_Avoid_: Imported, Interrupted, Blocked, or other extra top-level states
 
-**可靠完成**:
-长程开发工作在工具、会话或资源条件发生变化时仍可检查、暂停和恢复，并最终形成可验收结果。它是产品对个人与团队共同承诺的核心结果。
-_Avoid_: 跑完、不中断、自动完成
+**Goal loop** (`目标闭环`):
+The path from creating a work goal and confirming its plan and execution authorization, through execution, response, and recovery, to a user's completion confirmation. It is the minimum value loop that the product MVP must validate.
+_Avoid_: quota MVP, monitoring loop, single execution
 
-**每周可靠待验收目标数**:
-每名目标负责人每周将多少受控执行可靠推进到待验收状态。只有完成计划确认、应用生效规则集、保留恢复检查点并提供验收证据的目标才计入；大量依赖临时人工协调或被退回返工的工作需要单独反映，不能用数量掩盖。
-_Avoid_: 任务完成数、Agent 运行次数、额度利用率
+**Long-running development work** (`长程开发工作`):
+Development work that spans multiple AI coding sessions or execution stages and must preserve its goal, progress, and acceptance state.
+_Avoid_: long task, prompt, single session
 
-**待验收**:
-执行工具已经结束，计划中预先确认的必要检查已经通过，成果与检查结果已经保存在本地执行端，但结果尚未得到人的确认。个人内核 v0 不额外生成 AI 风险报告或重复汇总全部阶段；检查失败的目标继续停留在当前阶段并标记为需要处理。
-_Avoid_: 完成、成功、已完成
+**Reliable completion** (`可靠完成`):
+The core outcome promised to individuals and teams: long-running development work remains inspectable, pausable, and recoverable as tools, sessions, or resource conditions change and eventually produces an acceptable result.
+_Avoid_: process exited, uninterrupted execution, automatic completion
 
-**已完成**:
-工作目标的结果已由用户确认符合预期。只有人可以把目标从待验收变为已完成；执行结束或模型自报完成都不等于目标完成。
-_Avoid_: Agent 完成、执行结束
+**Reliable review-ready goals per owner per week** (`每周可靠待验收目标数`):
+The number of managed goals each owner advances reliably to Review-ready each week. A goal counts only after plan confirmation, application of an effective rule set, preservation of recovery checkpoints, and provision of acceptance evidence. Work that relies heavily on ad hoc coordination or returns for rework is reported separately rather than hidden by volume.
+_Avoid_: completed-task count, agent-run count, quota utilization
 
-**资源约束**:
-影响长程开发工作如何推进的额度、预算、时间窗口、模型能力和团队规则。Quota 是资源约束的一种，而不是产品的最终结果。
-_Avoid_: Quota、余额
+**Review-ready** (`待验收`):
+The execution tool has exited, required checks confirmed in the plan have passed, and results and check output are stored on the local execution host, but a person has not yet confirmed the result. Personal kernel v0 does not add an AI risk report or repeat summaries of every stage. A goal with failed checks stays in its current stage and is marked as needing attention.
+_Avoid_: done, success, completed
 
-**资源方案**:
-工作目标在计划确认时获批的工具、模型、Provider 引用、执行环境、预算、额度、运行时间和备用顺序。目标优先级、执行节奏和“额度充足时运行”是用户可随时修改的运行偏好，不属于 AI 生成的计划版本；改变工具、工作空间、预算硬上限或单轮运行上限仍按计划与授权边界处理。Teamline 拥有目标预算与切换决策，Provider 配置和凭据仍由对应工具或资源适配器拥有；系统只能在阶段检查点切换工具或 Provider，任何越界或无法安全恢复的变化都必须暂停并重新获得确认。
-_Avoid_: 用量看板、自动买量、无限自动切换
+**Completed** (`已完成`):
+A work goal whose result a user has confirmed meets expectations. Only a person can move a goal from Review-ready to Completed. Process exit or a model's completion claim is not goal completion.
+_Avoid_: agent completed, execution ended
 
-个人内核 v0 的资源方案只管理单个目标，至少包含 Codex、可识别的模型和最长运行时间，并允许用户设置用量或费用提醒阈值。运行时间由本地执行端可靠计量，可以到点暂停；Token、费用和额度必须连同来源、时间、可信程度与目标归属记录，不能可靠归因或执行时必须显示“无法强制执行”并仅作提醒。个人内核 v0 不接 CC Switch，也不做订阅切换、跨工具分配或资源总览。
+**Resource constraint** (`资源约束`):
+Quota, budget, time windows, model capability, and team rules that affect how long-running work advances. Quota is one resource constraint, not the product outcome.
+_Avoid_: quota alone, balance
 
-个人 Alpha 允许用户按目标选择“优先推进、正常推进、后台推进”和“尽快完成、均匀推进、节省额度”。“额度充足时运行”默认关闭，用户主动打开开关本身就是对该目标的预先授权；Teamline 可以使用当前、新鲜且无冲突的 Codex 账户额度窗口，在计划、节点依赖、工作空间、并发和单轮运行上限均满足时启动一轮。每轮结束后重新判断一次，不预测整个目标消耗，也不形成无上限的后台执行。
+**Resource plan** (`资源方案`):
+The tools, models, provider references, execution environments, budget, quota, run time, and fallback order approved when a work goal's plan is confirmed. Goal priority, execution pace, and Run when quota allows are user-editable runtime preferences, not part of the AI-generated plan version. Changes to the tool, workspace, hard budget limit, or per-run limit remain governed by the plan and authorization boundary. Teamline owns goal-budget and switching decisions; provider configuration and credentials remain with the corresponding tool or resource adapter. The system may switch tools or providers only at a stage checkpoint. Any out-of-bound or unsafe-to-recover change pauses and requires confirmation.
+_Avoid_: usage dashboard, automatic quota purchase, unbounded automatic switching
 
-Codex 账户额度窗口可以参与已授权的单轮启动判断，但这不代表账户聚合成本或用量已经归因到该目标。只有来源明确标识具体目标的 Token 或费用才能进入目标用量；账户、组织或项目聚合数据继续只作为账户用量展示。
+Personal kernel v0 manages constraints for only one goal. Its resource plan includes at least Codex, an identifiable model, and maximum run time, with optional usage or cost alert thresholds. The local execution host measures run time reliably and can pause at the limit. Token, cost, and quota records include source, time, confidence, and goal attribution; when they cannot be attributed or enforced reliably, the interface says Cannot enforce (`无法强制执行`) and treats them as advisory. Personal kernel v0 does not integrate CC Switch or provide subscription switching, cross-tool allocation, or a resource overview.
 
-**额度充足时运行**:
-用户为目标预先授权的一种运行偏好。短周期与长期 Codex 额度窗口都满足当前节奏的预留条件、没有更高优先级目标等待资源且正式启动校验通过时，Teamline 可以启动一轮有上限的执行。额度数据缺失、陈旧或冲突时保持待运行并说明原因。
-_Avoid_: 默认开启、无限后台运行、账户额度不明时尝试运行
+Personal Alpha lets users select High, Normal, or Background priority (`优先推进`, `正常推进`, `后台推进`) and Fast, Even, or Quota-saving pace (`尽快完成`, `均匀推进`, `节省额度`) per goal. Run when quota allows (`额度充足时运行`) is off by default. Enabling it is advance authorization for that goal. Teamline may start one bounded run when current, fresh, non-conflicting Codex account quota windows and the plan, node dependencies, workspace, concurrency, and per-run limit all permit it. Teamline re-evaluates after every run, does not predict whole-goal consumption, and does not create unbounded background execution.
 
-**资源信号**:
-来自供应商、本地执行端、资源适配器或估算模型的用量、额度、成本与可用性信息。每条信号都必须保留来源、时间、可信程度和可归因范围；实时且无冲突的账户额度窗口可以在用户已经预先授权时触发单轮启动，但不能据此归因目标成本。其他全局聚合、估算、陈旧或冲突信号只能提示或请求确认。
-_Avoid_: 精确余额、统一账单、无来源估算
+Codex account quota windows may inform an authorized single-run start, but this does not attribute aggregate account cost or usage to the goal. Only token or cost data whose source identifies the specific goal enters goal usage; account, organization, or project aggregates remain account-level usage displays.
 
-**资源适配器**:
-Teamline 读取外部工具中的 Provider 引用、可用性、额度和用量信号，并在明确授权后请求资源动作的接入层。CC Switch 是个人 Alpha 的候选可选适配器，而不是 Teamline 依赖或预算权威来源；Provider 配置与凭据保留在 CC Switch，Teamline 不直接读取其私有数据库，也不复制 API Key。
-_Avoid_: 模型网关、凭据托管、预算权威来源、必装依赖
+**Run when quota allows** (`额度充足时运行`):
+A runtime preference that gives advance authorization for a goal. Teamline may start one bounded run when both short-term and long-term Codex quota windows meet the reserve required by the current pace, no higher-priority goal is waiting, and formal start checks pass. If quota data is missing, stale, or conflicting, the goal remains Queued and explains why.
+_Avoid_: enabled by default, unbounded background execution, trying when account quota is unknown
 
-**授权边界**:
-用户或团队确认执行计划后批准的执行范围，与此前只读的规划授权分开。个人内核 v0 至少记录执行工作区、执行工具、网络权限、最长运行时间和需要人工批准的高风险操作；系统可以在边界内持续推进，任何新增权限请求都必须由 Teamline 暂停目标并重新交给人确认。缺少可靠来源的预算与额度只能触发提示，不能被宣称为已经硬性阻断。
-_Avoid_: 完全自动、无限权限、每步确认
+**Resource signal** (`资源信号`):
+Usage, quota, cost, and availability information from a provider, local execution host, resource adapter, or estimation model. Every signal preserves its source, time, confidence, and attribution scope. A current, non-conflicting account quota window may trigger a single run after advance authorization, but cannot attribute goal cost. Other global aggregates, estimates, stale data, and conflicting signals can only inform or request confirmation.
+_Avoid_: exact balance, unified bill, unsourced estimate
 
-**受控执行**:
-通过工作控制层创建、确认计划、授权并启动或恢复的工作目标。控制层必须是执行工具的启动者和生命周期所有者；外部启动后才被发现的工作仍属于非受控执行。控制层能够在执行前解析规则，在执行中记录检查点，并在验收前核对证据，但只能按照每条规则的实际验证方式报告已验证、部分验证或无法判断，不能仅因受控启动就声明全面合规。
-_Avoid_: 所有 AI 工作、仅被监控的工作
+**Resource adapter** (`资源适配器`):
+An integration layer through which Teamline reads provider references, availability, quota, and usage signals from an external tool and requests resource actions after explicit authorization. CC Switch is an optional candidate adapter for Personal Alpha, not a Teamline dependency or budget authority. Provider configuration and credentials remain in CC Switch; Teamline neither reads its private database directly nor copies API keys.
+_Avoid_: model gateway, credential hosting, budget authority, required dependency
 
-**执行租约**:
-某一仓库工作区或执行分支在一个时点只允许一个执行端持有的推进权。租约与检查点、提交或工作树指纹绑定，用于避免两个成员或执行端同时修改同一目标而破坏恢复与审计。
-_Avoid_: 多端同时推进、仅靠在线状态、无边界并发
+**Authorization boundary** (`授权边界`):
+The execution scope approved when a user or team confirms an execution plan, separate from earlier read-only planning authorization. Personal kernel v0 records at least the execution workspace, execution tool, network permission, maximum run time, and high-risk operations requiring human approval. The system may continue within that boundary; every request for added permission makes Teamline pause the goal and return the decision to a person. Budget and quota without reliable sources may only trigger warnings and cannot be claimed as hard enforcement.
+_Avoid_: fully automatic, unlimited permission, confirmation at every step
 
-**执行围栏**:
-Teamline 在恢复或重新授权前，确认旧执行进程树已经停止且不能继续写入执行工作区的安全条件。租约过期不等于围栏完成；系统应先请求停止，必要时由用户确认强制终止，无法完成围栏时不得签发新租约。
-_Avoid_: 租约过期、仅更新状态、假定进程已退出
+**Managed execution** (`受控执行`):
+A work goal created through the work control layer, with a confirmed plan and authorization, and started or resumed by that layer. The control layer must start the execution tool and own its lifecycle. Work discovered after an external start remains unmanaged. Managed execution lets the layer resolve rules before execution, record checkpoints during execution, and inspect evidence before acceptance, but it reports verified, partially verified, or indeterminate according to each rule's actual verification method. A managed start alone never proves full compliance.
+_Avoid_: all AI work, observed-only work
 
-**非受控执行**:
-绕过工作控制层直接在外部启动的 AI 工作。控制台可以发现、导入或展示其状态，但不能声明它符合团队规则，也不能把观察到的结果自动补记为受控执行。
-_Avoid_: 违规执行、已治理工作
+**Execution lease** (`执行租约`):
+The right held by only one execution host at a time to advance a repository workspace or execution branch. It is bound to checkpoints and a commit or working-tree fingerprint so two members or hosts cannot modify the same goal concurrently and undermine recovery or auditability.
+_Avoid_: simultaneous multi-host advancement, presence-only ownership, unbounded concurrency
+
+**Execution fence** (`执行围栏`):
+The safety condition Teamline confirms before recovery or renewed authorization: the old execution process tree has stopped and can no longer write to the execution workspace. Lease expiry is not a completed fence. The system first requests a stop, may ask the user to confirm force termination, and must not issue a new lease when fencing cannot be completed.
+_Avoid_: expired lease, state-only update, assumed process exit
+
+**Unmanaged execution** (`非受控执行`):
+AI work started externally, bypassing the work control layer. The console may discover, import, or display it, but cannot claim it follows team rules or retroactively record observed results as managed execution.
+_Avoid_: violation, governed work

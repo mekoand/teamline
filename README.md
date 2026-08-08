@@ -114,12 +114,13 @@ These are directions, not release commitments or dates.
 
 ## Documentation
 
+- [Domain glossary](CONTEXT.md)
 - [Personal V2 specification](docs/specs/personal-v2.md)
 - [Personal v0 specification](docs/specs/personal-v0.md)
 - [Architecture decision records](docs/adr/)
 - [Product hypothesis](PRODUCT-HYPOTHESIS.md)
 
-The longer specifications and product hypothesis are currently maintained in Chinese. ADRs include English and the original Chinese text.
+The glossary, specifications, and product hypothesis are maintained in canonical English with complete linked Chinese companions. ADRs retain their existing English-first structure with the original Chinese text.
 
 ## Contributing
 
