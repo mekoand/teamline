@@ -84,6 +84,7 @@ describe("local language contract", () => {
       "All nodes are complete and ready for review",
     );
     expect(translateFixedText("en", "执行中断")).toBe("Execution interrupted");
+    expect(translateFixedText("en", " · 已移除")).toBe(" · Removed");
     expect(translateFixedText("en", "将恢复 3 个目标")).toBe("Restore 3 goals");
     expect(translateFixedText("en", "依赖：节点 1")).toBe("Dependencies: Node 1");
     expect(translateFixedText("zh-CN", "新建目标")).toBe("新建目标");

@@ -54,6 +54,17 @@ describe("goal working language", () => {
 
     expect(inferWorkingLanguage(chinese)).toBe("Simplified Chinese");
     expect(inferWorkingLanguage(english)).toBe("English");
+
+    const bareCommands = store.create({
+      goal: "修复发布流程",
+      acceptance: "运行 npm test and npm run lint and bun test src/app.ts",
+    });
+    const identifiers = store.create({
+      goal: "修复错误",
+      acceptance: "执行 TEAMLINE_STAGE_START npm test src/app.ts --coverage",
+    });
+    expect(inferWorkingLanguage(bareCommands)).toBe("Simplified Chinese");
+    expect(inferWorkingLanguage(identifiers)).toBe("Simplified Chinese");
   });
 
   test("applies the same language contract to planning, execution, and resume", () => {

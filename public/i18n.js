@@ -110,6 +110,7 @@ export const fixedEnglishText = Object.freeze({
   "生成执行计划": "Generate execution plan",
   "未选账号": "No account selected",
   "已移除": "Removed",
+  "· 已移除": "· Removed",
   "新建项目": "Create project",
   "项目名称": "Project name",
   "创建项目": "Create project",
