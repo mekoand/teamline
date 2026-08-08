@@ -112,12 +112,13 @@ bun run cli -- open <目标 ID 或唯一前缀>
 
 ## 文档
 
-- [个人版 V2 规格](docs/specs/personal-v2.md)
-- [个人版 v0 规格](docs/specs/personal-v0.md)
+- [领域词汇表](CONTEXT.zh-CN.md)
+- [个人版 V2 规格](docs/specs/personal-v2.zh-CN.md)
+- [个人版 v0 规格](docs/specs/personal-v0.zh-CN.md)
 - [架构决策记录](docs/adr/)
-- [产品假设](PRODUCT-HYPOTHESIS.md)
+- [产品假设](PRODUCT-HYPOTHESIS.zh-CN.md)
 
-现阶段长篇规格和产品假设继续使用中文维护；ADR 同时包含英文和原始中文。
+领域词汇表、产品规格和产品假设以英文作为规范版本，并提供完整的中文对应版本；ADR 保持现有英文优先、附原始中文的结构。
 
 ## 参与贡献
 

@@ -1,151 +1,153 @@
-# Teamline 个人版 v0
+# Teamline Personal Edition v0
 
-状态：实现中  
-日期：2026-08-02
+[简体中文](./personal-v0.zh-CN.md)
 
-## 产品目标
+Status: In implementation
+Date: 2026-08-02
 
-Teamline 个人版帮助开发者同时管理多项 AI 编码工作。用户不需要一直守着不同终端，而是在一个本地页面里创建目标、确认计划、查看进展、中断后继续，并在最后确认结果。
+## Product Goal
 
-个人版首先验证一件事：开发者是否愿意把真实工作交给 Teamline 管理，并且比直接打开多个 AI 编码会话更省心。
+Teamline Personal helps developers manage several pieces of AI coding work at once. Instead of watching separate terminals continuously, users create goals, confirm plans, inspect progress, continue after interruptions, and confirm results from one local page.
 
-## 目标用户
+The personal edition first tests one question: will developers entrust real work to Teamline, and does doing so require less attention than opening several AI coding sessions directly?
 
-首批用户是频繁使用 Codex、经常同时推进多个项目或多项开发工作的个人开发者。产品也适用于个人创业者，但 v0 不包含多人协作。
+## Target User
 
-## 核心流程
+The first users are individual developers who use Codex frequently and often advance several projects or pieces of development work at once. The product also suits solo founders, but v0 excludes multi-person collaboration.
 
-1. 用户选择一个本地 Git 仓库，填写目标和可选的完成要求。
-2. Teamline 生成一份简短计划，用户可以修改并确认。
-3. 用户启动目标，Teamline 调用 Codex 在指定仓库中工作。
-4. 目标详情持续显示当前阶段、最近进展、运行时间和下一步。
-5. 执行停止或意外结束时，目标进入“已中断”，保留现有代码变化和最近记录。
-6. 用户可以从已有进度继续，也可以调整计划后重新启动。
-7. Codex 结束后，Teamline 展示代码变化和检查结果，用户确认完成或继续处理。
+## Core Flow
 
-## 目标状态
+1. The user selects a local Git repository and enters a goal and optional completion requirements.
+2. Teamline generates a short plan that the user can edit and confirm.
+3. The user starts the goal, and Teamline invokes Codex in the selected repository.
+4. Goal detail continuously shows the current stage, recent progress, run time, and next action.
+5. When execution stops or exits unexpectedly, the goal enters Needs response with an execution-interruption reason and preserves current code changes and the latest record.
+6. The user can continue from existing progress or adjust the plan and restart.
+7. After Codex exits, Teamline shows code changes and check results. The user confirms completion or continues working.
 
-- `草稿`：目标尚未确认。
-- `待确认`：计划已经生成，等待用户确认。
-- `进行中`：Codex 正在推进。
-- `已中断`：执行已经停止，等待用户继续或调整。
-- `待验收`：执行结束，等待用户查看结果。
-- `已完成`：用户确认结果符合目标。
+## Goal States
 
-状态只描述用户需要知道的工作进展，不承诺操作系统层面的绝对控制。
+- `Planning`: the goal or plan has not been confirmed.
+- `Queued`: the plan has been confirmed and the goal is ready to run.
+- `Running`: Codex is advancing the work.
+- `Needs response`: execution has stopped or a decision or adjustment is required; execution interruption appears as the reason.
+- `Review-ready`: execution has ended and the user needs to inspect the result.
+- `Completed`: the user has confirmed that the result meets the goal.
 
-## 主要页面
+States describe the work progress a user needs to understand. They do not promise absolute operating-system control.
 
-### 首页
+## Main Pages
 
-首页展示全部目标，按“需要处理、进行中、待验收、最近完成”分组。每张卡片显示：
+### Home
 
-- 标题和仓库；
-- 当前状态；
-- 当前阶段或最近进展；
-- 已运行时间；
-- 用户下一步要做的事。
+The home page shows all goals grouped by Needs response, Running, Review-ready, and Recently completed. Each card shows:
 
-首页提供“创建目标”入口。多个目标可以同时存在，实际并发数量由用户设备和设置决定。
+- title and repository;
+- current state;
+- current stage or latest progress;
+- elapsed run time;
+- the user's next action.
 
-### 创建目标
+The home page provides a Create goal entry point. Several goals may exist at once; actual concurrency is determined by the user's device and settings.
 
-创建时只要求：
+### Create Goal
 
-- 选择本地 Git 仓库；
-- 描述想完成的工作；
-- 可选填写完成要求。
+Creation requires only:
 
-高级设置不出现在首屏。
+- selecting a local Git repository;
+- describing the desired work;
+- optionally entering completion requirements.
 
-### 计划确认
+Advanced settings do not appear on the first screen.
 
-计划保持简短，每个阶段包含目标和完成检查。用户可以编辑阶段、重新生成或直接确认。确认后才可以启动执行。
+### Plan Confirmation
 
-### 目标详情
+The plan stays short. Every stage includes an outcome and completion check. Users may edit stages, regenerate the plan, or confirm it directly. Execution cannot start before confirmation.
 
-详情页是个人版的核心页面，包括：
+### Goal Detail
 
-- 目标与计划；
-- 当前阶段和最近进展；
-- Codex 运行状态与运行时间；
-- 暂停、继续和停止操作；
-- 代码变化摘要；
-- 检查结果；
-- 最近运行记录。
+Goal detail is the core page of the personal edition. It includes:
 
-### 完成确认
+- the goal and plan;
+- current stage and recent progress;
+- Codex run state and elapsed time;
+- pause, continue, and stop actions;
+- a code-change summary;
+- check results;
+- recent run records.
 
-执行结束后，页面集中回答：
+### Completion Confirmation
 
-- 改了什么；
-- 哪些检查通过或失败；
-- 是否还有未处理事项。
+After execution ends, the page answers:
 
-用户可以确认完成，也可以补充要求并继续。
+- what changed;
+- which checks passed or failed;
+- whether unresolved items remain.
 
-## 数据结构
+The user may confirm completion or add requirements and continue.
 
-每个目标至少保存：
+## Data Model
 
-- 标题、目标和完成要求；
-- 仓库路径；
-- 计划及当前阶段；
-- 当前状态和最近进展；
-- Codex 运行记录；
-- 开始时间、累计运行时间和结束时间；
-- Git 变化摘要与检查结果。
+Each goal stores at least:
 
-所有数据默认保存在本机，不要求登录账号。
+- title, goal, and completion requirements;
+- repository path;
+- plan and current stage;
+- current state and recent progress;
+- Codex run records;
+- start time, accumulated run time, and end time;
+- Git change summary and check results.
 
-## Codex 接入
+All data is stored locally by default. No account is required.
 
-v0 只接入 Codex。Teamline 负责启动、读取输出、记录运行状态和接收用户的暂停或停止请求。不同版本提供的信息可能不同，界面只展示能够可靠获得的状态。
+## Codex Integration
 
-中断后继续不依赖原进程仍然存在。Teamline 可以把目标、计划、最近进展和当前代码状态交给一次新的 Codex 执行，让工作继续推进。
+v0 integrates only Codex. Teamline starts it, reads output, records run state, and receives user pause or stop requests. Different Codex versions may expose different information, so the interface shows only state that Teamline can obtain reliably.
 
-## 资源信息
+Continuing after an interruption does not depend on the original process still existing. Teamline can give the goal, plan, recent progress, and current code state to a new Codex execution so work can continue.
 
-v0 展示累计运行时间。只有 Codex 能够提供可靠数据时，才展示 Token 或费用；否则不估算精确金额。用户可以设置运行时间提醒，但 v0 不做订阅管理和跨工具预算分配。
+## Resource Information
 
-## 本地产品形态
+v0 shows accumulated run time. It shows tokens or cost only when Codex provides reliable data and otherwise does not estimate an exact amount. Users may set run-time alerts, but v0 does not manage subscriptions or allocate budgets across tools.
 
-个人版由一个本地服务和浏览器页面组成：
+## Local Product Form
 
-- 本地服务保存目标并启动 Codex；
-- 浏览器页面展示和操作目标；
-- 仓库与运行数据不上传到 Teamline 云端；
-- 第一个版本不做桌面封装和个人云端网页版。
+The personal edition consists of a local service and a browser page:
 
-## v0 不做
+- the local service stores goals and starts Codex;
+- the browser page displays and operates goals;
+- repository and run data are not uploaded to the Teamline cloud;
+- the first release does not provide desktop packaging or a hosted personal web app.
 
-- Claude Code、OpenCode 或其他工具；
-- 团队成员、权限、交接和共享规则；
-- 通用项目管理、聊天和知识库；
-- 订阅切换、额度采购和完整预算系统；
-- 远程查看、多设备同步和云端执行；
-- 虚拟机、系统扩展或复杂安全系统；
-- 自动判断业务结果一定正确。
+## Out of Scope for v0
 
-## 实现顺序
+- Claude Code, OpenCode, or other tools;
+- team members, permissions, handoff, and shared rules;
+- general project management, chat, and a knowledge base;
+- subscription switching, quota purchasing, and a complete budget system;
+- remote viewing, multi-device synchronization, and cloud execution;
+- virtual machines, system extensions, or complex security systems;
+- automatically determining that the business result is certainly correct.
 
-1. 本地服务、数据存储和目标首页。
-2. 创建目标与计划确认。
-3. 启动 Codex、读取输出并显示进展。
-4. 中断、继续和运行记录。
-5. 代码变化、检查结果与完成确认。
+## Implementation Order
 
-每一步都应形成可以在浏览器中直接使用的完整小功能，不先建设未来团队版的抽象。
+1. Local service, data storage, and goal home page.
+2. Goal creation and plan confirmation.
+3. Starting Codex, reading output, and showing progress.
+4. Interruption, continuation, and run records.
+5. Code changes, check results, and completion confirmation.
 
-## v0 完成标准
+Every step should produce a complete small capability usable directly in the browser. Do not first build abstractions for a future team edition.
 
-个人版 v0 完成时，用户能够在本机完成以下流程：
+## v0 Completion Criteria
 
-1. 为真实仓库创建目标并确认计划；
-2. 从 Teamline 启动 Codex；
-3. 离开页面后重新打开，仍能看到目标和运行状态；
-4. 执行中断后从现有进度继续；
-5. 查看代码变化和检查结果；
-6. 确认目标完成。
+Personal edition v0 is complete when users can perform this flow locally:
 
-产品验证阶段再观察用户是否愿意连续使用它完成多项真实工作。
+1. Create a goal for a real repository and confirm its plan.
+2. Start Codex from Teamline.
+3. Leave and reopen the page while retaining the goal and run state.
+4. Continue from existing progress after an interruption.
+5. Inspect code changes and check results.
+6. Confirm the goal Completed.
+
+Product validation then observes whether users choose to complete several pieces of real work through it over time.

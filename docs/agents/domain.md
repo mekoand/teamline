@@ -6,7 +6,7 @@ How engineering skills should consume Teamline’s domain documentation.
 
 Read:
 
-- `CONTEXT.md` at the repository root.
+- `CONTEXT.md` at the repository root. It is the canonical English glossary.
 - Relevant ADRs under `docs/adr/`.
 
 If either location does not exist, proceed silently. Domain documentation is created and refined when real terminology or decisions are resolved.
@@ -18,6 +18,7 @@ This is a single-context repository:
 ```text
 /
 ├── CONTEXT.md
+├── CONTEXT.zh-CN.md
 ├── docs/
 │   ├── adr/
 │   └── agents/
@@ -27,6 +28,8 @@ This is a single-context repository:
 ## Use the glossary vocabulary
 
 Use domain concepts exactly as defined in `CONTEXT.md`, including issue titles, specifications, tests and implementation language.
+
+Use the English term from `CONTEXT.md` for implementation and engineering documentation. Use its explicitly paired Chinese term for `zh-CN` interface copy. `CONTEXT.zh-CN.md` is a complete reading companion, but it does not define a second vocabulary authority.
 
 Do not replace established Teamline terms with synonyms that the glossary explicitly rejects.
 

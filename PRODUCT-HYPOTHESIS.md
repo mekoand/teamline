@@ -1,212 +1,214 @@
-# Teamline：AI 工作控制层的完整产品假设
+# Teamline: Complete Product Hypothesis for an AI Work Control Layer
 
-状态：待试点验证  
-日期：2026-08-02
+[简体中文](./PRODUCT-HYPOTHESIS.zh-CN.md)
 
-## 一句话假设
+Status: Awaiting pilot validation
+Date: 2026-08-02
 
-当一个 2–8 人的软件团队开始让多个成员并行推进持续数小时或数天的 AI 编码工作时，创始人或技术负责人会需要一个位于现有工具之上的工作控制层，用来确认计划、配置资源、落实团队规则、处理异常并组织验收。如果它能让同一名负责人在不增加返工和临时协调的前提下，每周可靠推进更多目标进入待验收，团队愿意为共享控制面按月付费。
+## One-sentence Hypothesis
 
-## 用户遇到的真实问题
+When a two-to-eight-person software team has several members advancing AI coding work that lasts hours or days in parallel, its founder or technical lead needs a work control layer above existing tools to confirm plans, configure resources, apply team rules, handle exceptions, and organize acceptance. If that layer lets the same owner reliably advance more goals to Review-ready each week without increasing rework or ad hoc coordination, the team will pay monthly for a shared control plane.
 
-AI 编码工具提高了单次执行能力，也让团队可以同时启动更多工作。新的瓶颈不再只是“代码写得够不够快”，而是负责人需要不断确认每项工作在做什么、遵守什么约束、使用哪些资源、卡在哪里、由谁接手以及怎样判断完成。
+## The Real User Problem
 
-这些信息通常分散在代码仓库、需求系统、聊天记录、本地会话和不同工具中。现有系统各自保存了一部分事实，却没有负责一项 AI 工作如何从目标走到可验收结果。于是创始人或技术负责人被迫充当人工调度器、恢复入口和规则检查员。
+AI coding tools improve the capability of a single run and let teams start more work at once. The new bottleneck is no longer only whether code is written quickly enough. Owners must continually determine what each piece of work is doing, which constraints apply, which resources it uses, where it is stuck, who should take over, and how completion will be judged.
 
-额度和预算会放大这个问题，但不是问题本身。即使供应商取消额度限制，跨成员、跨项目的工作状态、授权、恢复和验收仍然需要被控制。
+This information is usually scattered across code repositories, requirement systems, chat history, local sessions, and different tools. Each existing system owns part of the facts, but none owns how one piece of AI work moves from a goal to an acceptable result. Founders and technical leads therefore become manual schedulers, recovery entry points, and rule inspectors.
 
-## 首个付费客户
+Quota and budget amplify the problem but are not the problem itself. Even if providers removed quota limits, work state, authorization, recovery, and acceptance would still need control across members and projects.
 
-首批客户是由创始人或技术负责人直接带队的 2–8 人软件团队。团队已经让多个成员使用一个或多个 AI 编码工具，并经常同时推进至少三项长程开发工作。购买者也是每天确认计划、处理异常和验收结果的人。
+## First Paying Customer
 
-重度个人开发者是免费个人版用户和早期设计伙伴。他们不是完整市场，但可以在开始组队后自然升级。企业内部团队属于后续市场，不让合规、采购和私有化要求反向定义首个 MVP。
+The first customers are two-to-eight-person software teams led directly by a founder or technical lead. Several members already use one or more AI coding tools, and the team often advances at least three pieces of long-running development work at once. The buyer is also the person who confirms plans, handles exceptions, and accepts results each day.
 
-## 用户购买的结果
+Heavy individual developers use the free personal edition and participate as early design partners. They are not the whole market, but they can upgrade naturally when they form a team. Internal enterprise teams are a later market; compliance, procurement, and private-deployment requirements must not define the first MVP backward.
 
-产品卖的不是另一张状态看板，也不是更多 Agent。它让一个负责人能够安全地控制更多并行 AI 工作，并让每项重要工作都可以被检查、暂停、恢复、交接和验收。
+## The Outcome Customers Buy
 
-核心指标是**每名目标负责人每周可靠进入待验收的受控目标数**。只有完成计划确认、应用生效规则、保留恢复检查点并提供验收证据的目标才计入。返工、退回、计划外人工追问和规则例外是约束指标，不能被吞吐量掩盖。
+The product is not another status board or a larger collection of agents. It lets one owner safely control more parallel AI work while keeping every important piece of work inspectable, pausable, recoverable, transferable, and acceptable.
 
-## 产品是什么
+The core metric is **reliable review-ready goals per owner per week**. A goal counts only when its plan is confirmed, effective rules are applied, recovery checkpoints are preserved, and acceptance evidence is available. Rework, rejection, unplanned manual follow-up, and rule exceptions are guardrail metrics that throughput must not hide.
 
-产品是现有 AI 工具之上的**工作控制层**，而不是新的 Agent、模型网关或云端 IDE。它负责目标和计划、资源方案、授权边界、运行状态、检查点、交接、规则与验收证据；实际执行仍由 Claude Code、Codex、GLM 或其他现有工具完成。
+## What the Product Is
 
-产品管理工作的基本单位叫**工作目标**，界面中简称“目标”。一个目标必须有明确的预期结果、影响范围、完成条件、资源方案和唯一负责人；编码、产品设计、文档协作和调研都可以形成目标。产品不设置预计时间或阶段数门槛，短工作可以是单阶段目标，长程工作自然形成多阶段目标；长程、并行工作仍是产品差异化价值最强的场景，而不是创建条件。
+Teamline is a **work control layer** above existing AI tools, not a new agent, model gateway, or cloud IDE. It owns goals and plans, resource plans, authorization boundaries, execution state, checkpoints, handoff, rules, and acceptance evidence. Claude Code, Codex, GLM, and other existing tools still perform the work.
 
-工作控制层拥有**执行计划**的数据结构、版本和边界。个人内核 v0 由 Codex 根据仓库上下文提出结构化草案，用户可以修改或改为手动填写；Teamline 不另建独立的云端规划模型。计划中的每个执行阶段代表一个可以独立验证的中间结果，至少说明目标结果、预计影响范围、验证方式和应保留的证据，不按时间、对话轮次或文件数量切分。阶段按约定方式验证通过后才能完成并创建阶段检查点。计划由人确认后才能执行；改变目标、完成条件、授权边界、生效规则集或资源上限，必须生成新的计划版本并重新确认。
+The basic managed unit is a **work goal**, shortened to “goal” in the interface. A goal has a clear expected result, impact scope, completion conditions, resource plan, and one owner. Coding, product design, documentation, and research may all form goals. Teamline imposes no estimated-duration or stage-count entry gate. Short work can have one stage and longer work can have several; long-running, parallel work remains the strongest differentiated use case, not a creation requirement.
 
-一个目标的完整路径是：
+The work control layer owns the data structure, versions, and boundaries of the **execution plan**. In Personal kernel v0, Codex proposes a structured draft from repository context; users may edit it or fill it in manually. Teamline does not add a separate cloud planning model. Each execution stage represents an independently verifiable intermediate result and specifies at least the intended result, expected impact scope, validation method, and evidence to retain. Stages are not divided by time, conversation turns, or file count. A stage completes and receives a stage checkpoint only after its agreed validation passes. A human confirms the plan before execution. Changes to the goal, completion conditions, authorization boundary, effective rule set, or resource limits create a new plan version that requires confirmation.
 
-`创建目标 → 生成计划 → 解析规则与资源 → 人确认并授权 → 受控执行 → 检查点／恢复／交接 → 待验收 → 人确认已完成`
+The complete path for one goal is:
 
-系统可以在已经批准的范围内自主推进，但没有权力扩大影响范围、预算、工具或风险权限。系统可以声明“待验收”，只有指定的人能够确认“已完成”。
+`Create goal → Generate plan → Resolve rules and resources → Human confirms and authorizes → Managed execution → Checkpoint / recovery / handoff → Review-ready → Human confirms Completed`
 
-个人内核 v0 不构建独立的 AI 验收层。Codex 报告执行结束后，Teamline 只运行计划中预先确认的必需验证命令，并在本地执行端保存最终代码差异与命令结果；验证通过后进入待验收，失败则停留在当前阶段并标记为需要处理。验收界面只回答改了什么、检查是否通过，以及用户选择确认交付还是继续处理，不额外生成 AI 风险报告或重复汇总全部阶段。未来团队控制面默认只接收差异摘要、哈希和验证结果，不上传完整代码差异。
+The system may advance autonomously within approved boundaries, but it cannot expand impact scope, budget, tools, or risk permissions. It may declare a result Review-ready; only a designated person may confirm it Completed.
 
-## 个人本地版
+Personal kernel v0 does not build an independent AI acceptance layer. After Codex reports execution finished, Teamline runs only the required validation commands confirmed in the plan and stores the final code diff and command results on the local execution host. Passing work enters Review-ready; failed work remains in its current stage and is marked as needing attention. The acceptance view answers what changed, whether checks passed, and whether the user chooses to accept delivery or continue work. It does not add an AI risk report or repeat every stage summary. A future team control plane receives diff summaries, hashes, and validation results by default, not complete code diffs.
 
-个人版是一套完整的单人工作控制台，不是额度监控器、团队客户端或功能残缺的免费试用。它的完整产品边界包括本地目标、计划确认、个人授权与规则、资源方案、跨项目和工具的运行总览、检查点、暂停与恢复、可恢复的工具切换、自动执行图和验收证据；这不表示第一个版本必须同时支持多个工具和全部界面。所有数据默认保留在本机，使用产品不要求注册账号。
+## Personal Local Edition
 
-个人内核 v0 的目标入口只要求用户选择仓库、描述目标，并可选填写验收要求。用户点击“生成计划”时，界面先披露接收服务与数据范围，并取得允许 Codex 只读访问所选仓库的规划授权；Codex 随后生成计划草案，Teamline 套用默认执行授权和验证方式。用户在一张确认页中检查阶段、代码范围、网络权限和验证命令后，才授权写文件、运行命令和使用额外网络。短工作通常形成单阶段计划，预算、备用工具和详细规则等高级项默认折叠，不要求用户先填写完整项目表单。
+The personal edition is a complete single-person work console, not a quota monitor, team client, or deliberately incomplete free trial. Its complete product boundary includes local goals, plan confirmation, personal authorization and rules, resource plans, an execution overview across projects and tools, checkpoints, pause and recovery, recoverable tool switching, generated execution graphs, and acceptance evidence. This does not require the first release to support multiple tools and every view at once. Data remains on the device by default, and no account is required.
 
-个人版与团队版共用同一套目标和执行引擎。两者的差异不是基础执行能力，而是团队版增加共享规则、多人权限、跨人交接、团队审批、共享预算和集中审计。这样个人版本身有持续价值，也能成为团队版的真实采用入口。
+The Personal kernel v0 entry flow asks users only to select a repository, describe the goal, and optionally specify acceptance requirements. When a user selects Generate plan, the interface first discloses the receiving service and data scope and obtains planning authorization for Codex to read the selected repository. Codex then generates a plan draft and Teamline applies default execution authorization and validation methods. Only after the user reviews stages, code scope, network permissions, and validation commands on one confirmation page does Teamline receive authorization to write files, run commands, and use additional network access. Short work usually receives a single-stage plan. Budget, fallback tools, and detailed rules are collapsed as advanced options rather than required in a complete project form.
 
-个人内核 v0 只保留资源适配器的数据边界，不依赖外部资源管理工具。个人 Alpha 可以把 CC Switch 作为可选适配器，读取 Provider 引用、可用性、额度和用量信号，并在用户确认后请求切换。CC Switch 继续拥有 Provider 配置和凭据，Teamline 只保存引用并拥有目标预算与切换决策；无法归因到具体目标的全局用量只能提示，不能触发自动预算动作。Teamline 不直接读取 CC Switch 的私有 SQLite 数据库，接入必须先验证稳定的公开接口，必要时通过上游贡献补齐。
+The personal and team editions share the same goal and execution engine. Their difference is not basic execution capability. The team edition adds shared rules, multi-person permissions, cross-person handoff, team approval, shared budgets, and centralized audit. This gives the personal edition lasting value and makes it a real adoption path to the team edition.
 
-个人内核 v0 的资源管理只验证单个目标约束。资源方案记录 Codex、可识别的模型、最长运行时间和可选的用量或费用提醒阈值；本地运行时间能够可靠计量并在到点时暂停。Token、费用和额度只有在信号保留来源、时间、可信程度并能够归因到该目标时，才可以触发已经授权的动作；否则界面明确显示“无法强制执行”并只作提醒。个人内核 v0 不接 CC Switch，不做订阅切换、跨工具预算分配或资源总览。
+Personal kernel v0 preserves the resource-adapter boundary without depending on an external resource-management tool. Personal Alpha may use CC Switch as an optional adapter to read provider references, availability, quota, and usage signals and request a switch after user confirmation. CC Switch continues to own provider configuration and credentials. Teamline stores references and owns goal-budget and switching decisions. Global usage that cannot be attributed to a goal may only inform and cannot trigger an automatic budget action. Teamline does not read CC Switch's private SQLite database directly; integration first requires a stable public interface, with upstream contribution if necessary.
 
-个人版的最终产品形态可以同时提供浏览器和桌面应用入口，但第一阶段只提供由本地服务生成的网页。浏览器打开的是本机控制台，并不代表数据进入云端；后续桌面应用只是同一前端和本地服务的封装。第一阶段不提供独立的个人云端网页版，远程查看、加密备份和多设备同步留作后续单独验证。
+Personal kernel v0 resource management validates constraints for one goal only. A resource plan records Codex, an identifiable model, maximum run time, and optional usage or cost alert thresholds. Local run time is measured reliably and can pause execution at the limit. Token, cost, and quota signals may trigger an authorized action only when they retain source, time, confidence, and goal attribution. Otherwise the interface explicitly says Cannot enforce and treats them as advisory. Personal kernel v0 does not integrate CC Switch or provide subscription switching, cross-tool budget allocation, or a resource overview.
 
-个人用户加入团队后，本地控制台直接成为团队执行端。个人目标不会自动上传。用户明确把某个目标转入团队时，系统生成转入基线，并同步计划、来源引用、资源方案、当前检查点、状态、规则版本和证据摘要。转入前的工作明确标记为非受控历史，团队规则与合规声明只覆盖基线之后的执行。
+The eventual personal product may offer both browser and desktop entry points, but the first phase provides only a web interface served by a local service. Opening the browser shows a local console and does not mean data entered the cloud. A later desktop app wraps the same frontend and local service. A separate hosted personal web app, remote viewing, encrypted backup, and multi-device synchronization remain future hypotheses to validate separately.
 
-### 个人版 V2
+When a personal user joins a team, the local console becomes a team execution host. Personal goals are not uploaded automatically. When the user explicitly moves one goal into the team, Teamline creates a transfer baseline and synchronizes the plan, source references, resource plan, current checkpoint, state, rule version, and evidence summary. Earlier work is marked as unmanaged history. Team rules and compliance claims apply only after the baseline.
 
-V2 仍然是无账号的个人本地产品，不增加团队协同和云端同步。它保留已经可用的目标创建、计划确认、Codex 执行、对话、成果验收和资源安排，并围绕两条主流程提升产品形态：从零创建并完成目标，以及把一个或多个本地 Codex 会话整理为一个目标后继续推进。
+### Personal Edition V2
 
-首页默认展示所有目标，项目只提供轻量整理和汇总，不拥有独立状态、计划或完成百分比。目标详情以执行图为中心，节点详情承载工具调用和原始日志；进入待验收后默认切换到成果视图。Codex 是 V2 唯一完整执行接入，其他工具在具备结构化上报能力前只提供导入或基础状态能力。
+V2 remains an accountless local personal product and does not add team collaboration or cloud synchronization. It retains the working goal-creation, plan-confirmation, Codex execution, conversation, result-acceptance, and resource-arrangement capabilities. It improves two main flows: creating and completing a goal from scratch, and organizing one or more local Codex sessions into a goal before continuing it.
 
-## 团队版的主界面
+The home page shows all goals by default. Projects provide lightweight organization and summaries but have no state, plan, or completion percentage of their own. The goal detail centers on the execution graph, while node detail contains tool calls and raw logs. On entering Review-ready, it opens the results view by default. Codex is V2's only complete execution integration; other tools provide only import or basic state until they support structured reporting.
 
-团队首页是一张**运行总览**，优先呈现需要人处理、运行中、受阻和待验收的目标。每项工作应立即看出负责人、当前执行端、下一项决定、资源风险和最近检查点。
+## Main Team-edition Interface
 
-进入单个目标后，系统根据计划和实际检查点自动生成**执行图**。简单工作显示为时间线，复杂工作才展开为阶段与依赖节点。它可以具有类似画布的空间感，但用户不需要手工绘制流程；画面表达的是正在发生的工作，而不是一套额外的流程模型。
+The team home page is an **execution overview** that prioritizes goals needing human action, running, blocked, and Review-ready. Every item makes its owner, current execution host, next decision, resource risk, and latest checkpoint immediately visible.
 
-团队协同围绕责任与交接发生。每个目标始终只有一名负责人，执行者和验收人可以不同。负责人或执行端发生变化时，必须基于阶段检查点或完整的暂停保存点完成明确交接，并带上当前状态、规则版本、未解决风险和恢复入口。首版不增加群聊、通用文档或多人实时编辑。
+Inside a goal, Teamline generates an **execution graph** from the plan and actual checkpoints. Simple work appears as a timeline; complex work expands into stages and dependency nodes. The view may have a canvas-like spatial quality, but users do not draw a process manually. It depicts work that is happening rather than introducing another process model.
 
-最小权限模型中，只有被团队明确授予治理权限的成员可以发布团队规则和预算边界；目标负责人只能在这些边界内确认计划和资源，规则例外与最终验收都需要明确指定的人批准。小团队里同一个人可以兼任多种责任，但每次决定仍要记录当时使用的权限与身份。
+Team collaboration revolves around responsibility and handoff. Every goal always has one owner, while executor and acceptor may differ. A change of owner or execution host requires an explicit handoff from a stage checkpoint or complete pause savepoint, carrying current state, rule version, unresolved risks, and the recovery entry point. The first release does not add group chat, general documents, or real-time multi-person editing.
 
-## 团队规则如何工作
+In the minimum permission model, only members explicitly given governance permission may publish team rules and budget boundaries. Goal owners may confirm plans and resources only within those boundaries. Rule exceptions and final acceptance require approval by explicitly designated people. One person may hold several responsibilities in a small team, but each decision still records the permission and identity used at the time.
 
-团队控制台是其中发布的团队规则及其版本历史的权威来源。仓库、工具和外部文档继续维护各自范围内的规则，不复制成控制台里的第二份可编辑版本。
+## How Team Rules Work
 
-确认执行计划时，控制台读取所有适用规则，保留来源和版本，生成该目标不可变的**生效规则集**。外部规则随后发生变化时，当前目标被标记为可能过期，但已经授权的执行约束不会被静默改写。
+The team console is the authoritative source for team rules published in it and their version history. Repositories, tools, and external documents continue to maintain rules in their own scopes; they are not copied into a second editable version in the console.
 
-只有结构化、机器可判断的条件可以进入自动验证，包括适用范围、允许的工具与环境、预算限制、受限路径和命令、批准条件、必需检查、验收证据和验收角色。每条规则还要显示当前适配器实际能够在执行前阻止、执行后检测、收集证据、请求人工确认，还是暂不支持。自然语言约定可以作为指导传递给 AI 和人，但在没有检查条件或人工确认前，产品不能声称已经落实。
+When an execution plan is confirmed, the console reads all applicable rules, preserves their source and version, and creates an immutable **effective rule set** for the goal. If an external rule changes later, the current goal is marked as potentially stale, but its authorized execution constraints are not silently rewritten.
 
-可以同时满足的规则一起生效，明确可比较的约束采用更严格的一项。真正冲突的规则必须在计划确认前交给负责人处理。任何放宽已发布团队规则的决定都要形成有范围、有期限、有原因和批准人的例外，AI 无权自行批准。
+Only structured, machine-evaluable conditions enter automatic verification: scope; allowed tools and environments; budget limits; restricted paths and commands; approval conditions; required checks; acceptance evidence; and acceptance roles. Each rule also shows whether the current adapter can block before execution, detect after execution, collect evidence, request human confirmation, or does not support it. Natural-language conventions may guide AI and people, but the product cannot claim enforcement without an evaluable condition or human confirmation.
 
-只有通过控制层创建、授权并启动或恢复的工作属于**受控执行**。受控启动让产品有机会验证规则，但不自动等于全面合规；控制台必须根据实际证据显示已验证、部分验证或无法判断。绕过控制层启动的工作可以被发现和展示，但必须标记为非受控，不能事后自动补成合规记录。
+Rules that can all be satisfied apply together, and clearly comparable constraints use the stricter one. A true conflict goes to the owner before plan confirmation. Every relaxation of a published team rule becomes a scoped, time-limited exception with a reason and approver. AI cannot approve it.
 
-## 预算与工具如何进入执行
+Only work created, authorized, and started or resumed through the control layer is **managed execution**. A managed start gives the product an opportunity to verify rules but does not prove full compliance. The console reports verified, partially verified, or indeterminate according to actual evidence. Work started outside the control layer may be discovered and shown, but remains unmanaged and cannot be retroactively converted into a compliant record.
 
-预算和工具不是旁边的一张用量表，而是执行计划的一部分。每个目标在确认计划时形成**资源方案**，包括允许使用的工具、模型、Provider 引用和执行环境，首选与备用顺序，预算、额度和运行时间，以及需要重新批准的变化。Teamline 是目标预算与资源决策的权威来源，CC Switch 等资源适配器继续拥有 Provider 配置与凭据。
+## How Budgets and Tools Enter Execution
 
-个人内核 v0 不实现完整预算控制台，只在目标详情显示已运行时间、已知用量、阈值和执行能力。最长运行时间属于本地可硬暂停的约束；用量、费用和额度阈值在无法可靠归因或执行时必须标为仅提醒。个人 Alpha 再验证多个并行目标与多个 Provider 的资源总览和分配，团队付费 MVP 才增加共享预算的分配、预留与集中审计。
+Budgets and tools are part of the execution plan, not a separate usage table. When a goal plan is confirmed, it receives a **resource plan** containing allowed tools, models, provider references, and execution environments; preferred and fallback order; budget, quota, and run time; and changes that require renewed approval. Teamline is the authority for goal-budget and resource decisions. Resource adapters such as CC Switch continue to own provider configuration and credentials.
 
-控制层只有在资源信号实时、可归因并达到规则要求，而且存在已经验证可恢复的阶段检查点时，才能触发已授权的自动工具切换。估算、陈旧或互相冲突的信号只能提示或请求确认。首个试点只提供工具切换建议并由人确认；自动跨工具切换留作后续验证。预计越界或无法安全恢复时，目标必须暂停。团队控制台展示预算预留、实际消耗和剩余资源，但第一版不代购或转售模型额度，也不集中托管供应商账号。
+Personal kernel v0 does not implement a complete budget console. Goal detail shows run time, known usage, thresholds, and enforcement capability. Maximum run time is a local hard-pause constraint; usage, cost, and quota thresholds are marked advisory when they cannot be attributed or enforced reliably. Personal Alpha later validates resource overview and allocation across parallel goals and several providers. The paid team MVP then adds shared-budget allocation, reservation, and centralized audit.
 
-供应商、本地执行端、资源适配器和估算模型提供的用量与成本都是资源信号。每条信号必须标明来源、时间、可信程度和可归因范围；只有能够归因到具体目标的信号可以参与目标预算动作，全局聚合用量只能提示。产品不能把不稳定的估算包装成精确账单。
+The control layer may trigger authorized automatic tool switching only when the resource signal is current, attributable, and meets rule requirements and a verified recoverable stage checkpoint exists. Estimated, stale, or conflicting signals may only inform or request confirmation. The first pilot offers a switching recommendation confirmed by a person; automatic cross-tool switching remains a later hypothesis. A goal must pause when it is expected to cross a boundary or cannot recover safely. The team console shows budget reservations, actual consumption, and remaining resources, but the first release does not buy or resell model quota or centrally host provider accounts.
 
-## 信息与部署边界
+Usage and cost from providers, local execution hosts, resource adapters, and estimation models are resource signals. Every signal states its source, time, confidence, and attribution scope. Only signals attributable to a specific goal may participate in goal-budget actions; global aggregate usage can only inform. The product must not present unstable estimates as exact bills.
 
-产品不建立覆盖所有信息的全局 SOT，而是为每类对象确定一个权威来源：
+## Information and Deployment Boundaries
 
-| 信息 | 权威来源 | 本产品控制面默认保存 |
+The product does not create a global source of truth for all information. It assigns an authoritative source to each object class:
+
+| Information | Authoritative source | Stored by this product's control plane by default |
 | --- | --- | --- |
-| 需求与文档 | Linear、Jira、Notion 等原系统 | 链接、版本 ID、哈希与必要摘要；正文快照需要团队明确开启 |
-| 代码、分支、提交与测试 | Git 与 CI | 提交引用、检查结果和证据摘要，不保存完整代码 |
-| 已发布团队规则与版本 | 团队控制面 | 完整结构化规则、适用范围、版本和验证方式 |
-| 个人规则与个人目标 | 个人本地控制台 | 默认不上云；明确转入团队后才同步必要控制记录 |
-| 团队目标、计划、授权、状态、例外与验收 | 团队控制面 | 完整结构化控制记录 |
-| 团队预算分配与资源预留 | 团队控制面 | 预算、预留、来源、时间与可信程度 |
-| 供应商实际用量与账单 | 对应供应商 | 带来源和时间的读数或估算，不冒充供应商账单 |
-| 凭据、原始代码、完整模型会话与原始执行日志 | 本地环境或原有供应商 | 默认不上传至本产品控制面 |
+| Requirements and documents | Original systems such as Linear, Jira, or Notion | Links, version IDs, hashes, and necessary summaries; body snapshots only when explicitly enabled by the team |
+| Code, branches, commits, and tests | Git and CI | Commit references, check results, and evidence summaries; no complete code |
+| Published team rules and versions | Team control plane | Complete structured rules, scope, versions, and verification methods |
+| Personal rules and personal goals | Personal local console | Not uploaded by default; necessary control records synchronize only after an explicit move to team |
+| Team goals, plans, authorization, state, exceptions, and acceptance | Team control plane | Complete structured control records |
+| Team budget allocation and resource reservations | Team control plane | Budget, reservations, source, time, and confidence |
+| Provider actual usage and bills | Corresponding provider | Readings or estimates with source and time, never presented as the provider's bill |
+| Credentials, raw code, complete model sessions, and raw execution logs | Local environment or original provider | Not uploaded to this product's control plane by default |
 
-外部来源变化时，控制层提示计划可能过期，不进行字段级双向同步。控制台可以把进度和证据摘要写回原系统，但不接管原始内容。“默认不上传”只指本产品的云端控制面；现有 AI 编码工具如何向其供应商发送数据，仍由对应工具和团队自己的供应商设置决定。
+When an external source changes, the control layer warns that a plan may be stale and does not perform field-level bidirectional synchronization. The console may write progress and evidence summaries back to the original system without taking ownership of the source content. “Not uploaded by default” refers only to this product's cloud control plane. How an existing AI coding tool sends data to its provider remains governed by that tool and the team's provider settings.
 
-团队版采用云端控制面与本地执行端。个人内核 v0 的计划草案由本地执行端调用 Codex 生成；如果未来使用独立云端模型生成，必须在启用前单独说明会发送的字段、供应商、保留方式和脱敏策略。
+The team edition uses a cloud control plane and local execution hosts. Personal kernel v0 asks Codex to draft plans from the local host. If a future independent cloud model generates plans, Teamline must separately disclose the fields sent, provider, retention, and redaction policy before it is enabled.
 
-## 最低安全边界
+## Minimum Security Boundary
 
-本地执行端拥有高权限，因此安全边界属于产品承诺，而不是后续实现细节。个人本地网页默认只监听本机回环地址，并使用每次安装生成的访问凭据；执行端按最小权限运行，不把仓库凭据和秘密写入控制记录。
+The local execution host has extensive permission, so its security boundary is part of the product promise rather than a later implementation detail. The personal local web interface listens only on loopback by default and uses an installation-specific access credential. The host runs with least privilege and does not write repository credentials or secrets into control records.
 
-正式规格冻结前必须先验证 Codex 的候选接入面，并把指定工作区、结构化状态、上下文恢复、权限控制、暂停、终止与进程围栏逐项标为可阻止、可检测、仅提示或不支持。暂停与终止进程树、执行围栏或新增权限拦截无法可靠实现时，该接入不能被称为受控执行，个人内核实现也不能绕过闸门继续承诺这些能力。Git worktree 只隔离 Git 工作状态，不限制越目录访问、凭据、网络或子进程。
+Before the formal specification is frozen, Teamline must test candidate Codex integration surfaces and classify workspace selection, structured state, context restoration, permission control, pause, termination, and process fencing as able to block, able to detect, advisory only, or unsupported. If process-tree pause and termination, execution fencing, or new-permission interception cannot be implemented reliably, that surface cannot be called managed execution and the personal kernel cannot continue promising those capabilities. A Git worktree isolates Git working state only; it does not restrict parent-path access, credentials, network, or subprocesses.
 
-授权分为两个阶段。用户点击生成计划时，只批准 Codex 读取所选仓库并向界面已披露的接收服务发送必要上下文，不允许写代码或启动执行；用户确认执行计划时，才批准包含执行工作区、Codex 接入、网络权限、最长运行时间和高风险操作规则的执行授权。执行可以在该范围内持续推进；任何新增权限请求都必须由 Teamline 暂停目标并重新交给人决定，执行工具不能自行放行。预算和额度缺少可靠来源时只提示风险，不宣称能够硬性阻断。
+Authorization has two phases. Selecting Generate plan permits Codex only to read the selected repository and send necessary context to the receiving service disclosed in the interface; it does not permit code writes or execution. Confirming the execution plan then grants execution authorization for the workspace, Codex integration, network permission, maximum run time, and high-risk operation rules. Execution may continue within that scope. Any request for new permission makes Teamline pause the goal and return the decision to a person; the execution tool cannot approve itself. Budget and quota without reliable sources produce warnings rather than claims of hard enforcement.
 
-同一仓库工作区或执行分支在一个时点只允许一个执行端持有执行租约，但租约失效本身不证明旧进程已经停止。恢复必须先请求旧进程树停止，确认它不能继续写入后再保存待处理现场、建立干净恢复工作区并签发新租约；必要时由用户明确选择强制终止。无法确认旧进程停止时，目标保持“需响应”并注明执行中断，不能声称安全恢复。阶段检查点与暂停保存点需要绑定提交或工作树指纹，暂停、恢复和交接前都要确认工作区没有被其他执行修改。
+Only one execution host may hold the execution lease for a repository workspace or execution branch at a time, but an expired lease does not prove that the old process stopped. Recovery first asks the old process tree to stop, confirms it can no longer write, preserves unresolved working residue, creates a clean recovery workspace, and issues a new lease. The user may explicitly choose force termination when necessary. If Teamline cannot confirm that the old process stopped, the goal remains Needs response with an execution-interruption reason and Teamline cannot claim safe recovery. Stage checkpoints and pause savepoints bind to a commit or working-tree fingerprint. Pause, recovery, and handoff all verify that another execution has not modified the workspace.
 
-用户和团队必须始终拥有暂停与撤销授权入口。控制面失联时，执行端不能获得新授权，只能在现有授权范围内推进到下一个可停稳位置后暂停并创建暂停保存点。紧急安全规则可以让旧规则集立即失效并暂停受影响目标，但不能静默替换后继续执行；恢复必须重新确认计划和授权。
+Users and teams always retain controls to pause and revoke authorization. If the control plane disconnects, the execution host cannot obtain new authorization. It may advance only within its current authorization to the next stable stopping point, then pauses and creates a pause savepoint. Emergency security rules may invalidate an old rule set and pause affected goals, but cannot silently replace it and resume execution. Recovery requires renewed plan confirmation and authorization.
 
-## 建设顺序
+## Build Order
 
-第一阶段先完成与正式技术栈无关的恢复逻辑原型。随后实测 Codex 候选接入面，并围绕 macOS 进程围栏、Git 恢复、崩溃持久化、本地网页安全、安装升级和未来主机适配对比正式技术栈；这两项闸门通过后才冻结技术规格。个人内核 v0 再以一个仓库、Codex、本地网页和一个活动目标验证计划确认、检查点、中断恢复和验收证据。个人 Alpha 必须支持至少两个目标在相互隔离的工作区中并行运行，实际并发上限由本机资源和用户设置决定；领域模型不能把单目标写成全局限制。个人内核 v0 只实现并验证 Apple Silicon macOS 执行端，不承诺支持多工具、多个操作系统和所有视图。
+The first phase begins with a recovery-logic prototype independent of the production stack. Teamline then tests candidate Codex integration surfaces and compares production stacks for macOS process fencing, Git recovery, crash persistence, local-web security, installation and upgrades, and future host adapters. The technical specification is frozen only after both gates pass. Personal kernel v0 then validates plan confirmation, checkpoints, interruption recovery, and acceptance evidence with one repository, Codex, a local web interface, and one active goal. Personal Alpha must support at least two goals in isolated workspaces; local resources and user settings determine the actual concurrency limit, and the domain model must not make one active goal a global constraint. Personal kernel v0 implements and validates only an Apple Silicon macOS execution host and does not promise multiple tools, operating systems, or every view.
 
-第二阶段复用同一执行内核增加首个付费团队控制面，包括共享目标、已发布结构化规则、最小权限、交接、团队预算和集中验收记录，仍然只做一种深度工具适配。
+The second phase reuses the same execution kernel for the first paid team control plane: shared goals, published structured rules, minimum permissions, handoff, team budgets, and centralized acceptance records, still with only one deep tool integration.
 
-第三阶段再扩展多项目与多工具总览、经过验证的工具切换、桌面封装、可选个人云服务和企业私有部署。任何阶段都必须先通过上一阶段的使用证据，不能因为长期愿景而并行建设全部模块。
+The third phase expands to multi-project and multi-tool overviews, validated tool switching, desktop packaging, optional personal cloud services, and private enterprise deployment. Every phase depends on usage evidence from the previous one; the long-term vision does not justify building all modules in parallel.
 
-## 首个付费 MVP
+## First Paid MVP
 
-首个付费 MVP 只证明一条团队纵向闭环：负责人从仓库和外部需求引用创建目标，系统生成计划并解析规则与资源；负责人确认后，本地执行端启动现有工具；控制台记录状态和检查点，支持暂停、恢复和交接；完成必需检查并收集证据后进入待验收。
+The first paid MVP proves one vertical team loop. An owner creates a goal from repository and external requirement references; the system generates a plan and resolves rules and resources; after owner confirmation, the local execution host starts an existing tool; the console records state and checkpoints and supports pause, recovery, and handoff; after required checks and evidence collection, the goal enters Review-ready.
 
-首版只接入：
+The first release integrates only:
 
-- 一个代码托管平台；
-- 一个通用本地命令入口；
-- Codex 的一种经验证的可控接入，具体接入面不预设为 CLI。
+- one code-hosting platform;
+- one generic local command entry point;
+- one validated controllable Codex integration surface, which is not assumed in advance to be the CLI.
 
-付费试点明确不做自动跨工具切换、通用文档、聊天、需求管理、双向同步、自由画布、托管 Agent、云端开发环境、供应商账号托管和任意自然语言规则验证。
+The paid pilot explicitly excludes automatic cross-tool switching, general documents, chat, requirement management, bidirectional synchronization, a freeform canvas, hosted agents, cloud development environments, provider-account hosting, and verification of arbitrary natural-language rules.
 
-## 商业模式
+## Business Model
 
-个人本地版免费并提供完整的单人工作控制闭环。团队为共享控制面、已发布团队规则、多人权限、资源协调、授权与例外、跨人交接和集中审计付费。
+The personal local edition is free and provides a complete single-person work-control loop. Teams pay for a shared control plane, published team rules, multi-person permissions, resource coordination, authorization and exceptions, cross-person handoff, and centralized audit.
 
-首轮定价假设为每个团队工作区每月 99 美元，包含 5 名活跃成员，超出后暂按每人每月 20 美元计费。产品不按目标数量收费，也不从模型消耗中抽成。这个价格用于验证付费意愿，不是已经成立的最终价格。
+The first pricing hypothesis is USD 99 per team workspace per month, including five active members, then provisionally USD 20 per additional member per month. Teamline does not charge by goal count or take a share of model consumption. This price tests willingness to pay; it is not an established final price.
 
-后续商业假设是为中国企业提供**企业私有版**。它部署在客户自己的网络与基础设施中，目标是沿用同一套目标、规则、资源和验收模型，并增加企业身份、权限、审计留存、网络出口控制、离线运维和国内工具适配。年度授权与实施支持、不为每家客户维护专属产品分支，是待企业访谈和交付成本验证的方向，不是当前已经承诺的路线图。首版只保留控制面可独立部署的边界。
+A later commercial hypothesis is a **private enterprise edition** for Chinese enterprises. It runs in customer-owned networks and infrastructure and aims to reuse the same goal, rule, resource, and acceptance model while adding enterprise identity, permissions, audit retention, network-egress control, offline operations, and Chinese-tool integration. Annual licensing and implementation support without a customer-specific product branch is a direction to validate through enterprise interviews and delivery-cost evidence, not a committed roadmap. The first release preserves only a boundary that permits independent control-plane deployment.
 
-## 验证方法
+## Validation Method
 
-个人 Alpha 先招募 12 名设计伙伴使用四周。这个阶段成立，需要至少 8 人完成三个符合定义的受控目标，至少 6 人在第四周仍主动使用；使用与完成数据按短工作和长程开发工作预先分层，恢复成功率只在发生或模拟过中断的多阶段目标中计算，至少 80% 能够从完整恢复位置恢复而不需要重新建立目标和计划。若多数人只查看额度、很少创建目标，个人入口假设不成立。
+Personal Alpha first recruits 12 design partners for four weeks. The phase passes if at least eight people complete three qualifying managed goals and at least six are still actively using the product in week four. Usage and completion data are stratified in advance by short and long-running work. Recovery success is measured only for multi-stage goals that encounter or simulate interruption, and at least 80% must recover from a complete recovery position without rebuilding the goal and plan. If most people only inspect quota and rarely create goals, the personal-entry hypothesis fails.
 
-团队试点开始前先冻结复杂度分层，但不把复杂度作为进入受控执行的门槛。所有具有明确边界、会产生代码变更并有验收方式的工作都可以形成目标；“预计至少两小时或两个执行阶段”只用于预先区分长程工作与短工作，并分别观察效果。基线期使用简化记录表采集相同字段，不能在试点结束后调整分层或把一个目标任意拆小来提高数量。
+Before the team pilot, complexity tiers are frozen without making complexity an entry requirement for managed execution. Any work with a clear boundary, code changes, and an acceptance method may become a goal. “At least two hours or two execution stages” only distinguishes long-running and short work in advance so their outcomes can be observed separately. A simplified baseline log captures the same fields, and the tiers cannot change after the pilot or be inflated through arbitrary goal splitting.
 
-随后招募五支符合目标定义的团队，先记录两周基线，再实际支付 99 美元使用四周。团队产品假设成立必须同时满足：
+Five qualifying teams then record a two-week baseline, pay USD 99, and use the product for four weeks. The team hypothesis passes only if all of the following hold:
 
-- 至少三支团队把一半以上适合的长程 AI 开发工作放进受控执行；
-- 按预先确定的复杂度分层后，每名负责人每周可靠进入待验收的目标数相较基线提高至少 30%；基线为零的团队改用预先登记的绝对目标；
-- 待验收结果在三个工作日内的一次验收通过率不低于基线，重大返工率、计划外协调时间和规则例外率按目标归一化后不明显恶化；
-- 至少三支团队在试点结束后再次实际支付 99 美元续费，而不是只表达购买意愿。
+- at least three teams place more than half of eligible long-running AI development work into managed execution;
+- after applying the predetermined complexity tiers, reliable review-ready goals per owner per week increase at least 30% from baseline; teams with a zero baseline use a preregistered absolute target;
+- first-pass acceptance within three business days does not fall below baseline, while major rework, unplanned coordination time, and rule-exception rates do not materially worsen after normalization by goal;
+- at least three teams actually pay another USD 99 after the pilot rather than only expressing purchase intent.
 
-计划与规则系统另行记录机制指标，包括计划一次接受率、重规划率、检查点恢复成功率、可验证规则覆盖率、各验证方式占比、被阻止的越界动作、审批等待时间、预算超限率和资源中断率。它们用来判断改善来自计划、规则、检查点还是单纯的状态可见性，避免在闭环成立前建设复杂规则引擎。
+The plan and rule system separately records mechanism metrics: first-pass plan acceptance, replanning, checkpoint recovery success, verifiable-rule coverage, distribution of verification methods, blocked out-of-bound actions, approval wait time, budget overruns, and resource interruptions. These distinguish improvement caused by plans, rules, and checkpoints from mere state visibility and prevent premature investment in a complex rule engine.
 
-如果团队只查看额度与状态、不愿通过产品启动目标，或者创建计划和处理规则带来的额外工作抵消了收益，即使页面活跃，也判定核心假设没有成立。此时应重新检查工作控制层，而不是用培训、预算管理或更多集成掩盖问题。
+If teams inspect quota and state but will not start goals through the product, or if plan creation and rule handling add more work than they remove, the core hypothesis fails despite active pages. Teamline should then revisit the work control layer rather than mask the problem with training, budget management, or more integrations.
 
-## 主要风险
+## Primary Risks
 
-最大的产品风险不是能否画出控制台，而是团队是否愿意让重要工作经过受控入口。如果创建目标、确认计划和处理规则比负责人直接追问更费力，产品就没有成立。
+The largest product risk is not whether Teamline can draw a console, but whether teams will route important work through a managed entry point. If creating goals, confirming plans, and handling rules costs owners more effort than asking people directly, the product has not succeeded.
 
-第二个风险是智能切分产生的计划质量不足。计划如果不能形成合理检查点、验证证据和恢复入口，执行图、资源方案与交接都会失去基础。计划接受率、重规划率和检查点恢复成功率需要在个人试点就开始记录。
+The second risk is low-quality AI decomposition. If a plan cannot produce sensible checkpoints, validation evidence, and recovery entry points, the execution graph, resource plan, and handoff lose their foundation. Personal pilots must already record plan acceptance, replanning, and checkpoint recovery success.
 
-第三个风险是规则执行能力受外部工具接口限制。产品必须清楚区分执行前阻止、执行后检测、证据收集、人工确认和仅作指导的规则，不能用模型自评制造虚假的治理感。
+The third risk is that external tool interfaces limit rule enforcement. The product must distinguish blocking before execution, detecting afterward, collecting evidence, obtaining human confirmation, and advisory guidance. It cannot manufacture a false sense of governance through model self-assessment.
 
-第四个风险是 GitHub、Cursor、OpenAI 或其他平台把团队调度和治理直接打包进现有产品。控制层必须在跨成员、跨项目、跨工具和跨执行环境的规则与责任上形成独立价值；如果用户只需要单一工具内的管理功能，独立产品的空间会很小。
+The fourth risk is that GitHub, Cursor, OpenAI, or another platform bundles team scheduling and governance into an existing product. The control layer must create independent value in rules and responsibility across members, projects, tools, and execution environments. There is little room for a separate product when users only need management inside one tool.
 
-第五个风险是本地高权限执行与云端控制带来的安全责任。没有最小权限、执行租约、紧急暂停、检查点完整性和明确的数据去向，就不能把产品用于重要仓库。
+The fifth risk is the security responsibility created by highly privileged local execution and cloud control. Teamline cannot be used for important repositories without least privilege, execution leases, emergency pause, checkpoint integrity, and explicit data destinations.
 
-第六个风险是企业需求过早引入私有化、合规和定制交付。企业版只能在小团队核心闭环被证明之后扩展，并优先验证同一产品模型是否真的能够复用。
+The sixth risk is allowing enterprise demands to introduce private deployment, compliance, and custom delivery too early. The enterprise edition should expand only after the small-team loop is proven and should first validate whether one product model can really be reused.
 
-## 长期愿景
+## Long-term Vision
 
-长期产品不是“更多 AI 工具的集合”，而是**AI-native 团队运行系统**：让团队能够稳定地推进目标、配置资源、落实规则，并持续提升人与 AI 的协作能力。
+The long-term product is not “more AI tools.” It is an **AI-native team operating system** that helps teams advance goals reliably, configure resources, apply rules, and continually improve human-AI collaboration.
 
-它沿四个方向扩展：工作控制仍是核心；资源经营覆盖工具订阅、模型预算、额度和执行环境；团队能力建设根据真实工作沉淀规则模板、最佳实践、入职路径和培训；管理治理提供投入产出、交付质量、风险、例外与审计视图。
+It expands in four directions: work control remains the core; resource operations cover tool subscriptions, model budgets, quota, and execution environments; team capability development captures rule templates, best practices, onboarding paths, and training from real work; and management governance provides views of return on investment, delivery quality, risk, exceptions, and audit.
 
-这些能力只能沿着受控目标闭环逐步生长。产品不会替代代码仓库、需求系统、财务系统、知识库或通用学习平台。
+These capabilities can grow only from the managed goal loop. Teamline does not replace code repositories, requirement systems, finance systems, knowledge bases, or general learning platforms.
 
-## 尚待试点决定
+## Decisions Reserved for Pilots
 
-以下事项不阻塞产品定义，但必须由设计伙伴和真实数据决定：
+The following do not block the product definition, but design partners and real data must decide them:
 
-- 首个代码托管平台、Codex 的个人内核 v0 接入面，以及 Claude Code、OpenCode 和中国 AI 编码工具的接入可行性与后续顺序；
-- 默认的两小时／两阶段口径是否能够有效区分长程工作与短工作；
-- 不同工具能够提供的检查点、恢复与证据能力；
-- 没有自动验证命令的视觉或人工验收如何进入待验收，以及验收退回后的状态转换；
-- 各供应商的资源信号达到什么等级才允许自动动作；
-- CC Switch 是否提供稳定的公开接入面，以及其用量能否可靠归因到具体目标；
-- 团队云端数据的字段级保留、删除、加密和租户隔离策略；
-- 99 美元团队价格在不同地区的接受度；
-- 企业私有版的首个国内模型、身份系统和部署环境；
-- 个人本地内核是否开源，以及免费、开源和商业许可的边界；
-- 产品名称暂定为 Teamline，官网域名暂定为 teamline.dev；仍需完成商标、域名接入和设计伙伴反馈验证。
+- the first code-hosting platform, the Personal kernel v0 Codex integration surface, and the feasibility and later order of Claude Code, OpenCode, and Chinese AI coding tools;
+- whether the default two-hour or two-stage criterion usefully separates long-running and short work;
+- the checkpoint, recovery, and evidence capabilities available from different tools;
+- how visual or manual acceptance without automated validation commands enters Review-ready and how rejection changes state;
+- the resource-signal quality required for automated actions from each provider;
+- whether CC Switch offers a stable public integration surface and whether its usage can be attributed reliably to a goal;
+- field-level retention, deletion, encryption, and tenant-isolation policies for team-cloud data;
+- acceptance of the USD 99 team price in different regions;
+- the first Chinese model, identity system, and deployment environment for the private enterprise edition;
+- whether the personal local kernel is open source, and the boundaries among free, open-source, and commercial licenses;
+- the working product name Teamline and working domain teamline.dev, which still require trademark, domain-connection, and design-partner validation.

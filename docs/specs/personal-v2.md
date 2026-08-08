@@ -1,342 +1,344 @@
-# Teamline 个人版 V2
+# Teamline Personal Edition V2
 
-状态：产品范围已确认  
-日期：2026-08-04
+[简体中文](./personal-v2.zh-CN.md)
 
-## 版本目标
+Status: Product scope confirmed
+Date: 2026-08-04
 
-V2 让用户在一个本地工作台里看清 AI 工作正在做什么、下一步需要谁处理，以及额度是否适合继续运行。它在当前目标闭环上完成会话导入、项目整理、真实执行图和更清楚的信息层级，同时把计划节点变成真实的执行与验证边界。
+## Release Goal
 
-V2 必须跑通两条主流程：
+V2 gives users one local workbench where they can understand what AI work is doing, who needs to act next, and whether quota conditions permit continued execution. It adds session import, project organization, a real execution graph, and a clearer information hierarchy to the existing goal loop, while turning plan nodes into real execution and validation boundaries.
 
-1. 新建目标：填写目标、生成并确认计划、查看执行图、运行和响应、查看成果、确认完成。
-2. 导入目标：选择一个或多个 Codex 会话、整理为一个目标、查看历史进展、检测来源更新、从新会话继续、确认完成。
+V2 must complete two main flows:
 
-## 本版本边界
+1. New goal: enter a goal, generate and confirm a plan, inspect the execution graph, run and respond, inspect results, and confirm completion.
+2. Imported goal: select one or more Codex sessions, organize them as one goal, inspect historical progress, detect source updates, continue in a new session, and confirm completion.
 
-- 个人本地版本，无账号，数据默认保存在本机。
-- Codex 是唯一完整执行接入。
-- 项目只负责整理目标、素材和成果，不承担项目管理。
-- 保留现有目标创建、计划确认、执行、对话、成果和资源能力，按 V2 信息架构重组。
-- 支持编码、产品设计、文档协作和调研等具有明确结果的工作。
+## Release Boundary
 
-V2 不做团队成员与权限、云端同步、项目约束、多工具完整执行接入、自由画布、自动接受计划变更和精确的 Codex 订阅配额分配。
+- Personal and local: no account, with data stored on the device by default.
+- Codex is the only complete execution integration.
+- Projects organize goals, materials, and results; they do not perform project management.
+- Existing goal creation, plan confirmation, execution, conversation, results, and resource capabilities remain and are reorganized under the V2 information architecture.
+- Goals may cover coding, product design, documentation, research, and other work with a clear result.
 
-## 信息架构
+V2 excludes team members and permissions, cloud synchronization, project constraints, complete execution integration for several tools, a freeform canvas, automatic acceptance of plan changes, and exact allocation of Codex subscription quota.
 
-### 首页
+## Information Architecture
 
-首页默认展示全部目标，不要求用户先进入项目。目标按状态和最近更新组织，优先突出“需响应”和“待验收”。
+### Home
 
-首页提供两个主要入口：
+The home page shows all goals by default; users do not need to enter a project first. It organizes goals by state and recent updates and emphasizes Needs response and Review-ready.
 
-- 新建目标；
-- 导入 Codex 会话。
+The home page provides two primary entry points:
 
-项目入口和资源入口位于全局导航中。“新建项目”放在项目区域旁边，不与两个目标入口争夺注意力。
+- Create goal;
+- Import Codex session.
 
-### 目标详情
+Projects and Resources appear in the global navigation. Create project sits beside the project area and does not compete with the two goal entry points.
 
-桌面端保持三层关系：
+### Goal Detail
 
-- 左侧：全局导航、目标列表和项目入口；
-- 中间：目标概况、执行图或成果；
-- 右侧：当前目标或选中节点的详情与下一步操作。
+Desktop preserves a three-level relationship:
 
-右侧不是独立的信息页，内容必须跟随用户在中间区域的选择。对话作为可展开区域存在；需要澄清或响应时自动打开，但不成为默认主界面。
+- left: global navigation, goal list, and project entry points;
+- center: goal overview, execution graph, or results;
+- right: details and next actions for the current goal or selected node.
 
-窄屏按“列表 → 目标主体 → 节点详情”逐层进入，不压缩成三列。所有中文标题按移动端重新换行，不沿用桌面端固定分行。
+The right side is not an independent information page. It follows the user's selection in the center. Conversation is an expandable area; it opens automatically for clarification or response but is not the default main interface.
 
-### 项目简页
+On narrow screens, users enter List → Goal → Node details one level at a time instead of compressing all three columns. Chinese headings reflow for mobile and do not inherit fixed desktop line breaks.
 
-项目页只展示：
+### Project Summary
 
-- 目标总数和已完成目标数；
-- 正在运行、需响应和待验收的目标；
-- 最近更新的目标；
-- 项目素材；
-- 已产生的主要成果。
+A project page shows only:
 
-项目没有自己的计划、执行状态、验收和完成百分比。点击项目中的目标后进入普通目标详情。
+- total and completed goal counts;
+- goals that are Running, Need response, or Review-ready;
+- recently updated goals;
+- project materials;
+- primary results already produced.
 
-### 资源页
+A project has no plan, execution state, acceptance, or completion percentage of its own. Selecting a goal opens ordinary goal detail.
 
-顶栏只显示简短的 Codex 额度状态。独立资源页展示额度窗口、并发设置和各目标的资源安排；目标详情只显示当前目标的资源设置。额度不影响目标时，不在首页重复展示资源说明。
+### Resources
 
-## 核心对象
+The top bar shows only a short Codex quota status. The Resources page shows quota windows, concurrency settings, and resource arrangements for each goal. Goal detail shows only the current goal's resource settings. When quota does not affect a goal, the home page does not repeat resource explanations.
 
-### 目标
+## Core Objects
 
-目标具有独立的预期结果和验收方式。创建时只要求：
+### Goal
 
-- 目标名称；
-- 想得到什么结果；
-- 可选的所属项目。
+A goal has an independent expected result and acceptance method. Creation requires only:
 
-素材、验收要求和执行设置在创建后补充。目标不嵌套，需要独立运行和验收的工作创建为另一个目标。
+- goal name;
+- desired result;
+- optional project.
 
-### 项目
+Materials, acceptance requirements, and execution settings are added after creation. Goals do not nest. Work requiring independent execution and acceptance becomes another goal.
 
-一个目标最多属于一个项目，也可以不属于项目。目标加入项目后，自己的素材自动进入项目范围，不再要求用户确认。
+### Project
 
-项目素材可以是新建文本、上传文件或图片，也可以引用本地文件夹、仓库、链接和其他目标。项目素材对项目内目标可见，但不会默认全部发送给 Codex；Teamline 推荐相关素材，用户可以增减。
+A goal belongs to at most one project and may belong to none. When a goal joins a project, its own materials enter project scope automatically without another confirmation.
 
-### 执行阶段
+Project materials may be new text, uploaded files or images, or references to local folders, repositories, links, and other goals. Project goals can see project materials, but not all material is sent to Codex by default. Teamline recommends relevant items, and users may add or remove them.
 
-执行计划包含两类阶段：
+### Execution Stage
 
-- AI 节点：由 Teamline 启动一次 Codex 执行，并在退出后验证该节点；
-- 外部节点：由用户或外部工具完成，用户补充结果、文件或链接后标记完成。
+An execution plan contains two stage types:
 
-V2 不增加审批、设计工具、浏览器等专用节点类型。
+- AI node: Teamline starts one Codex execution and validates the node after it exits;
+- External node: a user or external tool completes it, and the user marks it complete by adding a result, file, or link.
 
-### 会话
+V2 does not add dedicated node types for approval, design tools, browsers, or similar work.
 
-一个目标只有一条用户可见的连续对话，可以讨论整体目标，也可以补充当前节点。底层可以经历多个 Codex 执行会话，节点只引用相关消息，不建立独立聊天室。
+### Session
 
-来源会话用于还原导入前的历史，当前执行会话用于继续推进。两者在目标页分别提供打开入口。
+A goal has one continuous user-visible conversation for whole-goal discussion and additions to the current node. Several Codex execution sessions may occur underneath. Nodes reference relevant messages but do not create separate chatrooms.
 
-## 目标状态
+Source sessions reconstruct history from before import; the current execution session advances later work. Goal detail provides separate open actions for them.
 
-V2 只显示六个一级状态：
+## Goal States
 
-- 规划中；
-- 待运行；
-- 运行中；
-- 需响应；
-- 待验收；
-- 已完成。
+V2 shows only six top-level states:
 
-额度不足、等待并发、执行中断、等待外部结果、验证失败和计划需要调整等情况作为状态原因展示，不增加新的一级状态。
+- Planning;
+- Queued;
+- Running;
+- Needs response;
+- Review-ready;
+- Completed.
 
-导入不是状态。无法完成会话整理时，目标保持“规划中”，并说明“尚未整理”。
+Insufficient quota, waiting for concurrency, execution interruption, waiting for an external result, validation failure, and required plan adjustment appear as state reasons rather than new top-level states.
 
-## 新建目标与计划
+Import is not a state. If Teamline cannot organize the sessions, the goal remains Planning with a Not yet organized explanation.
 
-目标创建后，Teamline 根据目标说明和所选素材生成计划。界面不展示 Ask Matt 或其他 Skill 名称。
+## New Goal and Plan
 
-- 信息足够时直接生成计划草案；
-- 只有会明显改变结果的关键问题才需要用户回答；
-- 每次只问一个问题；
-- 普通细节不完整时先生成可修改计划，不反复追问。
+After goal creation, Teamline generates a plan from the goal description and selected materials. The interface does not expose Ask Matt or another skill name.
 
-主执行图以用户确认的计划为准。Codex 发现计划外的重要步骤时，可以上报“建议新增节点”；Teamline 将目标置为“需响应”，用户确认后再更新计划。V2 不提供自动接受节点变更的设置。
+- Generate a plan draft directly when information is sufficient.
+- Ask only critical questions whose answers would materially change the result.
+- Ask one question at a time.
+- When ordinary details are incomplete, generate an editable plan instead of repeatedly asking questions.
 
-## 执行与验证边界
+The main execution graph follows the user-confirmed plan. If Codex discovers an important unplanned step, it may report Suggest new node. Teamline places the goal in Needs response and updates the plan only after user confirmation. V2 does not provide automatic acceptance of node changes.
 
-V2 将 AI 节点定义为：一次 Codex 执行、一次节点验证，以及 Git 工作区中可选的一次阶段检查点。节点不再只是同一次长运行中的逻辑分段。
+## Execution and Validation Boundary
 
-一个目标内部暂时只串行执行节点。即使多个节点可以同时开始，也按用户确认的计划顺序逐个推进；不同目标仍然可以并行运行。
+V2 defines one AI node as one Codex execution, one node validation, and optionally one stage checkpoint in a Git workspace. A node is no longer a logical segment inside one long process.
 
-每轮执行遵循以下流程：
+Nodes within one goal execute serially for now. Even when several nodes could start together, Teamline follows the confirmed plan order one at a time. Different goals may still run in parallel.
 
-1. Teamline 只选择一个当前可运行的 AI 节点；
-2. 本轮提示词只包含当前节点和完成它所需的上下文，并要求 Codex 完成该节点后退出；
-3. Codex 退出后，Teamline 只整理和验证当前节点；
-4. 自动验证通过后保存节点结果；Git 工作区保存阶段检查点，并默认继续下一个 AI 节点；
-5. 所有节点完成后，目标进入“待验收”，由用户做一次整体确认。
+Each run follows this flow:
 
-遇到以下情况时停止自动推进并进入“需响应”：
+1. Teamline selects only one currently runnable AI node.
+2. The prompt contains only the current node and the context needed to complete it and asks Codex to exit after completing that node.
+3. After Codex exits, Teamline organizes and validates only the current node.
+4. After automatic validation passes, Teamline saves the node result; a Git workspace receives a stage checkpoint, and execution continues to the next AI node by default.
+5. After all nodes complete, the goal enters Review-ready for one whole-goal confirmation by the user.
 
-- 当前节点没有自动验证，需要用户确认结果；
-- 自动验证失败；
-- 下一个节点是外部节点；
-- Codex 明确要求补充信息；
-- 登录、权限或执行条件发生变化。
+Automatic advancement stops and the goal enters Needs response when:
 
-节点状态由 Teamline 的启动、Codex 退出和节点验证过程决定。`TEAMLINE_STAGE_START`、`TEAMLINE_STAGE_COMPLETE` 等模型输出最多作为日志提示，不能决定节点状态。
+- the current node has no automatic validation and needs user confirmation;
+- automatic validation fails;
+- the next node is external;
+- Codex explicitly asks for more information;
+- sign-in, permission, or another execution condition changes.
 
-连续节点优先复用当前工作区，并在同一 Codex 会话中开启下一轮；会话失效时再创建新会话。后续节点不能直接重复完整的目标启动流程，避免重复准备工作区和重复保存起始基线。
+Teamline determines node state from its start, Codex exit, and node validation. Model output such as `TEAMLINE_STAGE_START` and `TEAMLINE_STAGE_COMPLETE` is at most a logging hint and cannot determine state.
 
-Git 工作区只保存一次起始基线，并在节点自动验证通过或用户手动确认节点结果后保存阶段检查点。普通文件夹只保留运行状态、节点结果和现有文件，不显示“可恢复到检查点”。
+Consecutive nodes prefer the current workspace and start the next run in the same Codex session, creating a new session only when the prior one is unavailable. Later nodes must not repeat the complete goal-start flow because doing so would duplicate workspace preparation and the starting baseline.
 
-## 导入 Codex 会话
+A Git workspace records one starting baseline and a stage checkpoint after automatic validation or user confirmation of a node result. An ordinary folder retains only run state, node results, and existing files and does not offer checkpoint recovery.
 
-### 创建规则
+## Import Codex Sessions
 
-每次导入只创建一个目标。用户可以选择一个或多个服务于同一结果的 Codex 会话，并填写目标名称；想创建多个目标时分别导入。
+### Creation Rules
 
-导入流程不创建项目，只允许选择一个已有项目或暂时不归入项目。
+Each import creates one goal. Users may select one or more Codex sessions serving the same result and enter a goal name. They perform separate imports to create separate goals.
 
-### 读取与整理
+Import does not create a project. Users may select one existing project or leave the goal outside projects.
 
-用户确认“导入目标”时，同时允许 Teamline：
+### Reading and Organization
 
-- 在本地读取所选会话的完整内容；
-- 调用 Codex 整理目标摘要、关键节点、当前状态和成果引用；
-- 保存整理结果和原会话引用。
+When users confirm Import goal, they also authorize Teamline to:
 
-这次确认不授权继续执行。Teamline 不复制保存完整会话，原始内容继续留在 Codex 的本地数据中。
+- read the complete selected sessions locally;
+- ask Codex to organize a goal summary, key nodes, current state, and result references;
+- store the organized result and references to the original sessions.
 
-Codex 暂时不可用时仍允许创建目标，状态保持“规划中”，用户之后可以重新整理。
+This confirmation does not authorize continued execution. Teamline does not store copies of complete sessions; original content remains in Codex's local data.
 
-### 来源更新
+If Codex is temporarily unavailable, Teamline still creates the goal in Planning so the user can retry organization later.
 
-Teamline 记录来源会话 ID、最后读取时间和会话更新时间。在本地服务启动、打开目标和低频轮询时检查 Codex 会话索引；发现更新时间变新后显示“来源会话有新内容”。只有用户点击“重新整理”时才读取新增内容并更新摘要和执行图。
+### Source Updates
 
-V2 不做实时文件监听，也不持续双向同步原会话。
+Teamline records source-session IDs, last-read time, and session update time. It checks the Codex session index when the local service starts, when a goal opens, and through low-frequency polling. When an update time advances, Teamline shows Source session has new content. Only selecting Reorganize reads the additions and updates the summary and execution graph.
 
-### 继续目标
+V2 does not use real-time filesystem watching or continuously synchronize the original session in both directions.
 
-导入完成后先以只读方式展示历史，不自动启动。用户点击“继续这个目标”后，Teamline 生成后续计划，并要求确认工作区和执行设置。
+### Continue Goal
 
-选择多个来源会话时，原会话都保留为历史来源，Teamline 创建一个新的整合会话继续，不尝试让多个原会话同时执行。
+After import, Teamline shows history read-only and does not start automatically. When the user selects Continue this goal, Teamline generates a follow-up plan and asks for confirmation of the workspace and execution settings.
 
-### 打开 Codex
+When several source sessions were selected, all remain historical sources. Teamline creates one new consolidated session for continued work and does not attempt to run the original sessions together.
 
-目标页提供：
+### Open in Codex
 
-- 在 Codex 中打开来源会话；
-- 在 Codex 中打开当前执行会话；
-- 复制会话 ID；
-- 复制 CLI 恢复命令。
+Goal detail provides actions to:
 
-Codex App 深链接与 Teamline 通过 CLI 创建的非交互会话是否完全兼容，需要在 V2 实现前做一次实际验证。失败时保留 `codex resume <SESSION_ID>` 作为恢复入口。
+- open a source session in Codex;
+- open the current execution session in Codex;
+- copy a session ID;
+- copy a CLI resume command.
 
-## 执行图
+Before V2 implementation, a real test must determine whether Codex App deep links are fully compatible with non-interactive sessions created through the CLI. If not, `codex resume <SESSION_ID>` remains the recovery entry point.
 
-执行图是目标详情的默认中心，不是聊天窗口或可编辑画布。
+## Execution Graph
 
-### 主图
+The execution graph is the default center of goal detail, not a chat window or editable canvas.
 
-- 顺序工作显示为节点时间线；
-- 存在并行或依赖时自动排列为节点图；
-- 桌面端横向展开，窄屏切换为纵向；
-- 节点位置由系统生成，用户不能自由拖动布局。
+### Main Graph
 
-正在执行的目标以已确认计划为主图。导入目标没有原始计划时，Teamline 可以根据历史会话整理节点，并明确标注“根据会话整理”。
+- Sequential work appears as a node timeline.
+- Parallel or dependent work is automatically arranged as a node graph.
+- Desktop expands horizontally; narrow screens switch to a vertical layout.
+- The system generates node positions; users cannot freely drag the layout.
 
-### 节点详情
+For a running goal, the confirmed plan is the primary graph. When an imported goal has no original plan, Teamline may organize nodes from session history and labels them Organized from session.
 
-点击节点后，右侧展示：
+### Node Detail
 
-- 节点目标和实际状态；
-- Codex 的阶段摘要；
-- 使用过的工具；
-- 读取或修改的文件；
-- 验证结果；
-- 原始日志入口。
+Selecting a node shows on the right:
 
-工具调用和完整日志不直接铺成主图节点。
+- node goal and actual state;
+- Codex stage summary;
+- tools used;
+- files read or modified;
+- validation results;
+- raw-log entry point.
 
-### 状态上报
+Tool calls and complete logs do not appear directly as primary graph nodes.
 
-Codex 可以上报需要用户响应和建议新增节点，也可以提供节点开始或完成的日志提示。节点的实际状态仍由 Teamline 的单节点启动、退出和验证过程确定。无法结构化上报的工具仍可导入会话和展示基础运行状态，但不能显示为具备实时节点进展的完整接入。
+### State Reporting
 
-## 成果与验收
+Codex may report Needs response and Suggest new node and may emit node-start or node-complete logging hints. Actual node state still comes from Teamline's single-node start, exit, and validation process. A tool without structured reporting may still import sessions and show basic run state, but cannot appear as a complete integration with live node progress.
 
-目标进入“待验收”后，详情页默认从执行图切换到成果视图。成果视图优先展示：
+## Results and Acceptance
 
-- 实际产物，包括文件、文件夹、图片、链接或文本；
-- 完成摘要；
-- 验证结果；
-- 未完成事项；
-- 确认完成和继续调整操作。
+When a goal enters Review-ready, goal detail switches from the execution graph to the results view by default. The results view prioritizes:
 
-结果仍在完成原目标时，用户通过“继续调整”补充要求，并在当前目标中生成后续计划。只有新增了可以独立验收的结果时，才创建新目标。
+- actual artifacts, including files, folders, images, links, or text;
+- completion summary;
+- validation results;
+- unfinished items;
+- Confirm completed and Continue adjusting actions.
 
-已完成目标可以被另一个目标引用为素材；默认只提供名称、进展和成果，不自动发送完整对话与日志。
+When work still serves the original goal, Continue adjusting adds requirements and generates a follow-up plan within the current goal. Create a new goal only for a new result that can be accepted independently.
 
-## 资源安排
+A Completed goal may be referenced as material by another goal. By default it exposes only its name, progress, and results, not its complete conversation and logs.
 
-V2 为每个目标提供：
+## Resource Arrangements
 
-- 优先级：优先、正常、后台；
-- 推进方式：尽快、均匀、节省额度；
-- “额度充足时运行”开关，默认关闭；
-- 单轮最长运行时间；
-- Codex 当前额度窗口和近期消耗参考。
+V2 provides for every goal:
 
-V2 不提供“给目标分配 20% Codex 订阅额度”之类的精确配额。以后接入能够准确计费和执行硬上限的 API 后，再增加金额预算。
+- priority: High, Normal, or Background;
+- pace: Fast, Even, or Quota-saving;
+- Run when quota allows, off by default;
+- maximum run time per round;
+- current Codex quota windows and recent-consumption reference.
 
-开启“额度充足时运行”后，Teamline 可以安排已经确认的 AI 节点。遇到计划变更、需用户补充、外部节点、验证失败、待验收或运行上限时必须停止；每轮结束后重新判断额度和并发条件。
+V2 does not provide exact allocations such as “20% of the Codex subscription for this goal.” Money budgets may be added after an API can bill accurately and enforce hard limits.
 
-## 完成标准
+When Run when quota allows is enabled, Teamline may schedule a confirmed AI node. It must stop for a plan change, missing user input, an external node, validation failure, Review-ready, or the run limit. After each round it re-evaluates quota and concurrency conditions.
 
-### 新建目标流程
+## Completion Criteria
 
-1. 用户能够创建一个不局限于编码的目标。
-2. Teamline 能够生成计划，只询问会改变结果的关键问题，并且每次只问一个。
-3. 用户确认计划后可以运行 Codex。
-4. 每个 AI 节点产生一次独立 Codex 执行，验证通过后才推进下一个节点。
-5. 执行图能够显示计划节点、实际状态和节点详情。
-6. 目标需要人处理时进入“需响应”，并说明原因和下一步。
-7. 目标进入“待验收”后优先展示实际成果。
-8. 用户可以确认完成或继续调整。
+### New-goal Flow
 
-### 导入目标流程
+1. A user can create a goal that is not limited to coding.
+2. Teamline can generate a plan, ask only critical result-changing questions, and ask one at a time.
+3. The user can run Codex after confirming the plan.
+4. Every AI node produces one independent Codex execution and advances only after validation passes.
+5. The execution graph shows planned nodes, actual state, and node detail.
+6. A goal needing human action enters Needs response and explains the reason and next step.
+7. A Review-ready goal prioritizes actual results.
+8. The user can confirm completion or continue adjusting.
 
-1. 用户能够选择一个或多个本地 Codex 会话，并创建一个命名清楚的目标。
-2. Teamline 使用 Codex 生成历史摘要、关键节点、当前状态和成果引用。
-3. 原始会话不被复制，仍可从目标页打开。
-4. 来源会话更新后，Teamline 能够提示并按用户操作重新整理。
-5. 用户可以从新的整合会话继续目标，而不修改原始来源会话。
-6. 后续运行、响应和验收与新建目标使用同一套流程。
+### Imported-goal Flow
 
-## 建议任务拆分
+1. A user can select one or more local Codex sessions and create one clearly named goal.
+2. Teamline uses Codex to produce a history summary, key nodes, current state, and result references.
+3. Original sessions are not copied and remain openable from goal detail.
+4. Teamline detects source-session updates and reorganizes only on user action.
+5. The user can continue in one new consolidated session without modifying original source sessions.
+6. Later execution, response, and acceptance use the same flow as a new goal.
 
-以下拆分用于创建后续开发票，本规格不直接创建外部 issue。
+## Suggested Ticket Breakdown
 
-### V2-01：领域数据与兼容迁移
+The following breakdown is for creating later development tickets. This specification does not create external issues itself.
 
-增加项目、目标名称与说明、目标所属项目、来源会话和当前执行会话所需的数据；保留现有 `work_orders`、`WorkOrder` 和 `/api/work-orders` 兼容层。把“待验收”从现有“需响应”展示中拆成独立一级状态，并同步更新状态映射、首页分组、CLI、资源展示和测试。旧本地数据库升级后必须继续打开并保留已有目标。
+### V2-01: Domain Data and Compatible Migration
 
-### V2-02：首页与目标详情的信息层级
+Add projects, goal name and description, project membership, source sessions, and the current execution session. Preserve compatibility through the existing `work_orders`, `WorkOrder`, and `/api/work-orders` layer. Separate Review-ready from the existing Needs response display into its own top-level state and update state mapping, home-page grouping, CLI, resource display, and tests. Existing goals must still open with all data after a local database upgrade.
 
-重组全局导航、全部目标首页和目标详情。中间区域以执行图或成果为主，右侧只展示当前上下文；完成桌面端与窄屏布局。
+### V2-02: Home and Goal-detail Information Hierarchy
 
-依赖：V2-01。
+Reorganize global navigation, the all-goals home page, and goal detail. Center the main area on the execution graph or results, and use the right side only for current context. Complete desktop and narrow-screen layouts.
 
-### V2-03：项目简页与项目素材
+Depends on: V2-01.
 
-实现项目创建、目标归属、项目简页、项目素材和成果汇总；创建或继续目标时推荐相关项目素材，并允许用户增减实际发送给 Codex 的内容。项目不增加状态、计划、百分比或约束设置。
+### V2-03: Project Summary and Project Materials
 
-依赖：V2-01、V2-02。
+Implement project creation, goal membership, the project summary, project materials, and result aggregation. Recommend relevant project materials while creating or continuing a goal and let users change what is actually sent to Codex. Do not add project state, plans, percentages, or constraints.
 
-### V2-04：单目标会话导入
+Depends on: V2-01, V2-02.
 
-把现有批量会话导入改为“一次创建一个目标”，支持选择多个来源会话、选择已有项目或暂时不归入项目、Codex 整理、失败后重试、来源更新时间检测和重新整理。增加 Codex App 跳转验证与 CLI 恢复入口。
+### V2-04: Single-goal Session Import
 
-依赖：V2-01、V2-02、V2-03。
+Replace bulk session import with one goal per import. Support several source sessions, an existing project or no project, Codex organization, retry after failure, source update detection, and reorganization. Add a real Codex App navigation test and a CLI recovery entry point.
 
-### V2-05：非 Codex 会话的基础导入
+Depends on: V2-01, V2-02, V2-03.
 
-复用单目标导入流程，为至少一种非 Codex 本地工具增加来源发现、历史整理和基础状态展示。该工具不获得执行、继续、实时节点上报或资源调度能力；具体首个工具在实现前根据本机可读取格式选择。
+### V2-05: Basic Import for a Non-Codex Session
 
-依赖：V2-01、V2-02、V2-04。
+Reuse the single-goal import flow to add source discovery, history organization, and basic state for at least one non-Codex local tool. That tool does not receive execution, continuation, live-node reporting, or resource-scheduling capability. Choose the first tool before implementation according to a format that can be read locally.
 
-### V2-06A：单节点执行与验证边界（关键路径）
+Depends on: V2-01, V2-02, V2-04.
 
-将 AI 节点改为一次独立 Codex 执行和一次节点验证；每次只把当前节点交给 Codex。验证通过后复用当前工作区继续下一节点，没有自动验证、验证失败、遇到外部节点、Codex 要求补充信息或执行条件变化时停止。Git 工作区按节点保存阶段检查点，普通文件夹不提供检查点恢复。节点状态不依赖模型输出的阶段标记。
+### V2-06A: Single-node Execution and Validation Boundary (critical path)
 
-依赖：V2-01。
+Make every AI node one independent Codex execution and one node validation; pass only the current node to Codex. After validation passes, reuse the current workspace for the next node. Stop for absent automatic validation, validation failure, an external node, a Codex information request, or changed execution conditions. Git workspaces save stage checkpoints by node; ordinary folders do not offer checkpoint recovery. Node state does not depend on stage markers in model output.
 
-### V2-06：执行图与结构化进展
+Depends on: V2-01.
 
-复用现有执行计划和运行事件，完成时间线／节点图切换、导入节点标识、节点详情、工具与日志入口，以及 Codex 的节点开始、完成、需响应和建议新增节点上报。
+### V2-06: Execution Graph and Structured Progress
 
-依赖：V2-01、V2-02、V2-04、V2-06A。
+Reuse the existing execution plan and run events to implement timeline or graph presentation, imported-node labels, node detail, tool and log entry points, and Codex reports for node start, completion, Needs response, and suggested nodes.
 
-### V2-07：目标对话与澄清
+Depends on: V2-01, V2-02, V2-04, V2-06A.
 
-把对话统一到目标层级，保留节点引用；实现信息足够时直接生成计划、只询问关键问题和计划变更需确认的流程。
+### V2-07: Goal Conversation and Clarification
 
-依赖：V2-01、V2-02。
+Unify conversation at the goal level while preserving node references. Generate a plan directly when information is sufficient, ask only critical questions, and require confirmation for plan changes.
 
-### V2-08：成果视图与继续调整
+Depends on: V2-01, V2-02.
 
-重组现有成果能力，使待验收目标默认展示实际产物、摘要和验证结果；实现确认完成、继续调整和引用已完成目标。
+### V2-08: Results View and Continued Adjustment
 
-依赖：V2-02、V2-06、V2-07。
+Reorganize existing result capabilities so Review-ready goals show artifacts, summaries, and validation results by default. Implement Confirm completed, Continue adjusting, and references to completed goals.
 
-### V2-09：资源层级与自动运行收口
+Depends on: V2-02, V2-06, V2-07.
 
-整理顶栏额度摘要、独立资源页和目标资源设置；统一“待运行”状态，确保自动运行在计划变更、外部节点、验证失败、待验收和单轮上限处停止。
+### V2-09: Resource Hierarchy and Automatic-run Boundaries
 
-依赖：V2-01、V2-02、V2-06、V2-06A。
+Organize the top-bar quota summary, Resources page, and goal resource settings. Unify the Queued state and ensure automatic execution stops for plan changes, external nodes, validation failure, Review-ready, and the per-run limit.
 
-### V2-10：迁移与主流程回归
+Depends on: V2-01, V2-02, V2-06, V2-06A.
 
-覆盖旧数据库升级、旧 `/work-orders/:id` 地址兼容、两条 V2 主流程、390px 窄屏和普通桌面宽度。检查中文标题、按钮和状态原因的换行与层级。
+### V2-10: Migration and Main-flow Regression
 
-依赖：V2-03 至 V2-09，包含 V2-06A。
+Cover upgrades of existing databases, existing `/work-orders/:id` URL compatibility, both V2 main flows, a 390 px narrow viewport, and an ordinary desktop width. Check the wrapping and hierarchy of Chinese headings, buttons, and state reasons.
+
+Depends on: V2-03 through V2-09, including V2-06A.

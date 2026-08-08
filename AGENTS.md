@@ -10,4 +10,4 @@ Every open issue uses one workflow state after triage. Implementation starts onl
 
 ### Domain docs
 
-This is a single-context repo using root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+This is a single-context repo using the canonical English glossary in root `CONTEXT.md` and the decisions in `docs/adr/`. See `docs/agents/domain.md`.
