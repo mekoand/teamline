@@ -77,6 +77,8 @@ export type PlanStage = {
   contextNotes?: string[];
   status: PlanNodeStatus;
   statusReason: string;
+  /** Stable execution flag; statusReason remains presentation/compatibility text. */
+  pendingVerification?: boolean;
 };
 
 export const workOrderMaterialKinds = [

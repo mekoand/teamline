@@ -1016,7 +1016,9 @@ describe("result review persistence", () => {
         // Drain the process events so the invocation file is complete.
       }
 
-      expect(readFileSync(invocation, "utf8")).toContain("Additional requirement:\n补充移动端空状态");
+      const prompt = readFileSync(invocation, "utf8");
+      expect(prompt).toContain("in Simplified Chinese");
+      expect(prompt).toContain("Additional requirement:\n补充移动端空状态");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

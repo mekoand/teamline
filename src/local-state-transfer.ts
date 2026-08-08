@@ -449,7 +449,7 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
       imported: workOrder.importSource ? exportSessionSource(workOrder.importSource) : null,
       active: workOrder.sessionId,
     },
-    executionMap: workOrder.plan,
+    executionMap: exportExecutionMap(workOrder.plan),
     pendingClarification: workOrder.pendingClarification,
     result: workOrder.result,
     checkpoints: workOrder.checkpoints,
@@ -467,6 +467,14 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     createdAt: workOrder.createdAt,
     updatedAt: workOrder.updatedAt,
   }) as ExportedWorkOrder;
+}
+
+function exportExecutionMap(plan: WorkOrderPlan | null): WorkOrderPlan | null {
+  if (!plan) return null;
+  return {
+    ...plan,
+    stages: plan.stages.map(({ pendingVerification: _pendingVerification, ...stage }) => stage),
+  };
 }
 
 function exportSessionSource(source: WorkOrderImportSource): WorkOrderImportSource {
@@ -1632,7 +1640,7 @@ function parseStage(value: unknown): PlanStage {
   exactKeys(stage, [
     "id", "outcome", "scope", "verification", "verificationCommand", "dependsOn",
     "executionMethod", "workspace", "materials", "artifacts", "externalResult",
-    "contextNotes", "status", "statusReason",
+    "contextNotes", "status", "statusReason", "pendingVerification",
   ], true);
   const executionMethod = oneOf(stage.executionMethod, ["codex", "external"] as const);
   const workspaceObject = object(stage.workspace, "节点工作空间格式无法识别");
@@ -1672,6 +1680,9 @@ function parseStage(value: unknown): PlanStage {
     ...(contextNotes ? { contextNotes } : {}),
     status: oneOf(stage.status, ["planning", "running", "queued", "response", "completed"] as const),
     statusReason: string(stage.statusReason),
+    ...(stage.pendingVerification === undefined
+      ? {}
+      : { pendingVerification: boolean(stage.pendingVerification) }),
   };
 }
 

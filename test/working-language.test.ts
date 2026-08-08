@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { buildPlanPrompt } from "../src/codex-plan-generator";
 import { buildExecutionPrompt, buildResumePrompt } from "../src/codex-runner";
 import { inferWorkingLanguage } from "../src/working-language";
+import { buildSessionOrganizationPrompt } from "../src/session-organizer";
 import { WorkOrderStore } from "../src/work-order-store";
 
 describe("goal working language", () => {
@@ -40,6 +41,21 @@ describe("goal working language", () => {
     expect(buildPlanPrompt(chinese)).toContain("Original English history stays as written");
   });
 
+  test("does not treat commands, paths, or identifiers as English prose", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const chinese = store.create({
+      goal: "修复发布流程",
+      acceptance: "运行 `npm test` 和 `npm run lint`，检查 /Users/me/teamline/src/app.ts",
+    });
+    const english = store.create({
+      goal: "Support 中文 users",
+      acceptance: "Keep the existing workflow and tests",
+    });
+
+    expect(inferWorkingLanguage(chinese)).toBe("Simplified Chinese");
+    expect(inferWorkingLanguage(english)).toBe("English");
+  });
+
   test("applies the same language contract to planning, execution, and resume", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const created = store.savePlan(
@@ -56,5 +72,25 @@ describe("goal working language", () => {
       expect(prompt).toContain("never from Teamline's interface language");
       expect(prompt).toContain("Preserve quoted text");
     }
+  });
+
+  test("session organization preserves source history and follows the goal language", () => {
+    const prompt = buildSessionOrganizationPrompt({
+      name: "整理并继续中文版工作",
+      sourceLabel: "Codex",
+      sessions: [{
+        id: "session-1",
+        title: "Original English title",
+        workspacePath: "/tmp/project",
+        lastActiveAt: "2026-08-08T00:00:00.000Z",
+        sourcePath: "/tmp/session.jsonl",
+        status: "available",
+      }],
+    });
+
+    expect(prompt).toContain("dominant user language in the source conversations");
+    expect(prompt).toContain("Preserve quoted or mixed-language source content");
+    expect(prompt).toContain("整理并继续中文版工作");
+    expect(prompt).toContain("Original English title");
   });
 });

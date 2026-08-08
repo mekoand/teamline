@@ -1,7 +1,11 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { normalizeLocale, type InterfaceLocale } from "./i18n";
-import { semanticMessage, type SemanticMessage } from "./semantic-message";
+import {
+  semanticMessage,
+  semanticMessageFromLegacy,
+  type SemanticMessage,
+} from "./semantic-message";
 import type { CodexResourceSignal } from "./resource-provider";
 import {
   executionIdentityLoginStates,
@@ -220,6 +224,8 @@ type LocalNotificationRow = {
 };
 
 export class PlanLockedError extends Error {}
+export class WorkOrderNotFoundError extends Error {}
+export class WorkOrderDeleteLockedError extends Error {}
 
 export class WorkOrderStore {
   readonly database: Database;
@@ -1729,7 +1735,7 @@ export class WorkOrderStore {
         JSON.stringify(importContext),
         hasPreviousResult
           ? workOrder.importContext.currentState
-          : error === "历史整理中断"
+          : semanticMessageFromLegacy(error).code === "import.interrupted"
             ? "历史整理中断"
             : "历史整理失败",
         now,
@@ -1740,14 +1746,14 @@ export class WorkOrderStore {
 
   deleteFailedImportedWorkOrder(id: string): void {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这个目标");
+    if (!workOrder) throw new WorkOrderNotFoundError("找不到这个目标");
     if (
       workOrder.sourceSessions.length === 0 ||
       workOrder.importContext?.status !== "failed" ||
       workOrder.plan ||
       workOrder.runStatus
     ) {
-      throw new Error("只能删除历史整理失败且尚未运行的导入目标");
+      throw new WorkOrderDeleteLockedError("只能删除历史整理失败且尚未运行的导入目标");
     }
     this.database.transaction(() => {
       this.database.query("DELETE FROM local_notifications WHERE work_order_id = ?").run(id);
@@ -2381,7 +2387,12 @@ export class WorkOrderStore {
       confirmationRequired: false,
       stages: workOrder.plan.stages.map((stage) => {
         if (stage.id === nextStage.id) {
-          return { ...stage, status: "running" as const, statusReason: "Codex 执行中" };
+          return {
+            ...stage,
+            status: "running" as const,
+            statusReason: "Codex 执行中",
+            pendingVerification: false,
+          };
         }
         if (stage.executionMethod === "codex" && stage.status === "planning") {
           return {
@@ -2453,7 +2464,12 @@ export class WorkOrderStore {
       ...workOrder.plan,
       stages: workOrder.plan.stages.map((stage) =>
         stage.id === target.id
-          ? { ...stage, status: "running" as const, statusReason: "Codex 执行中" }
+          ? {
+              ...stage,
+              status: "running" as const,
+              statusReason: "Codex 执行中",
+              pendingVerification: false,
+            }
           : stage,
       ),
     };
@@ -2633,11 +2649,17 @@ export class WorkOrderStore {
       stages: workOrder.plan.stages.map((candidate) => {
         if (candidate.id === stageId) {
           return phase === "running"
-            ? { ...candidate, status: "running" as const, statusReason: "Codex 执行中" }
+            ? {
+                ...candidate,
+                status: "running" as const,
+                statusReason: "Codex 执行中",
+                pendingVerification: false,
+              }
             : {
                 ...candidate,
                 status: "completed" as const,
                 statusReason: "Codex 已完成，等待验证",
+                pendingVerification: true,
               };
         }
         return candidate;
@@ -4291,12 +4313,23 @@ function planWithVerificationStatuses(
           statusReason: checkpointedStages.has(stage.id)
             ? "验证通过，检查点已保存"
             : "自动验证通过",
+          pendingVerification: false,
         };
       }
       if (verification.status === "failed") {
-        return { ...stage, status: "response", statusReason: "自动验证未通过" };
+        return {
+          ...stage,
+          status: "response",
+          statusReason: "自动验证未通过",
+          pendingVerification: false,
+        };
       }
-      return { ...stage, status: "response", statusReason: "等待人工验收" };
+      return {
+        ...stage,
+        status: "response",
+        statusReason: "等待人工验收",
+        pendingVerification: false,
+      };
     }),
   };
 }

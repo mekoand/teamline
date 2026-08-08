@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   completedGoalHighlights,
   defaultGoalWorkbenchView,
+  latestCompletionSummary,
   visibleGoalConversation,
 } from "../public/goal-workbench.js";
 
@@ -49,5 +50,15 @@ describe("goal workbench presentation", () => {
       "完成移动端",
       "确认产品范围",
     ]);
+  });
+
+  test("selects completion summaries without depending on Chinese wording", () => {
+    const events = [
+      { type: "progress", stageId: "stage-1", message: "创建了设置页面" },
+      { type: "progress", stageId: "stage-1", message: "Created the settings page" },
+      { type: "progress", stageId: "stage-1", message: "Codex completed this run" },
+    ];
+    expect(latestCompletionSummary(events, "stage-1")).toBe("Created the settings page");
+    expect(latestCompletionSummary(events, "stage-2")).toBeNull();
   });
 });

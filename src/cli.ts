@@ -2,6 +2,7 @@ import type { ConsoleWorkOrder, UserVisibleStatus } from "./console-presentation
 import {
   formatLegacyMessage,
   formatMessage,
+  formatSemanticMessage,
   normalizeLocale,
   resolveInterfaceLocale,
   type InterfaceLocale,
@@ -54,12 +55,31 @@ export async function runCli(
   try {
     const language = extractLanguageOption(args, locale);
     if (
+      !language.explicit &&
       dependencies.env.TEAMLINE_LANG &&
       !normalizeLocale(dependencies.env.TEAMLINE_LANG)
     ) {
       throw new CliUsageError(t(locale, "locale.invalid", {
         value: dependencies.env.TEAMLINE_LANG,
       }));
+    }
+    const [command, ...commandArgs] = language.args;
+    if (!command || command === "help" || command === "--help" || command === "-h") {
+      let saved: InterfaceLocale | null = null;
+      if (!language.explicit && !dependencies.env.TEAMLINE_LANG) {
+        try {
+          saved = await readSavedLocale(localBaseUrl(dependencies.env, locale), dependencies);
+        } catch {
+          // Help remains available when the local service URL is invalid or unavailable.
+        }
+      }
+      locale = resolveInterfaceLocale({
+        explicit: language.explicit,
+        environment: dependencies.env.TEAMLINE_LANG,
+        saved,
+      });
+      dependencies.stdout(formatMessage(locale, "cli.help"));
+      return 0;
     }
     const baseUrl = localBaseUrl(dependencies.env, locale);
     const saved = language.explicit || dependencies.env.TEAMLINE_LANG
@@ -70,11 +90,6 @@ export async function runCli(
       environment: dependencies.env.TEAMLINE_LANG,
       saved,
     });
-    const [command, ...commandArgs] = language.args;
-    if (!command || command === "help" || command === "--help" || command === "-h") {
-      dependencies.stdout(formatMessage(locale, "cli.help"));
-      return 0;
-    }
 
     if (command === "create") {
       await createCommand(commandArgs, baseUrl, dependencies, locale);
@@ -151,7 +166,7 @@ async function listCommand(
     );
     dependencies.stdout(t(locale, "cli.current", { value: currentNode(workOrder, locale) }));
     dependencies.stdout(t(locale, "cli.reason", {
-      value: formatLegacyMessage(locale, workOrder.statusReason),
+      value: formatSemanticMessage(locale, workOrder.statusMessage, workOrder.statusReason),
     }));
   }
 }
@@ -211,7 +226,7 @@ function showWorkOrder(
   dependencies.stdout(t(locale, "cli.id", { id: workOrder.id }));
   dependencies.stdout(t(locale, "cli.status", {
     status: t(locale, statusKeys[workOrder.userStatus]),
-    reason: formatLegacyMessage(locale, workOrder.statusReason),
+    reason: formatSemanticMessage(locale, workOrder.statusMessage, workOrder.statusReason),
   }));
   dependencies.stdout(t(locale, "cli.current_node", { value: currentNode(workOrder, locale) }));
   dependencies.stdout(t(locale, "cli.workspace", {

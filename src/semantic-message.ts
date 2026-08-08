@@ -29,6 +29,7 @@ const exactLegacyCodes = new Map<string, string>([
   ["待确认当前节点结果", "status.awaiting_node_confirmation"],
   ["执行失败", "status.execution_failed"],
   ["执行中断", "status.execution_interrupted"],
+  ["Codex 已完成，等待验证", "stage.awaiting_verification"],
   ["等待更高优先级目标", "scheduler.awaiting_higher_priority"],
   ["等待本轮资源位置", "scheduler.awaiting_round_capacity"],
   ["目标已完成", "scheduler.completed"],

@@ -149,7 +149,9 @@ describe("interrupt and continue API", () => {
         }),
       );
       expect(start.status).toBe(200);
-      await waitFor(() => store.listRunEvents(created.id).length === 1);
+      await waitFor(() =>
+        store.listRunEvents(created.id).some((event) => event.message === "正在修改设置页面")
+      );
 
       const interrupt = await app.fetch(
         new Request(`http://teamline.local/api/work-orders/${created.id}/interrupt`, {
@@ -841,7 +843,9 @@ describe("interrupt and continue API", () => {
           method: "POST",
         }),
       );
-      await waitFor(() => store.listRunEvents(created.id).length === 1);
+      await waitFor(() =>
+        store.listRunEvents(created.id).some((event) => event.message === "运行中")
+      );
       await app.fetch(
         new Request(`http://teamline.local/api/work-orders/${created.id}/interrupt`, {
           method: "POST",

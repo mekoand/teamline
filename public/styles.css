@@ -2689,9 +2689,12 @@ dialog::backdrop {
     height: 58px;
   }
 
+  .brand {
+    display: none;
+  }
+
   .resource-summary {
-    display: block;
-    margin: 0 6px 0 auto;
+    display: none;
   }
 
   .topbar-quota-control > summary {
@@ -2700,6 +2703,10 @@ dialog::backdrop {
   }
 
   .topbar-quota-control > summary > span {
+    display: none;
+  }
+
+  .topbar-quota-control > summary i {
     display: none;
   }
 

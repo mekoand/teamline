@@ -300,7 +300,9 @@ describe("work-order clarification and conversation", () => {
         // Drain output so the invocation is complete.
       }
 
-      expect(readFileSync(invocation, "utf8")).toContain(
+      const prompt = readFileSync(invocation, "utf8");
+      expect(prompt).toContain("in Simplified Chinese");
+      expect(prompt).toContain(
         "Additional context: 按钮必须在 320px 宽度完整显示",
       );
     } finally {

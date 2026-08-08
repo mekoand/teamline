@@ -31,7 +31,11 @@ import {
   type WorkOrder,
   type WorkOrderResult,
 } from "./work-order";
-import { PlanLockedError, type WorkOrderStore } from "./work-order-store";
+import {
+  PlanLockedError,
+  WorkOrderNotFoundError,
+  type WorkOrderStore,
+} from "./work-order-store";
 import { projectMaterialKinds, type ProjectMaterialKind } from "./project";
 import type { DelegatedWorktree, WorktreeManager } from "./worktree-manager";
 import {
@@ -73,7 +77,10 @@ import {
   type ExecutionIdentityEnvironment,
 } from "./execution-identity-environment";
 import { normalizeLocale } from "./i18n";
-import { ensureSemanticErrorResponse } from "./semantic-message";
+import {
+  ensureSemanticErrorResponse,
+  semanticMessageFromLegacy,
+} from "./semantic-message";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -3563,15 +3570,16 @@ export function createApp({
           store.deleteFailedImportedWorkOrder(id);
           return Response.json({ deleted: true });
         } catch (error) {
+          const notFound = error instanceof WorkOrderNotFoundError;
           const message = error instanceof Error ? error.message : "无法删除这个目标";
           return Response.json(
             {
-              code: message === "找不到这个目标"
+              code: notFound
                 ? "WORK_ORDER_NOT_FOUND"
                 : "WORK_ORDER_DELETE_LOCKED",
               error: message,
             },
-            { status: message === "找不到这个目标" ? 404 : 409 },
+            { status: notFound ? 404 : 409 },
           );
         }
       }
@@ -4512,7 +4520,12 @@ function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
       stage.executionMethod === "codex" &&
       (stage.status === "running" ||
         stage.status === "response" ||
-        (stage.status === "completed" && workOrder.runStatus === "verifying")),
+        (stage.status === "completed" &&
+          workOrder.runStatus === "verifying" &&
+          (stage.pendingVerification === true ||
+            (stage.pendingVerification === undefined &&
+              semanticMessageFromLegacy(stage.statusReason).code ===
+                "stage.awaiting_verification")))),
   );
   const next = running ?? nextRunnableStages(workOrder).find(
     (stage) => stage.executionMethod === "codex",

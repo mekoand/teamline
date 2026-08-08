@@ -285,7 +285,7 @@ describe("personal console", () => {
     expect(script).toContain('id="max-concurrency"');
     expect(script).toContain('id="goal-resource-form"');
     expect(script).toContain("资源设置 ·");
-    expect(script).toContain('presentation.reason === "等待可用并发位置"');
+    expect(script).toContain('presentation.message.code === "status.awaiting_capacity"');
     expect(script).not.toContain(
       'const queued = visibleStatus(workOrder, state.workOrders).status === "queued"',
     );

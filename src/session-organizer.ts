@@ -74,7 +74,7 @@ export class CodexSessionOrganizer implements SessionOrganizer {
           "--color",
           "never",
           "--ephemeral",
-          buildPrompt(preparedInput),
+          buildSessionOrganizationPrompt(preparedInput),
         ],
         {
           env: codexProcessEnvironment(),
@@ -143,7 +143,7 @@ export function filterClaudeCodeMainChain(input: string): string {
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
 
-function buildPrompt(input: SessionOrganizationInput): string {
+export function buildSessionOrganizationPrompt(input: SessionOrganizationInput): string {
   const sources = input.sessions.map((session) => ({
     id: session.id,
     title: session.title,

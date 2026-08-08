@@ -20,3 +20,22 @@ export function completedGoalHighlights(workOrder) {
   return [...new Set([...executed, ...imported].map((item) => item?.trim()).filter(Boolean))]
     .slice(0, 3);
 }
+
+export function latestCompletionSummary(events, stageId) {
+  const genericMessages = new Set([
+    "Codex 已完成本轮处理",
+    "Codex completed this run",
+  ]);
+  return (events ?? [])
+    .filter((event) => event.type === "progress" && event.stageId === stageId)
+    .slice()
+    .reverse()
+    .map((event) => event.message.trim())
+    .find(
+      (message) =>
+        message &&
+        !message.startsWith("Codex 进展：") &&
+        !message.startsWith("Codex progress:") &&
+        !genericMessages.has(message),
+    ) ?? null;
+}

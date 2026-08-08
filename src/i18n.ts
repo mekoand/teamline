@@ -83,10 +83,36 @@ The CLI provides everyday entry points. Edit plans, inspect the execution graph,
   "reason.capacity": "Waiting for available concurrency",
   "reason.ready": "Ready to run",
   "reason.generate_plan": "Waiting to generate a plan",
+  "scheduler.awaiting_higher_priority": "Waiting for a higher-priority goal",
+  "scheduler.awaiting_round_capacity": "Waiting for capacity in this round",
+  "scheduler.completed": "Goal completed",
+  "scheduler.running": "Currently running",
+  "scheduler.awaiting_external_stage": "Waiting for the external node",
+  "scheduler.run_limit_reached": "Run limit reached; waiting to continue",
+  "scheduler.verification_failed": "Verification failed; waiting for resolution",
+  "scheduler.awaiting_node_confirmation": "Waiting for current node confirmation",
+  "scheduler.awaiting_response": "Waiting for a response before continuing",
+  "scheduler.awaiting_plan": "Waiting for plan confirmation",
+  "scheduler.workspace_unavailable": "Workspace unavailable; waiting for recheck",
+  "scheduler.awaiting_dependencies": "Waiting for dependencies",
+  "scheduler.awaiting_run_limit": "Waiting for run-limit confirmation",
+  "scheduler.workspace_in_use": "Workspace is in use",
+  "scheduler.quota_conflict": "Quota data conflicts; waiting for refresh",
+  "scheduler.quota_stale": "Quota data is stale; waiting for refresh",
+  "scheduler.quota_unavailable": "Quota data unavailable; remaining queued",
+  "scheduler.quota_incomplete": "Quota windows incomplete; remaining queued",
+  "scheduler.quota_insufficient": "Quota insufficient; waiting for availability",
+  "scheduler.awaiting_identity_selection": "Waiting for a Codex account selection",
+  "scheduler.identity_unavailable": "Codex account unavailable; waiting for resolution",
 } as const;
 
 export type MessageKey = keyof typeof en;
 export type MessageParams = Record<string, string | number>;
+
+export type LocalizableMessage = {
+  code: string;
+  params?: Record<string, string | number | boolean | null>;
+};
 
 const zhCN: Record<MessageKey, string> = {
   "language.english": "英文",
@@ -169,6 +195,27 @@ CLI 只负责日常入口；计划编辑、执行图和资源安排请在网页�
   "reason.capacity": "等待可用并发位置",
   "reason.ready": "可以开始运行",
   "reason.generate_plan": "待生成计划",
+  "scheduler.awaiting_higher_priority": "等待更高优先级目标",
+  "scheduler.awaiting_round_capacity": "等待本轮资源位置",
+  "scheduler.completed": "目标已完成",
+  "scheduler.running": "当前正在运行",
+  "scheduler.awaiting_external_stage": "等待完成外部节点",
+  "scheduler.run_limit_reached": "已达到本轮上限，等待继续",
+  "scheduler.verification_failed": "验证失败，等待处理后继续",
+  "scheduler.awaiting_node_confirmation": "等待确认当前节点结果",
+  "scheduler.awaiting_response": "需要响应后继续",
+  "scheduler.awaiting_plan": "等待确认计划",
+  "scheduler.workspace_unavailable": "工作空间不可用，等待重新检查",
+  "scheduler.awaiting_dependencies": "等待前置节点完成",
+  "scheduler.awaiting_run_limit": "等待确认单轮运行上限",
+  "scheduler.workspace_in_use": "工作空间正在使用",
+  "scheduler.quota_conflict": "额度数据冲突，等待重新读取",
+  "scheduler.quota_stale": "额度数据已过期，等待重新读取",
+  "scheduler.quota_unavailable": "额度数据不可用，保持排队",
+  "scheduler.quota_incomplete": "额度窗口不完整，保持排队",
+  "scheduler.quota_insufficient": "额度不足，等待可用额度",
+  "scheduler.awaiting_identity_selection": "等待选择 Codex 账号",
+  "scheduler.identity_unavailable": "Codex 账号不可用，等待处理",
 };
 
 export const messageCatalogs: Record<InterfaceLocale, Record<MessageKey, string>> = {
@@ -242,6 +289,52 @@ const legacyReasonKeys = new Map<string, MessageKey>([
   ["可以开始运行", "reason.ready"],
   ["待生成计划", "reason.generate_plan"],
 ]);
+
+const semanticMessageKeys = new Map<string, MessageKey>([
+  ["status.awaiting_clarification", "reason.key_information"],
+  ["status.organizing_history", "reason.organizing_history"],
+  ["import.interrupted", "reason.organization_interrupted"],
+  ["import.failed", "reason.organization_failed"],
+  ["status.awaiting_followup_plan", "reason.followup_plan"],
+  ["status.delivered", "reason.delivered"],
+  ["status.awaiting_review", "reason.review"],
+  ["status.awaiting_external_stage", "reason.external_stage"],
+  ["status.run_limit_reached", "reason.run_limit"],
+  ["status.verification_failed", "reason.validation_failed"],
+  ["status.awaiting_node_confirmation", "reason.node_confirmation"],
+  ["status.execution_failed", "reason.execution_failed"],
+  ["status.execution_interrupted", "reason.execution_interrupted"],
+  ["status.stopping", "reason.stopping"],
+  ["status.processing_result", "reason.processing_result"],
+  ["status.running_codex", "reason.codex_running"],
+  ["status.running", "reason.advancing"],
+  ["status.awaiting_plan_confirmation", "reason.confirm_plan"],
+  ["status.awaiting_workspace", "reason.select_workspace"],
+  ["status.awaiting_identity", "reason.account"],
+  ["status.awaiting_capacity", "reason.capacity"],
+  ["status.ready_to_run", "reason.ready"],
+  ["status.awaiting_plan", "reason.generate_plan"],
+  ...[...Object.keys(en)]
+    .filter((key) => key.startsWith("scheduler."))
+    .map((key) => [key, key as MessageKey] as const),
+]);
+
+export function formatSemanticMessage(
+  locale: InterfaceLocale,
+  message: LocalizableMessage | null | undefined,
+  fallback: string,
+): string {
+  if (!message?.code || message.code === "legacy.text") {
+    const legacy = message?.params?.text;
+    return formatLegacyMessage(locale, typeof legacy === "string" ? legacy : fallback);
+  }
+  const key = semanticMessageKeys.get(message.code);
+  if (!key) return formatLegacyMessage(locale, fallback);
+  const params = Object.fromEntries(
+    Object.entries(message.params ?? {}).map(([name, value]) => [name, String(value ?? "")]),
+  );
+  return formatMessage(locale, key, params);
+}
 
 export function formatLegacyMessage(locale: InterfaceLocale, value: string): string {
   const key = legacyReasonKeys.get(value);

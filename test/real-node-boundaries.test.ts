@@ -119,9 +119,9 @@ describe("real AI node boundaries", () => {
       runNumber: 3,
       plan: {
         stages: [
-          { id: "A", status: "completed" },
-          { id: "B", status: "completed" },
-          { id: "C", status: "completed" },
+          { id: "A", status: "completed", pendingVerification: false },
+          { id: "B", status: "completed", pendingVerification: false },
+          { id: "C", status: "completed", pendingVerification: false },
         ],
       },
       result: {

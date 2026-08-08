@@ -3,21 +3,34 @@ import type { WorkOrder } from "./work-order";
 export type WorkingLanguage = "English" | "Simplified Chinese";
 
 const hanPattern = /\p{Script=Han}/gu;
-const latinPattern = /[A-Za-z]/g;
+const hanCharacterPattern = /\p{Script=Han}/u;
+const latinWordPattern = /[A-Za-z]+/g;
+
+function proseForLanguageDetection(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`\n]+`/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/(?:^|\s)(?:\.{0,2}\/|~\/|\/)[^\s]+/g, " ");
+}
 
 export function inferWorkingLanguage(
   input: Pick<WorkOrder, "goal" | "acceptance" | "conversation">,
 ): WorkingLanguage {
-  const userText = [
+  const userText = proseForLanguageDetection([
     input.goal,
     input.acceptance ?? "",
     ...input.conversation
       .filter((message) => message.role === "user")
       .map((message) => message.content),
-  ].join("\n");
+  ].join("\n"));
   const han = userText.match(hanPattern)?.length ?? 0;
-  const latin = userText.match(latinPattern)?.length ?? 0;
-  return han > 0 && han * 2 >= latin ? "Simplified Chinese" : "English";
+  const latinWords = userText.match(latinWordPattern)?.length ?? 0;
+  const firstScript = userText.match(/[\p{Script=Han}A-Za-z]/u)?.[0] ?? "";
+  const chineseLeadBonus = hanCharacterPattern.test(firstScript) ? 2 : 0;
+  return han > 0 && han + chineseLeadBonus > latinWords
+    ? "Simplified Chinese"
+    : "English";
 }
 
 export function workingLanguageInstruction(
