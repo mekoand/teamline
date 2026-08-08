@@ -19,6 +19,7 @@ import type {
   CodexRunner,
   StartedCodexRun,
 } from "./codex-runner";
+import { CodexCommandNotFoundError } from "./codex-runner";
 import {
   workOrderMaterialKinds,
   type PlanStageInput,
@@ -72,6 +73,7 @@ import {
   type ExecutionIdentityEnvironment,
 } from "./execution-identity-environment";
 import { normalizeLocale } from "./i18n";
+import { ensureSemanticErrorResponse } from "./semantic-message";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -994,7 +996,7 @@ export function createApp({
     };
   };
 
-  handleRequest = async (request: Request): Promise<Response> => {
+  const routeRequest = async (request: Request): Promise<Response> => {
       const url = new URL(request.url);
 
       if (request.method === "GET" && url.pathname === "/api/health") {
@@ -3025,7 +3027,12 @@ export function createApp({
         try {
           const body = (await request.json()) as { revisionNote?: string };
           const revisionNote = body.revisionNote?.trim() ?? "";
-          if (!revisionNote) throw new Error("请填写需要调整的内容");
+          if (!revisionNote) {
+            return Response.json(
+              { code: "INVALID_REVISION_NOTE", error: "请填写需要调整的内容" },
+              { status: 400 },
+            );
+          }
           return Response.json(
             await generateAndStorePlan(id, workOrder, true, revisionNote, true),
           );
@@ -3036,14 +3043,12 @@ export function createApp({
               { status: 504 },
             );
           }
-          const message = error instanceof Error ? error.message : "无法补充要求";
-          const isInputError = message.includes("请填写");
           return Response.json(
             {
-              code: isInputError ? "INVALID_REVISION_NOTE" : "PLAN_GENERATION_FAILED",
-              error: isInputError ? message : "Codex 无法生成后续计划，请稍后重试",
+              code: "PLAN_GENERATION_FAILED",
+              error: "Codex 无法生成后续计划，请稍后重试",
             },
-            { status: isInputError ? 400 : 502 },
+            { status: 502 },
           );
         } finally {
           planningWorkOrderIds.delete(id);
@@ -3156,14 +3161,30 @@ export function createApp({
             stageId?: string;
           };
           const mode = body.mode ?? (workOrder.pendingClarification ? "reply" : "supplement");
+          const message = body.message?.trim() ?? "";
+          if (!message) {
+            return Response.json(
+              { code: "INVALID_CONVERSATION_REPLY", error: "请填写回复" },
+              { status: 400 },
+            );
+          }
           if (mode === "supplement") {
+            if (!workOrder.plan?.stages.some((stage) => stage.id === body.stageId)) {
+              return Response.json(
+                { code: "INVALID_CONVERSATION_REPLY", error: "找不到当前节点" },
+                { status: 400 },
+              );
+            }
             return Response.json({
               outcome: "supplement",
-              workOrder: store.addStageSupplement(id, body.stageId ?? "", body.message ?? ""),
+              workOrder: store.addStageSupplement(id, body.stageId ?? "", message),
             });
           }
           if (mode === "reply" && !workOrder.pendingClarification) {
-            throw new Error("当前没有等待回答的问题");
+            return Response.json(
+              { code: "INVALID_CONVERSATION_REPLY", error: "当前没有等待回答的问题" },
+              { status: 400 },
+            );
           }
           if (!planGenerator) {
             return Response.json(
@@ -3171,8 +3192,6 @@ export function createApp({
               { status: 503 },
             );
           }
-          const message = body.message?.trim() ?? "";
-          if (!message) throw new Error("请填写回复");
           const requiresPlanConfirmation =
             mode === "replan" || workOrder.pendingClarification?.requiresPlanConfirmation === true;
           const forcePlanVersion =
@@ -3200,17 +3219,12 @@ export function createApp({
               { status: 409 },
             );
           }
-          const message = error instanceof Error ? error.message : "无法更新目标对话";
-          const isInputError =
-            message.includes("请填写") ||
-            message.includes("找不到当前节点") ||
-            message.includes("没有等待回答");
           return Response.json(
             {
-              code: isInputError ? "INVALID_CONVERSATION_REPLY" : "PLAN_GENERATION_FAILED",
-              error: isInputError ? message : "Codex 无法整理这次更新，请稍后重试",
+              code: "PLAN_GENERATION_FAILED",
+              error: "Codex 无法整理这次更新，请稍后重试",
             },
-            { status: isInputError ? 400 : 502 },
+            { status: 502 },
           );
         } finally {
           if (planningClaimed) planningWorkOrderIds.delete(id);
@@ -3706,7 +3720,24 @@ export function createApp({
         });
       }
 
-      return new Response("Not found", { status: 404 });
+      return Response.json(
+        { code: "error.not_found", error: "Not found" },
+        { status: 404 },
+      );
+  };
+  handleRequest = async (request: Request): Promise<Response> => {
+    try {
+      return await ensureSemanticErrorResponse(await routeRequest(request));
+    } catch {
+      return Response.json(
+        {
+          code: "error.internal",
+          error: "Teamline could not complete the request",
+          message: { code: "error.internal", params: {} },
+        },
+        { status: 500 },
+      );
+    }
   };
   scheduleAutoRunCheck();
   return {
@@ -4481,7 +4512,7 @@ function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
       stage.executionMethod === "codex" &&
       (stage.status === "running" ||
         stage.status === "response" ||
-        (stage.status === "completed" && stage.statusReason === "Codex 已完成，等待验证")),
+        (stage.status === "completed" && workOrder.runStatus === "verifying")),
   );
   const next = running ?? nextRunnableStages(workOrder).find(
     (stage) => stage.executionMethod === "codex",
@@ -4495,7 +4526,7 @@ function codexRunWorkOrder(workOrder: WorkOrder): WorkOrder {
 const stageProgressPattern = /`?TEAMLINE_STAGE_(START|COMPLETE):([^\s`]+)`?/g;
 
 function safeCodexStartError(error: unknown): string {
-  if (error instanceof Error && error.message.includes("找不到 Codex")) {
+  if (error instanceof CodexCommandNotFoundError) {
     return "找不到 Codex，请先安装并登录 Codex";
   }
   return "Codex 无法启动，请确认本机 Codex 安装和配置后重试";

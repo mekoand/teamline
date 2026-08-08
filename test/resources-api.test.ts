@@ -131,6 +131,10 @@ describe("resource API", () => {
             source: "openai-usage-api",
           },
           recommendation: "先确认计划，再安排运行",
+          recommendationMessage: {
+            code: "resource.recommendation.confirm_plan",
+            params: {},
+          },
         },
       ],
     });
@@ -320,6 +324,7 @@ describe("resource API", () => {
     expect(result.workOrders[0].usage).toEqual({
       status: "unavailable",
       message: "当前没有可归因到这个目标的用量",
+      messageDescriptor: { code: "resource.usage.unattributed", params: {} },
     });
   });
 
@@ -859,6 +864,7 @@ describe("resource API", () => {
       status: "stale",
       observedAt: "2026-08-03T04:00:00.000Z",
       message: "目标用量已过期，需要重新读取后才能显示精确值",
+      messageDescriptor: { code: "resource.usage.stale", params: {} },
     });
     expect(result.workOrders[0].usage).not.toHaveProperty("amount");
   });

@@ -549,13 +549,13 @@ describe("work order API", () => {
     expect(failed.status).toBe(502);
     expect(await failed.json()).toEqual({
       code: "CODEX_START_FAILED",
-      error: "找不到 Codex，请先安装并登录 Codex",
+      error: "Codex 无法启动，请确认本机 Codex 安装和配置后重试",
     });
     expect(store.get(created.id)).toMatchObject({
       status: "ready",
       runStatus: null,
       currentSummary: "Codex 启动失败，请处理后重试",
-      lastError: "找不到 Codex，请先安装并登录 Codex",
+      lastError: "Codex 无法启动，请确认本机 Codex 安装和配置后重试",
       worktreePath: "/tmp/teamline/work-order-1",
     });
 

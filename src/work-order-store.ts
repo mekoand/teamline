@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { normalizeLocale, type InterfaceLocale } from "./i18n";
+import { semanticMessage, type SemanticMessage } from "./semantic-message";
 import type { CodexResourceSignal } from "./resource-provider";
 import {
   executionIdentityLoginStates,
@@ -192,6 +193,8 @@ export type LocalNotification = {
   stageId: string | null;
   title: string;
   body: string;
+  titleMessage: SemanticMessage;
+  bodyMessage: SemanticMessage;
   targetUrl: string;
   readAt: string | null;
   claimedAt: string | null;
@@ -3622,6 +3625,7 @@ function notificationTargetUrl(workOrderId: string, stageId: string | null): str
 }
 
 function mapLocalNotificationRow(row: LocalNotificationRow): LocalNotification {
+  const codeKind = row.notification_kind.replaceAll("_", ".");
   return {
     id: row.id,
     kind: row.notification_kind,
@@ -3629,6 +3633,8 @@ function mapLocalNotificationRow(row: LocalNotificationRow): LocalNotification {
     stageId: row.stage_id,
     title: row.title,
     body: row.body,
+    titleMessage: semanticMessage(`notification.title.${codeKind}`),
+    bodyMessage: semanticMessage(`notification.body.${codeKind}`, { text: row.body }),
     targetUrl: row.target_url,
     readAt: row.read_at,
     claimedAt: row.claimed_at,

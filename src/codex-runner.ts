@@ -44,6 +44,8 @@ export type StartedCodexRun = {
 
 export type CodexBillingMode = "subscription" | "paid_api";
 
+export class CodexCommandNotFoundError extends Error {}
+
 export interface CodexRunner {
   start(input: {
     workOrder: WorkOrder;
@@ -114,7 +116,7 @@ export class CodexExecutionRunner implements CodexRunner {
       };
     } catch (error) {
       if (isMissingCommand(error)) {
-        throw new Error("找不到 Codex，请先安装并登录 Codex");
+        throw new CodexCommandNotFoundError("找不到 Codex，请先安装并登录 Codex");
       }
       throw new Error("Codex 无法启动，请确认本机 Codex 安装和配置后重试");
     }
@@ -160,7 +162,7 @@ export class CodexExecutionRunner implements CodexRunner {
       };
     } catch (error) {
       if (isMissingCommand(error)) {
-        throw new Error("找不到 Codex，请先安装并登录 Codex");
+        throw new CodexCommandNotFoundError("找不到 Codex，请先安装并登录 Codex");
       }
       throw new Error("Codex 无法继续，请确认本机 Codex 安装和配置后重试");
     }

@@ -887,15 +887,15 @@ function homeNextStep(workOrder, presentation) {
   if (presentation.status === "review") return "验收成果与验证";
   if (presentation.status === "running") return "查看执行进展";
   if (presentation.status === "response") {
-    if (presentation.reason.includes("外部节点")) return "登记外部成果";
-    if (presentation.reason.includes("验证") || presentation.reason.includes("节点结果")) return "确认验证结果";
-    if (presentation.reason.includes("关键信息")) return "补充关键信息";
+    if (presentation.message.code === "status.awaiting_external_stage") return "登记外部成果";
+    if (["status.verification_failed", "status.awaiting_node_confirmation"].includes(presentation.message.code)) return "确认验证结果";
+    if (presentation.message.code === "status.awaiting_clarification") return "补充关键信息";
     return "处理并继续";
   }
   if (presentation.status === "queued") {
-    if (presentation.reason.includes("工作空间")) return "选择工作空间";
-    if (presentation.reason === "等待账号") return "切换到目标账号";
-    if (presentation.reason === "可以开始运行") return "确认并启动";
+    if (presentation.message.code === "status.awaiting_workspace") return "选择工作空间";
+    if (presentation.message.code === "status.awaiting_identity") return "切换到目标账号";
+    if (presentation.message.code === "status.ready_to_run") return "确认并启动";
     return "等待资源可用";
   }
   if (workOrder.plan?.confirmationRequired) return "确认执行计划";
@@ -2936,7 +2936,7 @@ function renderContextAction(workOrder) {
     const presentation = visibleStatus(workOrder, state.workOrders);
     const capacityBlocked =
       presentation.status === "queued" &&
-      presentation.reason === "等待可用并发位置";
+      presentation.message.code === "status.awaiting_capacity";
     const suggestedPath = workOrder.materials?.find(
       (material) => material.kind === "folder" || material.kind === "repository",
     )?.value ?? "";
@@ -3809,9 +3809,17 @@ function truncateText(value, maxLength) {
 function visibleStatus(workOrder, allWorkOrders) {
   const presented = allWorkOrders.find((candidate) => candidate.id === workOrder.id);
   if (presented?.userStatus && presented?.statusReason) {
-    return { status: presented.userStatus, reason: presented.statusReason };
+    return {
+      status: presented.userStatus,
+      reason: presented.statusReason,
+      message: presented.statusMessage ?? { code: "legacy.text", params: { text: presented.statusReason } },
+    };
   }
-  return { status: "planning", reason: "正在读取状态" };
+  return {
+    status: "planning",
+    reason: "正在读取状态",
+    message: { code: "status.loading", params: {} },
+  };
 }
 
 function formatVisibleStatus(status, reason) {
