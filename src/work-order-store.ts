@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { normalizeLocale, type InterfaceLocale } from "./i18n";
 import type { CodexResourceSignal } from "./resource-provider";
 import {
   executionIdentityLoginStates,
@@ -1019,6 +1020,28 @@ export class WorkOrderStore {
       `)
       .run(view, new Date().toISOString());
     return view;
+  }
+
+  getInterfaceLanguage(): InterfaceLocale | null {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'interface-language'",
+      )
+      .get();
+    return normalizeLocale(row?.value);
+  }
+
+  saveInterfaceLanguage(language: InterfaceLocale): InterfaceLocale {
+    const normalized = normalizeLocale(language);
+    if (!normalized) throw new Error("界面语言无效");
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('interface-language', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(normalized, new Date().toISOString());
+    return normalized;
   }
 
   getNotificationSettings(): NotificationSettings {

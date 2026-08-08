@@ -12,31 +12,16 @@ import {
   defaultGoalWorkbenchView,
   visibleGoalConversation,
 } from "./goal-workbench.js";
+import {
+  applyStaticTranslations,
+  normalizeLocale,
+  resolveLocale,
+  translate,
+} from "./i18n.js";
 
-const visibleStatusLabels = {
-  planning: "规划中",
-  running: "运行中",
-  queued: "待运行",
-  response: "需响应",
-  review: "待验收",
-  completed: "已完成",
-};
-
-const allGoalStatusGroups = [
-  ["response", "需响应"],
-  ["review", "待验收"],
-  ["running", "运行中"],
-  ["planning", "规划中"],
-  ["queued", "待运行"],
-  ["completed", "已完成"],
-];
-
-const homeHistoryFilters = [
-  ["current", "当前"],
-  ["7", "7 天"],
-  ["30", "30 天"],
-  ["all", "全部"],
-];
+let visibleStatusLabels = {};
+let allGoalStatusGroups = [];
+let homeHistoryFilters = [];
 
 const state = {
   workOrders: [],
@@ -77,6 +62,10 @@ const state = {
   restorePreview: null,
   refreshTimer: null,
   theme: readTheme(),
+  locale: resolveLocale({
+    saved: localStorage.getItem("teamline-language"),
+    browserLanguages: navigator.languages,
+  }),
 };
 
 const listElement = document.querySelector("#work-order-list");
@@ -96,10 +85,29 @@ const notificationDialog = document.querySelector("#notification-dialog");
 const localStateDialog = document.querySelector("#local-state-dialog");
 
 applyTheme(state.theme);
+applyLanguage(state.locale);
 bindShellEvents();
-refreshConsole();
+initializeLanguage().finally(refreshConsole);
 
 function bindShellEvents() {
+  document.querySelector("#language-select").addEventListener("change", async (event) => {
+    const locale = normalizeLocale(event.currentTarget.value);
+    if (!locale) return;
+    state.locale = locale;
+    localStorage.setItem("teamline-language", locale);
+    applyLanguage(locale);
+    renderConsole();
+    try {
+      await requestJson("/api/preferences/language", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ language: locale }),
+      });
+    } catch (error) {
+      console.warn("Unable to save Teamline language", error);
+    }
+  });
+
   document.querySelector("#theme-toggle").addEventListener("click", () => {
     state.theme = state.theme === "dark" ? "light" : "dark";
     localStorage.setItem("teamline-theme", state.theme);
@@ -184,6 +192,44 @@ function bindShellEvents() {
     resetGoalSelection();
     refreshConsole();
   });
+}
+
+async function initializeLanguage() {
+  try {
+    const saved = await requestJson("/api/preferences/language");
+    const locale = normalizeLocale(saved.language);
+    if (locale) {
+      state.locale = locale;
+      localStorage.setItem("teamline-language", locale);
+    }
+  } catch {
+    // Browser preference remains the initial choice until the user saves one.
+  }
+  applyLanguage(state.locale);
+}
+
+function applyLanguage(locale) {
+  visibleStatusLabels = {
+    planning: translate(locale, "status.planning"),
+    running: translate(locale, "status.running"),
+    queued: translate(locale, "status.queued"),
+    response: translate(locale, "status.response"),
+    review: translate(locale, "status.review"),
+    completed: translate(locale, "status.completed"),
+  };
+  allGoalStatusGroups = [
+    ["response", visibleStatusLabels.response],
+    ["review", visibleStatusLabels.review],
+    ["running", visibleStatusLabels.running],
+    ["planning", visibleStatusLabels.planning],
+    ["queued", visibleStatusLabels.queued],
+    ["completed", visibleStatusLabels.completed],
+  ];
+  homeHistoryFilters = state.locale === "zh-CN"
+    ? [["current", "当前"], ["7", "7 天"], ["30", "30 天"], ["all", "全部"]]
+    : [["current", "Current"], ["7", "7 days"], ["30", "30 days"], ["all", "All"]];
+  document.querySelector("#language-select").value = locale;
+  applyStaticTranslations(document, locale);
 }
 
 function openCreateDialog() {

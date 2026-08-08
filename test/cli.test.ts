@@ -39,7 +39,7 @@ function cliCapture(
     opened,
     dependencies: {
       cwd: () => cwd,
-      env: { TEAMLINE_URL: baseUrl },
+      env: { TEAMLINE_URL: baseUrl, TEAMLINE_LANG: "zh-CN" },
       fetch,
       stdout: (message: string) => stdout.push(message),
       stderr: (message: string) => stderr.push(message),
@@ -270,6 +270,6 @@ describe("Teamline CLI", () => {
         env: { TEAMLINE_URL: "https://example.com" },
       }),
     ).toBe(2);
-    expect(cli.stderr.at(-1)).toContain("必须是本机 HTTP 地址");
+    expect(cli.stderr.at(-1)).toContain("must be a local HTTP address");
   });
 });

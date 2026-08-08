@@ -71,6 +71,7 @@ import {
   ExecutionIdentityLoginInProgressError,
   type ExecutionIdentityEnvironment,
 } from "./execution-identity-environment";
+import { normalizeLocale } from "./i18n";
 
 type AppDependencies = {
   store: WorkOrderStore;
@@ -125,6 +126,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
   },
   "/goal-workbench.js": {
     path: "public/goal-workbench.js",
+    type: "text/javascript; charset=utf-8",
+  },
+  "/i18n.js": {
+    path: "public/i18n.js",
     type: "text/javascript; charset=utf-8",
   },
   "/result-artifacts.js": {
@@ -1868,6 +1873,22 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/execution-settings") {
         return Response.json({ executionSettings: store.getExecutionSettings() });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/preferences/language") {
+        return Response.json({ language: store.getInterfaceLanguage() });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/api/preferences/language") {
+        const body = (await request.json()) as { language?: unknown };
+        const language = normalizeLocale(body.language);
+        if (!language) {
+          return Response.json(
+            { code: "locale.invalid", error: "界面语言无效" },
+            { status: 400 },
+          );
+        }
+        return Response.json({ language: store.saveInterfaceLanguage(language) });
       }
 
       if (request.method === "PUT" && url.pathname === "/api/execution-settings") {

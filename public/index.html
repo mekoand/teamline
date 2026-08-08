@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Teamline 个人本地工作控制台" />
+    <meta name="description" content="Teamline local AI work control" />
     <title>Teamline</title>
     <script>
       (() => {
@@ -19,7 +19,7 @@
   <body>
     <div class="console-shell">
       <header class="console-topbar">
-        <a class="brand" href="/" aria-label="Teamline 首页">
+        <a class="brand" href="/" aria-label="Teamline home">
           <img class="brand-logo" src="/teamline-logo.png" alt="Teamline" />
         </a>
         <div id="resource-summary" class="resource-summary" aria-live="polite">
@@ -27,8 +27,15 @@
         </div>
         <div class="topbar-status" aria-label="本地服务状态">
           <span class="local-status"><i></i> 本地运行</span>
-          <button class="notification-button" id="open-notifications" type="button" aria-label="打开通知">
-            <span>通知</span>
+          <label class="language-control">
+            <span data-i18n="language.label">Language</span>
+            <select id="language-select" aria-label="Language">
+              <option value="en" data-i18n="language.en">English</option>
+              <option value="zh-CN" data-i18n="language.zh-CN">简体中文</option>
+            </select>
+          </label>
+          <button class="notification-button" id="open-notifications" type="button" aria-label="Open notifications">
+            <span data-i18n="nav.notifications">Notifications</span>
             <strong id="notification-count" hidden>0</strong>
           </button>
           <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅色主题">
@@ -39,30 +46,30 @@
 
       <aside class="order-sidebar" aria-label="全局导航与最近目标">
         <div class="sidebar-heading">
-          <h1>目标</h1>
+          <h1 data-i18n="shell.goals">Goals</h1>
           <span id="work-order-count" class="count">0</span>
         </div>
         <button class="sidebar-nav" id="open-all-goals" type="button">
-          <span>全部目标</span><small>当前状态</small>
+          <span data-i18n="nav.goals">Goals</span><small>Current status</small>
         </button>
         <button class="sidebar-nav" id="open-projects" type="button">
-          <span>项目</span><small>整理目标</small>
+          <span data-i18n="nav.projects">Projects</span><small>Organize goals</small>
         </button>
         <button class="sidebar-nav" id="open-resources" type="button">
-          <span>资源</span><small>额度与安排</small>
+          <span data-i18n="nav.resources">Resources</span><small>Quota and scheduling</small>
         </button>
         <button class="sidebar-nav" id="open-local-state" type="button">
-          <span>本地数据</span><small>导出与恢复</small>
+          <span>Local data</span><small data-i18n="nav.local_state">Export and restore</small>
         </button>
-        <button class="primary-button full-button" id="open-create" type="button">＋ 新建目标</button>
+        <button class="primary-button full-button" id="open-create" type="button">＋ <span data-i18n="action.create_goal">Create goal</span></button>
         <div class="recent-goals-heading">
-          <span>最近目标</span>
+          <span>Recent goals</span>
         </div>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
       </aside>
 
       <main id="work-order-workspace" class="work-order-workspace" aria-live="polite">
-        <div class="loading-state">正在读取本地目标…</div>
+        <div class="loading-state" data-i18n="shell.loading_goals">Loading local goals…</div>
       </main>
 
       <button
