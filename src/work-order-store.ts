@@ -1,5 +1,11 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { normalizeLocale, type InterfaceLocale } from "./i18n";
+import {
+  semanticMessage,
+  semanticMessageFromLegacy,
+  type SemanticMessage,
+} from "./semantic-message";
 import type { CodexResourceSignal } from "./resource-provider";
 import {
   executionIdentityLoginStates,
@@ -191,6 +197,8 @@ export type LocalNotification = {
   stageId: string | null;
   title: string;
   body: string;
+  titleMessage: SemanticMessage;
+  bodyMessage: SemanticMessage;
   targetUrl: string;
   readAt: string | null;
   claimedAt: string | null;
@@ -216,6 +224,8 @@ type LocalNotificationRow = {
 };
 
 export class PlanLockedError extends Error {}
+export class WorkOrderNotFoundError extends Error {}
+export class WorkOrderDeleteLockedError extends Error {}
 
 export class WorkOrderStore {
   readonly database: Database;
@@ -1021,6 +1031,28 @@ export class WorkOrderStore {
     return view;
   }
 
+  getInterfaceLanguage(): InterfaceLocale | null {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'interface-language'",
+      )
+      .get();
+    return normalizeLocale(row?.value);
+  }
+
+  saveInterfaceLanguage(language: InterfaceLocale): InterfaceLocale {
+    const normalized = normalizeLocale(language);
+    if (!normalized) throw new Error("界面语言无效");
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('interface-language', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(normalized, new Date().toISOString());
+    return normalized;
+  }
+
   getNotificationSettings(): NotificationSettings {
     const rows = this.database
       .query<{ key: string; value: string }, []>(`
@@ -1703,7 +1735,7 @@ export class WorkOrderStore {
         JSON.stringify(importContext),
         hasPreviousResult
           ? workOrder.importContext.currentState
-          : error === "历史整理中断"
+          : semanticMessageFromLegacy(error).code === "import.interrupted"
             ? "历史整理中断"
             : "历史整理失败",
         now,
@@ -1714,14 +1746,14 @@ export class WorkOrderStore {
 
   deleteFailedImportedWorkOrder(id: string): void {
     const workOrder = this.get(id);
-    if (!workOrder) throw new Error("找不到这个目标");
+    if (!workOrder) throw new WorkOrderNotFoundError("找不到这个目标");
     if (
       workOrder.sourceSessions.length === 0 ||
       workOrder.importContext?.status !== "failed" ||
       workOrder.plan ||
       workOrder.runStatus
     ) {
-      throw new Error("只能删除历史整理失败且尚未运行的导入目标");
+      throw new WorkOrderDeleteLockedError("只能删除历史整理失败且尚未运行的导入目标");
     }
     this.database.transaction(() => {
       this.database.query("DELETE FROM local_notifications WHERE work_order_id = ?").run(id);
@@ -2355,7 +2387,12 @@ export class WorkOrderStore {
       confirmationRequired: false,
       stages: workOrder.plan.stages.map((stage) => {
         if (stage.id === nextStage.id) {
-          return { ...stage, status: "running" as const, statusReason: "Codex 执行中" };
+          return {
+            ...stage,
+            status: "running" as const,
+            statusReason: "Codex 执行中",
+            pendingVerification: false,
+          };
         }
         if (stage.executionMethod === "codex" && stage.status === "planning") {
           return {
@@ -2427,7 +2464,12 @@ export class WorkOrderStore {
       ...workOrder.plan,
       stages: workOrder.plan.stages.map((stage) =>
         stage.id === target.id
-          ? { ...stage, status: "running" as const, statusReason: "Codex 执行中" }
+          ? {
+              ...stage,
+              status: "running" as const,
+              statusReason: "Codex 执行中",
+              pendingVerification: false,
+            }
           : stage,
       ),
     };
@@ -2607,11 +2649,17 @@ export class WorkOrderStore {
       stages: workOrder.plan.stages.map((candidate) => {
         if (candidate.id === stageId) {
           return phase === "running"
-            ? { ...candidate, status: "running" as const, statusReason: "Codex 执行中" }
+            ? {
+                ...candidate,
+                status: "running" as const,
+                statusReason: "Codex 执行中",
+                pendingVerification: false,
+              }
             : {
                 ...candidate,
                 status: "completed" as const,
                 statusReason: "Codex 已完成，等待验证",
+                pendingVerification: true,
               };
         }
         return candidate;
@@ -3599,6 +3647,7 @@ function notificationTargetUrl(workOrderId: string, stageId: string | null): str
 }
 
 function mapLocalNotificationRow(row: LocalNotificationRow): LocalNotification {
+  const codeKind = row.notification_kind.replaceAll("_", ".");
   return {
     id: row.id,
     kind: row.notification_kind,
@@ -3606,6 +3655,8 @@ function mapLocalNotificationRow(row: LocalNotificationRow): LocalNotification {
     stageId: row.stage_id,
     title: row.title,
     body: row.body,
+    titleMessage: semanticMessage(`notification.title.${codeKind}`),
+    bodyMessage: semanticMessage(`notification.body.${codeKind}`, { text: row.body }),
     targetUrl: row.target_url,
     readAt: row.read_at,
     claimedAt: row.claimed_at,
@@ -4262,12 +4313,23 @@ function planWithVerificationStatuses(
           statusReason: checkpointedStages.has(stage.id)
             ? "验证通过，检查点已保存"
             : "自动验证通过",
+          pendingVerification: false,
         };
       }
       if (verification.status === "failed") {
-        return { ...stage, status: "response", statusReason: "自动验证未通过" };
+        return {
+          ...stage,
+          status: "response",
+          statusReason: "自动验证未通过",
+          pendingVerification: false,
+        };
       }
-      return { ...stage, status: "response", statusReason: "等待人工验收" };
+      return {
+        ...stage,
+        status: "response",
+        statusReason: "等待人工验收",
+        pendingVerification: false,
+      };
     }),
   };
 }

@@ -10,33 +10,23 @@ import {
 import {
   completedGoalHighlights,
   defaultGoalWorkbenchView,
+  latestCompletionSummary,
   visibleGoalConversation,
 } from "./goal-workbench.js";
+import {
+  applyStaticTranslations,
+  localizeTree,
+  normalizeLocale,
+  observeTranslations,
+  resolveLocale,
+  translate,
+  translateFixedText,
+  translateMessage,
+} from "./i18n.js";
 
-const visibleStatusLabels = {
-  planning: "规划中",
-  running: "运行中",
-  queued: "待运行",
-  response: "需响应",
-  review: "待验收",
-  completed: "已完成",
-};
-
-const allGoalStatusGroups = [
-  ["response", "需响应"],
-  ["review", "待验收"],
-  ["running", "运行中"],
-  ["planning", "规划中"],
-  ["queued", "待运行"],
-  ["completed", "已完成"],
-];
-
-const homeHistoryFilters = [
-  ["current", "当前"],
-  ["7", "7 天"],
-  ["30", "30 天"],
-  ["all", "全部"],
-];
+let visibleStatusLabels = {};
+let allGoalStatusGroups = [];
+let homeHistoryFilters = [];
 
 const state = {
   workOrders: [],
@@ -77,6 +67,10 @@ const state = {
   restorePreview: null,
   refreshTimer: null,
   theme: readTheme(),
+  locale: resolveLocale({
+    saved: localStorage.getItem("teamline-language"),
+    browserLanguages: navigator.languages,
+  }),
 };
 
 const listElement = document.querySelector("#work-order-list");
@@ -96,10 +90,30 @@ const notificationDialog = document.querySelector("#notification-dialog");
 const localStateDialog = document.querySelector("#local-state-dialog");
 
 applyTheme(state.theme);
+observeTranslations(document.body, () => state.locale);
+applyLanguage(state.locale);
 bindShellEvents();
-refreshConsole();
+initializeLanguage().finally(refreshConsole);
 
 function bindShellEvents() {
+  document.querySelector("#language-select").addEventListener("change", async (event) => {
+    const locale = normalizeLocale(event.currentTarget.value);
+    if (!locale) return;
+    state.locale = locale;
+    localStorage.setItem("teamline-language", locale);
+    applyLanguage(locale);
+    renderConsole();
+    try {
+      await requestJson("/api/preferences/language", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ language: locale }),
+      });
+    } catch (error) {
+      console.warn("Unable to save Teamline language", error);
+    }
+  });
+
   document.querySelector("#theme-toggle").addEventListener("click", () => {
     state.theme = state.theme === "dark" ? "light" : "dark";
     localStorage.setItem("teamline-theme", state.theme);
@@ -184,6 +198,45 @@ function bindShellEvents() {
     resetGoalSelection();
     refreshConsole();
   });
+}
+
+async function initializeLanguage() {
+  try {
+    const saved = await requestJson("/api/preferences/language");
+    const locale = normalizeLocale(saved.language);
+    if (locale) {
+      state.locale = locale;
+      localStorage.setItem("teamline-language", locale);
+    }
+  } catch {
+    // Browser preference remains the initial choice until the user saves one.
+  }
+  applyLanguage(state.locale);
+}
+
+function applyLanguage(locale) {
+  visibleStatusLabels = {
+    planning: translate(locale, "status.planning"),
+    running: translate(locale, "status.running"),
+    queued: translate(locale, "status.queued"),
+    response: translate(locale, "status.response"),
+    review: translate(locale, "status.review"),
+    completed: translate(locale, "status.completed"),
+  };
+  allGoalStatusGroups = [
+    ["response", visibleStatusLabels.response],
+    ["review", visibleStatusLabels.review],
+    ["running", visibleStatusLabels.running],
+    ["planning", visibleStatusLabels.planning],
+    ["queued", visibleStatusLabels.queued],
+    ["completed", visibleStatusLabels.completed],
+  ];
+  homeHistoryFilters = state.locale === "zh-CN"
+    ? [["current", "当前"], ["7", "7 天"], ["30", "30 天"], ["all", "全部"]]
+    : [["current", "Current"], ["7", "7 days"], ["30", "30 days"], ["all", "All"]];
+  document.querySelector("#language-select").value = locale;
+  applyStaticTranslations(document, locale);
+  localizeTree(document.body, locale);
 }
 
 function openCreateDialog() {
@@ -280,7 +333,7 @@ function renderRestorePreview() {
     return `
       <article class="restore-order-card">
         <div class="restore-order-heading">
-          <strong>${escapeHtml(workOrder.title)}</strong>
+          <strong data-i18n-preserve>${escapeHtml(workOrder.title)}</strong>
           <span class="status-pill ${workOrder.conflict || attention.length ? "response" : ""}">${workOrder.conflict ? "有冲突" : attention.length ? "需处理" : "可恢复"}</span>
         </div>
         ${attention.length
@@ -293,7 +346,7 @@ function renderRestorePreview() {
   }).join("");
   const projectMaterialRows = (preview.projectMaterials ?? [])
     .filter((material) => material.attention.length)
-    .map((material) => `<article class="restore-order-card"><div class="restore-order-heading"><strong>${escapeHtml(material.label)}</strong><span class="status-pill response">项目素材</span></div><ul class="restore-attention-list">${material.attention.map((item) => `<li><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.reason)}</span><code>${escapeHtml(shortPath(item.location))}</code></li>`).join("")}</ul></article>`)
+    .map((material) => `<article class="restore-order-card"><div class="restore-order-heading"><strong data-i18n-preserve>${escapeHtml(material.label)}</strong><span class="status-pill response">项目素材</span></div><ul class="restore-attention-list">${material.attention.map((item) => `<li><strong data-i18n-preserve>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.reason)}</span><code>${escapeHtml(shortPath(item.location))}</code></li>`).join("")}</ul></article>`)
     .join("");
   document.querySelector("#restore-preview").innerHTML = `
     <div class="restore-summary">
@@ -472,10 +525,10 @@ function renderNotificationShell() {
           (notification) => `
             <button class="notification-item ${notification.readAt ? "" : "unread"}" data-notification-id="${notification.id}" type="button">
               <span class="notification-item-heading">
-                <strong>${escapeHtml(notification.title)}</strong>
+                <strong>${escapeHtml(translateMessage(state.locale, notification.titleMessage, notification.title))}</strong>
                 <time>${formatDate(notification.createdAt)}</time>
               </span>
-              <span>${escapeHtml(notification.body)}</span>
+              <span data-i18n-preserve>${escapeHtml(translateMessage(state.locale, notification.bodyMessage, notification.body))}</span>
             </button>`,
         )
         .join("")
@@ -554,10 +607,13 @@ async function showPendingNativeNotifications() {
     });
     for (const localNotification of notifications) {
       try {
-        const systemNotification = new Notification(localNotification.title, {
-          body: localNotification.body,
+        const systemNotification = new Notification(
+          translateMessage(state.locale, localNotification.titleMessage, localNotification.title),
+          {
+          body: translateMessage(state.locale, localNotification.bodyMessage, localNotification.body),
           tag: `teamline-${localNotification.id}`,
-        });
+          },
+        );
         systemNotification.addEventListener("click", () => {
           window.focus();
           void openLocalNotification(localNotification);
@@ -762,8 +818,8 @@ function renderHomeGoalRow(workOrder) {
   return `
     <button class="home-goal-row" data-work-order-id="${escapeHtml(workOrder.id)}" type="button">
       <span class="status-dot ${presentation.status}"></span>
-      <span class="home-goal-title"><strong>${escapeHtml(workOrder.title)}</strong>${accountLabel ? `<small class="goal-account-tag">${escapeHtml(accountLabel)}</small>` : ""}</span>
-      <span class="home-goal-fact" data-label="当前节点"><strong>${escapeHtml(stage?.outcome || homeCurrentNodeFallback(workOrder))}</strong><small>${escapeHtml(stage?.statusReason || workOrder.currentSummary)}</small></span>
+      <span class="home-goal-title"><strong data-i18n-preserve>${escapeHtml(workOrder.title)}</strong>${accountLabel ? `<small class="goal-account-tag">${accountLabel.label ? `<span data-i18n-preserve>${escapeHtml(accountLabel.label)}</span>` : ""}${accountLabel.suffix ? `<span>${escapeHtml(accountLabel.suffix)}</span>` : ""}</small>` : ""}</span>
+      <span class="home-goal-fact" data-label="当前节点">${stage ? `<strong data-i18n-preserve>${escapeHtml(stage.outcome)}</strong>` : `<strong>${escapeHtml(homeCurrentNodeFallback(workOrder))}</strong>`}<small>${escapeHtml(stage?.statusReason || workOrder.currentSummary)}</small></span>
       <span class="home-goal-fact" data-label="状态"><span class="status-pill ${presentation.status}">${visibleStatusLabels[presentation.status]}</span><small>${escapeHtml(waitingReasonLabel(presentation))}</small></span>
       <span class="home-goal-fact" data-label="下一步"><strong>${escapeHtml(homeNextStep(workOrder, presentation))}</strong><small>更新于 ${formatDate(workOrder.updatedAt)}</small></span>
       <span class="row-arrow" aria-hidden="true">›</span>
@@ -798,6 +854,7 @@ function homeProjectGroups(workOrders) {
   return orderedKeys.map((key) => ({
     id: key,
     name: key === "unassigned" ? "独立目标" : projectById.get(key).name,
+    preserveName: key !== "unassigned",
     orders: grouped.get(key).sort(compareHomeGoals),
   }));
 }
@@ -805,7 +862,7 @@ function homeProjectGroups(workOrders) {
 function renderHomeProjectGroup(group) {
   return `
     <section class="home-project-section" data-home-project="${escapeHtml(group.id)}">
-      <header><div><p class="overline">项目</p><h2>${escapeHtml(group.name)}</h2></div><span>${group.orders.length} 个目标</span></header>
+      <header><div><p class="overline">项目</p><h2 ${group.preserveName ? "data-i18n-preserve" : ""}>${escapeHtml(group.name)}</h2></div><span>${group.orders.length} 个目标</span></header>
       <div class="home-goal-table">
         <div class="home-goal-table-heading" aria-hidden="true"><span>目标</span><span>当前节点</span><span>状态与等待</span><span>下一步</span></div>
         ${group.orders.map(renderHomeGoalRow).join("")}
@@ -841,15 +898,15 @@ function homeNextStep(workOrder, presentation) {
   if (presentation.status === "review") return "验收成果与验证";
   if (presentation.status === "running") return "查看执行进展";
   if (presentation.status === "response") {
-    if (presentation.reason.includes("外部节点")) return "登记外部成果";
-    if (presentation.reason.includes("验证") || presentation.reason.includes("节点结果")) return "确认验证结果";
-    if (presentation.reason.includes("关键信息")) return "补充关键信息";
+    if (presentation.message.code === "status.awaiting_external_stage") return "登记外部成果";
+    if (["status.verification_failed", "status.awaiting_node_confirmation"].includes(presentation.message.code)) return "确认验证结果";
+    if (presentation.message.code === "status.awaiting_clarification") return "补充关键信息";
     return "处理并继续";
   }
   if (presentation.status === "queued") {
-    if (presentation.reason.includes("工作空间")) return "选择工作空间";
-    if (presentation.reason === "等待账号") return "切换到目标账号";
-    if (presentation.reason === "可以开始运行") return "确认并启动";
+    if (presentation.message.code === "status.awaiting_workspace") return "选择工作空间";
+    if (presentation.message.code === "status.awaiting_identity") return "切换到目标账号";
+    if (presentation.message.code === "status.ready_to_run") return "确认并启动";
     return "等待资源可用";
   }
   if (workOrder.plan?.confirmationRequired) return "确认执行计划";
@@ -862,8 +919,11 @@ function homeAccountLabel(workOrder) {
   if (new Set(identities.map((identity) => identity.id)).size <= 1) return "";
   const id = workOrder.executionIdentityId ?? state.executionIdentities.defaultIdentityId;
   const identity = identities.find((candidate) => candidate.id === id);
-  if (!identity) return "未选账号";
-  return `${identity.label}${identity.status === "removed" ? " · 已移除" : ""}`;
+  if (!identity) return { label: "", suffix: "未选账号" };
+  return {
+    label: identity.label,
+    suffix: identity.status === "removed" ? " · 已移除" : "",
+  };
 }
 
 function renderProjectsWorkspace() {
@@ -888,7 +948,7 @@ function renderProjectsWorkspace() {
         ? `<div class="project-list">${state.projects.map((project) => {
             const goals = state.workOrders.filter((workOrder) => workOrder.projectId === project.id);
             const completed = goals.filter((goal) => goal.userStatus === "completed").length;
-            return `<button class="project-row" data-project-id="${escapeHtml(project.id)}" type="button"><span><strong>${escapeHtml(project.name)}</strong><small>${goals.length} 个目标${completed ? ` · ${completed} 个已完成` : ""}</small></span><span class="row-arrow" aria-hidden="true">›</span></button>`;
+            return `<button class="project-row" data-project-id="${escapeHtml(project.id)}" type="button"><span><strong data-i18n-preserve>${escapeHtml(project.name)}</strong><small>${goals.length} 个目标${completed ? ` · ${completed} 个已完成` : ""}</small></span><span class="row-arrow" aria-hidden="true">›</span></button>`;
           }).join("")}</div>`
         : '<section class="home-empty"><h2>还没有项目</h2><p>项目只用来整理相关目标、素材和成果。</p></section>'}
     </section>`;
@@ -903,7 +963,7 @@ function renderProjectDetailWorkspace(detail) {
     <section class="workspace-content project-detail-workspace">
       <button class="mobile-back-button project-back-button" id="back-to-projects" type="button">‹ 全部项目</button>
       <header class="project-detail-heading">
-        <div><p class="overline">项目</p><h1>${escapeHtml(project.name)}</h1></div>
+        <div><p class="overline">项目</p><h1 data-i18n-preserve>${escapeHtml(project.name)}</h1></div>
         <dl><div><dt>目标</dt><dd>${summary.totalGoals}</dd></div><div><dt>已完成</dt><dd>${summary.completedGoals}</dd></div></dl>
       </header>
       <section class="project-section">
@@ -924,7 +984,7 @@ function renderProjectDetailWorkspace(detail) {
             <label><span>名称</span><input name="label" required placeholder="简短名称" autocomplete="off" /></label>
             <label data-project-material-value><span>内容或位置</span><textarea name="value" rows="3" required placeholder="写下文本，或填写本地路径和链接"></textarea></label>
             <label data-project-goal-value hidden><span>引用已完成目标</span><select name="goalId">${completedGoals.length
-              ? completedGoals.map((goal) => `<option value="${escapeHtml(goal.id)}">${escapeHtml(goal.name)}</option>`).join("")
+              ? completedGoals.map((goal) => `<option value="${escapeHtml(goal.id)}" data-i18n-preserve>${escapeHtml(goal.name)}</option>`).join("")
               : '<option value="" disabled selected>还没有已完成目标</option>'}</select></label>
             <button class="primary-button" type="submit">添加素材</button>
           </form>
@@ -944,18 +1004,18 @@ function renderProjectDetailWorkspace(detail) {
 
 function renderProjectGoalRow(goal) {
   const presentation = visibleStatus(goal, state.workOrders);
-  return `<button class="project-goal-row" data-work-order-id="${escapeHtml(goal.id)}" type="button"><span class="status-dot ${presentation.status}"></span><span><strong>${escapeHtml(goal.name)}</strong><small>${escapeHtml(formatVisibleStatus(presentation.status, presentation.reason))}</small></span><time>${formatDate(goal.updatedAt)}</time><span class="row-arrow" aria-hidden="true">›</span></button>`;
+  return `<button class="project-goal-row" data-work-order-id="${escapeHtml(goal.id)}" type="button"><span class="status-dot ${presentation.status}"></span><span><strong data-i18n-preserve>${escapeHtml(goal.name)}</strong><small>${escapeHtml(formatVisibleStatus(presentation.status, presentation.reason))}</small></span><time>${formatDate(goal.updatedAt)}</time><span class="row-arrow" aria-hidden="true">›</span></button>`;
 }
 
 function renderProjectMaterialCard(material) {
-  return `<button class="project-material-card" data-project-material-id="${escapeHtml(material.id)}" type="button"><span>${escapeHtml(projectMaterialKindLabel(material.kind))}${material.sourceGoalId ? " · 来自目标" : ""}</span><strong>${escapeHtml(material.label)}</strong><code>${escapeHtml(material.kind === "text" ? truncateText(material.value, 64) : shortPath(material.value))}</code></button>`;
+  return `<button class="project-material-card" data-project-material-id="${escapeHtml(material.id)}" type="button"><span>${escapeHtml(projectMaterialKindLabel(material.kind))}${material.sourceGoalId ? " · 来自目标" : ""}</span><strong data-i18n-preserve>${escapeHtml(material.label)}</strong><code>${escapeHtml(material.kind === "text" ? truncateText(material.value, 64) : shortPath(material.value))}</code></button>`;
 }
 
 function renderProjectResultCard(result) {
   const goal = state.workOrders.find((candidate) => candidate.id === result.workOrderId);
   const presentation = goal ? visibleStatus(goal, state.workOrders) : { status: "completed", reason: "已产生结果" };
   const artifact = result.artifacts?.[0];
-  return `<button class="project-result-card" data-project-result-id="${escapeHtml(result.workOrderId)}" type="button"><span>${escapeHtml(visibleStatusLabels[presentation.status] || presentation.reason)}</span><strong>${escapeHtml(result.title)}</strong><p>${escapeHtml(artifact?.label || result.gitSummary || result.summary)}</p></button>`;
+  return `<button class="project-result-card" data-project-result-id="${escapeHtml(result.workOrderId)}" type="button"><span>${escapeHtml(visibleStatusLabels[presentation.status] || presentation.reason)}</span><strong data-i18n-preserve>${escapeHtml(result.title)}</strong><p data-i18n-preserve>${escapeHtml(artifact?.label || result.gitSummary || result.summary)}</p></button>`;
 }
 
 function bindOverviewEvents() {
@@ -1062,7 +1122,7 @@ function renderProjectContext() {
     return `
       <section class="context-content">
         <div class="context-heading">
-          <div><p class="overline">项目素材</p><h2>${escapeHtml(material.label)}</h2></div>
+          <div><p class="overline">项目素材</p><h2 data-i18n-preserve>${escapeHtml(material.label)}</h2></div>
           ${renderContextCloseButton()}
         </div>
         <dl class="context-list">
@@ -1073,7 +1133,7 @@ function renderProjectContext() {
         <div class="context-section project-context-value">
           <span>${material.kind === "text" ? "内容" : material.kind === "goal" ? "引用目标" : "位置"}</span>
           ${material.kind === "text" || material.kind === "goal"
-            ? `<p>${escapeHtml(material.kind === "goal" ? sourceGoal?.name || "原目标已不可用" : material.value)}</p>`
+            ? `<p ${material.kind !== "goal" || sourceGoal ? "data-i18n-preserve" : ""}>${escapeHtml(material.kind === "goal" ? sourceGoal?.name || "原目标已不可用" : material.value)}</p>`
             : `<code>${escapeHtml(material.value)}</code>`}
         </div>
       </section>`;
@@ -1084,10 +1144,10 @@ function renderProjectContext() {
     return `
       <section class="context-content">
         <div class="context-heading">
-          <div><p class="overline">项目成果</p><h2>${escapeHtml(result.title)}</h2></div>
+          <div><p class="overline">项目成果</p><h2 data-i18n-preserve>${escapeHtml(result.title)}</h2></div>
           ${renderContextCloseButton()}
         </div>
-        <p class="context-summary">${escapeHtml(result.summary)}</p>
+        <p class="context-summary" data-i18n-preserve>${escapeHtml(result.summary)}</p>
         ${result.gitSummary ? `<div class="context-section"><span>文件变化</span><p>${escapeHtml(result.gitSummary)}</p></div>` : ""}
         ${result.artifacts?.length
           ? `<div class="context-section"><span>成果位置</span><ul class="context-reference-list">${result.artifacts.map((artifact) => `<li><strong>${escapeHtml(artifact.label || shortPath(artifact.location))}</strong><code>${escapeHtml(artifact.location)}</code></li>`).join("")}</ul></div>`
@@ -1173,7 +1233,7 @@ function renderResourceSummary() {
       <summary>
         <span>Codex 额度</span>
         ${shownQuota.status === "available"
-          ? `<strong>5 小时 ${formatRemaining(shownQuota.shortWindow)}</strong><i>周 ${formatRemaining(shownQuota.longWindow)}</i>`
+          ? `<strong>${state.locale === "zh-CN" ? "5 小时" : "5 hours"} ${formatRemaining(shownQuota.shortWindow)}</strong><i>${state.locale === "zh-CN" ? "周" : "Week"} ${formatRemaining(shownQuota.longWindow)}</i>`
           : `<strong>${resourceStatusLabel(shownQuota.status)}</strong>`}
       </summary>
       <div class="topbar-quota-popover">
@@ -1191,11 +1251,11 @@ function renderResourceSummary() {
   });
 }
 
-function renderTopbarAccountQuota({ identity, quota, backupLabel }) {
+function renderTopbarAccountQuota({ identity, quota, backupLabel, backupMessage }) {
   return `
     <article>
-      <div><strong>${escapeHtml(identity.label)}</strong><span>${escapeHtml(compactBackupLabel(backupLabel))}</span></div>
-      <dl><div><dt>5 小时</dt><dd>${formatRemaining(quota.shortWindow)}</dd></div><div><dt>周</dt><dd>${formatRemaining(quota.longWindow)}</dd></div></dl>
+      <div><strong data-i18n-preserve>${escapeHtml(identity.label)}</strong><span>${escapeHtml(compactBackupLabel(translateMessage(state.locale, backupMessage, backupLabel)))}</span></div>
+      <dl><div><dt>${state.locale === "zh-CN" ? "5 小时" : "5 hours"}</dt><dd>${formatRemaining(quota.shortWindow)}</dd></div><div><dt>${state.locale === "zh-CN" ? "周" : "Week"}</dt><dd>${formatRemaining(quota.longWindow)}</dd></div></dl>
     </article>`;
 }
 
@@ -1276,7 +1336,7 @@ function renderCodexAccountQuota(accounts) {
           return `
           <article class="identity-quota-row">
             <button class="identity-quota-heading inspector-selection-button" type="button" data-resource-account-id="${escapeHtml(identity.id)}">
-              <div><strong>${escapeHtml(identity.label)}</strong><small>${resourceStatusLabel(quota.status)}</small></div>
+              <div><strong data-i18n-preserve>${escapeHtml(identity.label)}</strong><small>${resourceStatusLabel(quota.status)}</small></div>
               <span class="status-pill ${backupStatus === "available" ? "running" : backupStatus === "unknown" ? "response" : "queued"}">${escapeHtml(compactBackupLabel(backupLabel))}</span>
             </button>
             <div class="quota-windows compact">
@@ -1339,10 +1399,10 @@ function renderResourceOrder(workOrder) {
   const locked = workOrder.importOnly || workOrder.status === "completed";
   const usage = workOrder.usage.status === "available"
     ? formatUsage(workOrder.usage)
-    : escapeHtml(workOrder.usage.message || "不可用");
+    : escapeHtml(translateMessage(state.locale, workOrder.usage.messageDescriptor, workOrder.usage.message || "不可用"));
   return `
     <article class="resource-order-row">
-      <button class="resource-order-title inspector-selection-button" type="button" data-resource-work-order-id="${escapeHtml(workOrder.id)}"><span class="status-dot ${workOrder.status}"></span><span><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></span><i class="row-arrow" aria-hidden="true">›</i></button>
+      <button class="resource-order-title inspector-selection-button" type="button" data-resource-work-order-id="${escapeHtml(workOrder.id)}"><span class="status-dot ${workOrder.status}"></span><span><strong data-i18n-preserve>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></span><i class="row-arrow" aria-hidden="true">›</i></button>
       <dl>
         ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
           ["high", "优先推进"],
@@ -1356,7 +1416,7 @@ function renderResourceOrder(workOrder) {
         ], workOrder.pace)}</select></dd></div>
         <div><dt>单轮上限</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>`}
         <div><dt>当前用量</dt><dd>${usage}</dd></div>
-        <div><dt>运行建议</dt><dd>${escapeHtml(workOrder.recommendation)}</dd></div>
+        <div><dt>运行建议</dt><dd>${escapeHtml(translateMessage(state.locale, workOrder.recommendationMessage, workOrder.recommendation))}</dd></div>
       </dl>
       ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : workOrder.status === "completed" ? '<p class="source-import-only">已完成目标保留当时的资源设置。</p>' : `<label class="auto-run-toggle">
         <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} ${locked ? "disabled" : ""} />
@@ -1675,7 +1735,7 @@ function renderResourceContext() {
     return `
       <section class="context-content">
         <div class="context-heading">
-          <div><p class="overline">Codex 账号</p><h2>${escapeHtml(identity.label)}</h2></div>
+          <div><p class="overline">Codex 账号</p><h2 data-i18n-preserve>${escapeHtml(identity.label)}</h2></div>
           ${renderContextCloseButton()}
         </div>
         <dl class="context-list">
@@ -1699,11 +1759,11 @@ function renderResourceContext() {
     const identity = state.executionIdentities.identities.find((candidate) => candidate.id === identityId);
     const usage = resourceGoal.usage.status === "available"
       ? formatUsage(resourceGoal.usage)
-      : resourceGoal.usage.message || "不可用";
+      : translateMessage(state.locale, resourceGoal.usage.messageDescriptor, resourceGoal.usage.message || "不可用");
     return `
       <section class="context-content">
         <div class="context-heading">
-          <div><p class="overline">目标资源</p><h2>${escapeHtml(resourceGoal.title)}</h2></div>
+          <div><p class="overline">目标资源</p><h2 data-i18n-preserve>${escapeHtml(resourceGoal.title)}</h2></div>
           ${renderContextCloseButton()}
         </div>
         <dl class="context-list">
@@ -1714,7 +1774,7 @@ function renderResourceContext() {
           <div><dt>可归因用量</dt><dd>${escapeHtml(usage)}</dd></div>
           ${resourceGoal.usage.observedAt ? `<div><dt>用量更新于</dt><dd>${formatDate(resourceGoal.usage.observedAt)}</dd></div>` : ""}
         </dl>
-        <p class="context-summary">${escapeHtml(resourceGoal.recommendation)}</p>
+        <p class="context-summary">${escapeHtml(translateMessage(state.locale, resourceGoal.recommendationMessage, resourceGoal.recommendation))}</p>
       </section>`;
   }
   return renderUnavailableContext();
@@ -1730,7 +1790,7 @@ function renderOrderRow(workOrder) {
     <button class="order-row ${selected ? "selected" : ""}" data-work-order-id="${escapeHtml(workOrder.id)}" type="button">
       <span class="status-dot ${presentation.status}"></span>
       <span class="order-row-copy">
-        <strong>${escapeHtml(workOrder.title)}</strong>
+        <strong data-i18n-preserve>${escapeHtml(workOrder.title)}</strong>
         <small>${escapeHtml(formatVisibleStatus(presentation.status, presentation.reason))}</small>
       </span>
       ${unread ? '<span class="unread-indicator" aria-label="有未读通知"></span>' : ""}
@@ -1767,10 +1827,10 @@ function renderWorkspace(workOrder, feedback) {
               ? ""
               : `<span>${escapeHtml(presentation.reason)}</span>`}
           </div>
-          <h1>${escapeHtml(workOrder.title)}</h1>
+          <h1 data-i18n-preserve>${escapeHtml(workOrder.title)}</h1>
           ${canEditImportedGoal
-            ? `<label class="goal-statement-editor"><span>一句话目标</span><textarea id="workbench-goal-input" rows="2" maxlength="500">${escapeHtml(workOrder.goal)}</textarea></label>`
-            : `<p class="goal-statement">${escapeHtml(workOrder.goal)}</p>`}
+            ? `<label class="goal-statement-editor"><span>一句话目标</span><textarea id="workbench-goal-input" data-i18n-preserve rows="2" maxlength="500">${escapeHtml(workOrder.goal)}</textarea></label>`
+            : `<p class="goal-statement" data-i18n-preserve>${escapeHtml(workOrder.goal)}</p>`}
           <dl class="goal-snapshot-facts">
             <div><dt>当前</dt><dd>${escapeHtml(currentState)}</dd></div>
             <div><dt>下一步</dt><dd>${escapeHtml(nextAction)}</dd></div>
@@ -1832,7 +1892,7 @@ function renderProgressSurface(workOrder, stages, canEditPlan, feedback) {
           </div>
         </div>
       </div>
-        ${workOrder.revisionNote ? `<aside class="notice"><strong>补充要求</strong><p>${escapeHtml(workOrder.revisionNote)}</p></aside>` : ""}
+        ${workOrder.revisionNote ? `<aside class="notice"><strong>补充要求</strong><p data-i18n-preserve>${escapeHtml(workOrder.revisionNote)}</p></aside>` : ""}
         ${renderPlanArea(workOrder, stages, canEditPlan)}
         ${renderProgressSecondaryActions(workOrder)}
         <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
@@ -1957,14 +2017,14 @@ function renderConversationPanel(workOrder) {
           ? messages.map((message) => `
               <article class="conversation-message ${message.role}">
                 <span>${message.role === "user" ? "你" : "Teamline"}${message.stageId ? ` · ${escapeHtml(stageLabel(workOrder, message.stageId))}` : ""}</span>
-                <p>${escapeHtml(message.content)}</p>
+                <p data-i18n-preserve>${escapeHtml(message.content)}</p>
                 ${message.kind === "decision" ? `<small>${message.requiresPlanConfirmation ? "计划已更新，需重新确认" : "已添加到节点"}</small>` : ""}
               </article>`).join("")
           : '<p class="conversation-empty">还没有补充内容。</p>'}
       </div>
       ${editable ? `
         <form id="conversation-form" class="conversation-form">
-          <label><span>${pending ? "你的回答" : `补充${stage ? `“${escapeHtml(stage.outcome)}”` : "目标"}`}</span><textarea name="message" rows="3" required placeholder="${pending ? "直接回答上面的问题" : "写下需要补充或调整的内容"}"></textarea></label>
+          <label><span>${pending ? "你的回答" : `补充${stage ? `“<span data-i18n-preserve>${escapeHtml(stage.outcome)}</span>”` : "目标"}`}</span><textarea name="message" rows="3" required placeholder="${pending ? "直接回答上面的问题" : "写下需要补充或调整的内容"}"></textarea></label>
           <div class="conversation-actions">
             ${pending
               ? '<button class="primary-button" type="submit" data-conversation-mode="reply">提交回答</button>'
@@ -2029,8 +2089,8 @@ function renderMapNode(workOrder, stage, index, stageById, singleStage) {
         <span class="stage-index">${index + 1}</span>
         <span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</span>
       </span>
-      <strong>${escapeHtml(stage.outcome)}</strong>
-      <small>${escapeHtml(progress.summary)}</small>
+      <strong data-i18n-preserve>${escapeHtml(stage.outcome)}</strong>
+      <small data-i18n-preserve>${escapeHtml(progress.summary)}</small>
       <span class="node-metadata">${escapeHtml(progress.timeLabel)}${progress.artifactCount ? ` · ${progress.artifactCount} 项成果` : ""}</span>
       ${dependencies.length ? `<span class="dependency-label">依赖：${escapeHtml(dependencies.join("；"))}</span>` : ""}
     </button>`;
@@ -2040,8 +2100,8 @@ function renderHistoricalMapNode(stage, index) {
   return `
     <article class="map-node historical-node" aria-label="历史推断节点">
       <span class="map-node-topline"><span class="stage-index">H${index + 1}</span><span class="history-badge">历史推断</span></span>
-      <strong>${escapeHtml(stage.outcome)}</strong>
-      <small>${escapeHtml(stage.summary)}</small>
+      <strong data-i18n-preserve>${escapeHtml(stage.outcome)}</strong>
+      <small data-i18n-preserve>${escapeHtml(stage.summary)}</small>
     </article>`;
 }
 
@@ -2054,7 +2114,7 @@ function renderHistoricalProgress(historicalStages, workOrder) {
       ${timeline
         ? `<div class="execution-timeline historical-timeline">${renderHistoricalTimelineItems(historicalStages)}</div>`
         : `<div class="execution-map-graph structured-map historical-map">${historicalStages.map((stage, index) => renderHistoricalMapNode(stage, index)).join("")}</div>`}
-      ${workOrder.importContext?.summary ? `<p class="historical-summary">${escapeHtml(workOrder.importContext.summary)}</p>` : ""}
+      ${workOrder.importContext?.summary ? `<p class="historical-summary" data-i18n-preserve>${escapeHtml(workOrder.importContext.summary)}</p>` : ""}
     </details>`;
 }
 
@@ -2064,8 +2124,8 @@ function renderHistoricalTimelineItems(historicalStages) {
       <span class="timeline-marker"></span>
       <div class="timeline-card">
         <div class="timeline-heading"><span class="history-badge">历史推断</span><span>历史节点 ${index + 1}</span></div>
-        <strong>${escapeHtml(stage.outcome)}</strong>
-        <p>${escapeHtml(stage.summary)}</p>
+        <strong data-i18n-preserve>${escapeHtml(stage.outcome)}</strong>
+        <p data-i18n-preserve>${escapeHtml(stage.summary)}</p>
       </div>
     </article>`).join("");
 }
@@ -2088,9 +2148,9 @@ function renderTimelineStage(workOrder, stage, index) {
       <span class="timeline-marker ${escapeHtml(stage.status)}"></span>
       <span class="timeline-card">
         <span class="timeline-heading"><span>节点 ${index + 1}</span><span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</span></span>
-        <strong>${escapeHtml(stage.outcome)}</strong>
-        <span class="timeline-summary">${escapeHtml(progress.summary)}</span>
-        ${reports.map((event) => `<span class="timeline-report ${eventReportKind(event) === "suggest_stage" ? "suggestion" : ""}">${eventReportKind(event) === "suggest_stage" ? "建议新增节点 · " : ""}${escapeHtml(event.message)}</span>`).join("")}
+        <strong data-i18n-preserve>${escapeHtml(stage.outcome)}</strong>
+        <span class="timeline-summary" data-i18n-preserve>${escapeHtml(progress.summary)}</span>
+        ${reports.map((event) => `<span class="timeline-report ${eventReportKind(event) === "suggest_stage" ? "suggestion" : ""}">${eventReportKind(event) === "suggest_stage" ? "建议新增节点 · " : ""}<span data-i18n-preserve>${escapeHtml(event.message)}</span></span>`).join("")}
         <span class="node-metadata">${escapeHtml(progress.timeLabel)}${progress.artifactCount ? ` · ${progress.artifactCount} 项成果` : ""}</span>
       </span>
     </button>`;
@@ -2137,7 +2197,7 @@ function renderUnscopedReports(workOrder) {
     .map((event) => `
       <article class="timeline-item report">
         <span class="timeline-marker"></span>
-        <div class="timeline-card"><span class="timeline-heading">${eventReportKind(event) === "suggest_stage" ? "建议新增节点" : "运行提示"}</span><strong>${escapeHtml(event.message)}</strong><small>${escapeHtml(formatDate(event.createdAt))}</small></div>
+        <div class="timeline-card"><span class="timeline-heading">${eventReportKind(event) === "suggest_stage" ? "建议新增节点" : "运行提示"}</span><strong data-i18n-preserve>${escapeHtml(event.message)}</strong><small>${escapeHtml(formatDate(event.createdAt))}</small></div>
       </article>`)
     .join("");
 }
@@ -2172,9 +2232,9 @@ function renderPlanForm(stages) {
                 ${stages.length > 1 ? `<button type="button" data-remove-stage="${index}">移除</button>` : ""}
               </div>
               <input type="hidden" name="id" value="${escapeHtml(stage.id ?? "")}" />
-              <label><span>目标结果</span><textarea name="outcome" rows="2" required>${escapeHtml(stage.outcome ?? "")}</textarea></label>
-              <label><span>预计影响范围</span><textarea name="scope" rows="2" required>${escapeHtml(stage.scope ?? "")}</textarea></label>
-              <label><span>验证方式</span><textarea name="verification" rows="2" required>${escapeHtml(stage.verification ?? "")}</textarea></label>
+              <label><span>目标结果</span><textarea name="outcome" data-i18n-preserve rows="2" required>${escapeHtml(stage.outcome ?? "")}</textarea></label>
+              <label><span>预计影响范围</span><textarea name="scope" data-i18n-preserve rows="2" required>${escapeHtml(stage.scope ?? "")}</textarea></label>
+              <label><span>验证方式</span><textarea name="verification" data-i18n-preserve rows="2" required>${escapeHtml(stage.verification ?? "")}</textarea></label>
               <label><span>执行方式</span>
                 <select name="executionMethod" data-execution-method>
                   <option value="codex" ${stage.executionMethod !== "external" ? "selected" : ""}>AI 执行</option>
@@ -2258,8 +2318,8 @@ function renderResultPanel(workOrder) {
         <h3>完成摘要</h3>
         <div class="result-summary-list">
           ${resultData.summaries.length
-            ? resultData.summaries.map((item) => `<article class="result-summary-card"><strong>${escapeHtml(item.stage)}</strong><p>${escapeHtml(item.summary)}</p></article>`).join("")
-            : `<p class="result-empty">${escapeHtml(workOrder.currentSummary || "本轮已经结束。")}</p>`}
+            ? resultData.summaries.map((item) => `<article class="result-summary-card" data-i18n-preserve><strong>${escapeHtml(item.stage)}</strong><p>${escapeHtml(item.summary)}</p></article>`).join("")
+            : `<p class="result-empty" ${workOrder.currentSummary ? "data-i18n-preserve" : ""}>${escapeHtml(workOrder.currentSummary || "本轮已经结束。")}</p>`}
         </div>
       </section>
       <section class="result-section">
@@ -2278,7 +2338,7 @@ function renderResultPanel(workOrder) {
           .map(
             (verification) => `
               <article class="result-card verification-${verification.status}">
-                <div><strong>${escapeHtml(verification.stageOutcome)}</strong><span>${verificationLabel(verification.status)}</span></div>
+                <div><strong data-i18n-preserve>${escapeHtml(verification.stageOutcome)}</strong><span>${verificationLabel(verification.status)}</span></div>
                 <code>${escapeHtml(verification.command || "未配置自动验证命令")}</code>
                 <pre>${escapeHtml(verification.output)}</pre>
               </article>`,
@@ -2289,7 +2349,7 @@ function renderResultPanel(workOrder) {
       ${resultData.incomplete.length ? `
         <section class="result-section result-incomplete">
           <h3>仍需处理</h3>
-          <ul>${resultData.incomplete.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+          <ul data-i18n-preserve>${resultData.incomplete.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </section>` : ""}
       ${workOrder.status === "review" ? `
         <details class="result-revision">
@@ -2320,7 +2380,7 @@ function renderImportedResultPanel(workOrder) {
         <span class="result-state">导入历史</span>
       </div>
       ${highlights.length
-        ? `<section class="result-section"><h3>已完成</h3><ul class="result-highlight-list">${highlights.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`
+        ? `<section class="result-section"><h3>已完成</h3><ul class="result-highlight-list" data-i18n-preserve>${highlights.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`
         : ""}
       <section class="result-section">
         <h3>产物</h3>
@@ -2337,7 +2397,7 @@ function renderResultArtifactCard(reference) {
   return `
     <button class="reference-card result-artifact-card" type="button" data-result-artifact="${escapeHtml(reference.location)}">
       <span>${escapeHtml(referenceTypeLabel(reference.type))}</span>
-      <strong>${escapeHtml(reference.label)}</strong>
+      <strong data-i18n-preserve>${escapeHtml(reference.label)}</strong>
       <code>${escapeHtml(reference.location)}</code>
       <small>查看详情</small>
     </button>`;
@@ -2398,7 +2458,7 @@ function renderContext(workOrder) {
   return `
     <section class="context-content">
       <div class="context-heading">
-        <div><p class="overline">节点 ${selectedIndex + 1}</p><h2>${escapeHtml(stage.outcome)}</h2></div>
+        <div><p class="overline">节点 ${selectedIndex + 1}</p><h2 data-i18n-preserve>${escapeHtml(stage.outcome)}</h2></div>
         ${renderContextCloseButton()}
       </div>
       ${renderContextTabs()}
@@ -2431,7 +2491,7 @@ function renderGoalMaterials(workOrder) {
           ? materials.map((material) => `
               <article class="reference-card">
                 <span>${escapeHtml(projectMaterialKindLabel(material.kind))}</span>
-                <strong>${escapeHtml(material.value)}</strong>
+                <strong data-i18n-preserve>${escapeHtml(material.value)}</strong>
               </article>`).join("")
           : '<p class="muted">这个目标还没有单独添加素材。</p>'}
       </div>
@@ -2449,7 +2509,7 @@ function renderArtifactContext(workOrder, artifactId) {
   return `
     <section class="context-content">
       <div class="context-heading">
-        <div><p class="overline">成果</p><h2>${escapeHtml(reference.label)}</h2></div>
+        <div><p class="overline">成果</p><h2 data-i18n-preserve>${escapeHtml(reference.label)}</h2></div>
         ${renderContextCloseButton()}
       </div>
       <dl class="context-list artifact-context-list">
@@ -2621,13 +2681,13 @@ function renderGoalProjectContext(workOrder) {
   const materials = selection?.projectId === displayProjectId ? selection.materials : [];
   return `
     <details class="context-disclosure goal-project-context">
-      <summary>项目与素材${currentProject ? ` · ${escapeHtml(currentProject.name)}` : ""}</summary>
+      <summary>项目与素材${currentProject ? ` · <span data-i18n-preserve>${escapeHtml(currentProject.name)}</span>` : ""}</summary>
       <form id="goal-project-form">
         <label><span>所属项目</span><select name="projectId" ${active ? "disabled" : ""}>${projectOptions(displayProjectId)}</select></label>
         <fieldset ${active ? "disabled" : ""}>
           <legend>${isImportOnlyGoal(workOrder) ? "关联的项目素材" : "发送给 Codex 的项目素材"}</legend>
           ${materials.length
-            ? materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="projectMaterialId" value="${escapeHtml(material.id)}" ${selectedIds.has(material.id) ? "checked" : ""} /><span><strong>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}${recommendedIds.has(material.id) ? " · 建议" : ""}</small></span></label>`).join("")
+            ? materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="projectMaterialId" value="${escapeHtml(material.id)}" ${selectedIds.has(material.id) ? "checked" : ""} /><span><strong data-i18n-preserve>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}${recommendedIds.has(material.id) ? " · 建议" : ""}</small></span></label>`).join("")
             : `<p class="muted">${displayProjectId ? "这个项目还没有可选素材。" : "选择项目后可以使用其中的素材。"}</p>`}
         </fieldset>
         ${active ? '<p class="muted">目标运行时暂不能调整素材。</p>' : '<button class="secondary-button full-button" type="submit">保存项目与素材</button>'}
@@ -2696,15 +2756,15 @@ function renderContextTabContent(workOrder, stage) {
         <h3>节点成果</h3>
         <div class="reference-list">
           ${completionSummary
-            ? `<article class="reference-card completion-reference"><span>Codex 完成摘要</span><p>${escapeHtml(cleanCompletionSummary(completionSummary))}</p></article>`
+            ? `<article class="reference-card completion-reference"><span>Codex 完成摘要</span><p data-i18n-preserve>${escapeHtml(cleanCompletionSummary(completionSummary))}</p></article>`
             : ""}
           ${localArtifacts
             .map(
-              (reference) => `<article class="reference-card"><span>本地成果</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code></article>`,
+              (reference) => `<article class="reference-card"><span>本地成果</span><strong data-i18n-preserve>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code></article>`,
             )
             .join("")}
           ${stage.externalResult?.conclusion
-            ? `<article class="reference-card"><span>完成结论</span><strong>${escapeHtml(stage.externalResult.conclusion)}</strong><code>${formatDate(stage.externalResult.completedAt)}</code></article>`
+            ? `<article class="reference-card"><span>完成结论</span><strong data-i18n-preserve>${escapeHtml(stage.externalResult.conclusion)}</strong><code>${formatDate(stage.externalResult.completedAt)}</code></article>`
             : ""}
           ${references.length ? references.map(renderReference).join("") : ""}
           ${verification
@@ -2717,19 +2777,19 @@ function renderContextTabContent(workOrder, stage) {
   const progress = stageProgress(workOrder, stage);
   return `
     <div class="context-stage context-tab-panel" role="tabpanel">
-      <h3>${escapeHtml(stage.outcome)}</h3>
+      <h3 data-i18n-preserve>${escapeHtml(stage.outcome)}</h3>
       <p class="node-status-line"><span class="status-dot ${escapeHtml(stage.status)}"></span>${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</p>
       <dl class="context-list">
-        <div><dt>影响范围</dt><dd>${escapeHtml(stage.scope)}</dd></div>
+        <div><dt>影响范围</dt><dd data-i18n-preserve>${escapeHtml(stage.scope)}</dd></div>
         <div><dt>执行方式</dt><dd>${escapeHtml(executionMethodLabel(stage.executionMethod))}</dd></div>
         <div><dt>${stage.executionMethod === "external" ? "成果位置" : "工作空间"}</dt><dd><code>${escapeHtml(stage.executionMethod === "external" ? "保留在原位置" : resolvedWorkspacePath(workOrder, stage))}</code></dd></div>
-        <div><dt>验证方式</dt><dd>${escapeHtml(stage.verification)}</dd></div>
+        <div><dt>验证方式</dt><dd data-i18n-preserve>${escapeHtml(stage.verification)}</dd></div>
         ${stage.executionMethod === "external" ? "" : `<div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>`}
         <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
         <div><dt>补充上下文</dt><dd>${stage.contextNotes?.length ? stage.contextNotes.map(escapeHtml).join("；") : "暂无"}</dd></div>
         <div><dt>开始时间</dt><dd>${progress.startedAt ? escapeHtml(formatDate(progress.startedAt)) : "尚未开始"}</dd></div>
         <div><dt>最近更新</dt><dd>${progress.updatedAt ? escapeHtml(formatDate(progress.updatedAt)) : "暂无运行记录"}</dd></div>
-        <div><dt>当前摘要</dt><dd>${escapeHtml(progress.summary)}</dd></div>
+        <div><dt>当前摘要</dt><dd data-i18n-preserve>${escapeHtml(progress.summary)}</dd></div>
         <div><dt>成果</dt><dd>${progress.artifactCount ? `${progress.artifactCount} 项，可在“成果”中查看` : "暂无"}</dd></div>
         <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
       </dl>
@@ -2749,22 +2809,7 @@ function renderContextTabContent(workOrder, stage) {
 
 function completionSummaryForStage(workOrder, stage) {
   if (stage.executionMethod !== "codex" || !workOrder.result) return null;
-  const currentRunEvents = state.events.filter(
-    (event) =>
-      event.type === "progress" &&
-      event.stageId === stage.id,
-  );
-  return currentRunEvents
-    .slice()
-    .reverse()
-    .map((event) => event.message.trim())
-    .find(
-      (message) =>
-        message &&
-        !message.startsWith("Codex 进展：") &&
-        message !== "Codex 已完成本轮处理" &&
-        /(已完成|完成并验证|新增|创建|修改|结果)/.test(message),
-    ) ?? null;
+  return latestCompletionSummary(state.events, stage.id);
 }
 
 function localArtifactReferences(summary) {
@@ -2785,7 +2830,7 @@ function cleanCompletionSummary(summary) {
 
 function renderReference(reference, workOrder) {
   const canOpen = workOrder ? canOpenResultArtifact(workOrder, reference) : false;
-  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
+  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong data-i18n-preserve>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
 }
 
 function renderContextAction(workOrder) {
@@ -2890,7 +2935,7 @@ function renderContextAction(workOrder) {
     const presentation = visibleStatus(workOrder, state.workOrders);
     const capacityBlocked =
       presentation.status === "queued" &&
-      presentation.reason === "等待可用并发位置";
+      presentation.message.code === "status.awaiting_capacity";
     const suggestedPath = workOrder.materials?.find(
       (material) => material.kind === "folder" || material.kind === "repository",
     )?.value ?? "";
@@ -3473,8 +3518,8 @@ function renderSessionCandidates() {
         <label class="session-select">
           <input type="checkbox" name="sessionId" value="${escapeHtml(session.id)}" ${state.sessionSelectedIds.has(session.id) ? "checked" : ""} ${disabled ? "disabled" : ""} />
           <span>
-            <strong>${escapeHtml(session.title)}</strong>
-            <small>${escapeHtml(session.projectLabel)}${state.sessionSource === "claude_code" ? ` · ${escapeHtml(shortSessionId(session.id))}` : ""} · ${formatDate(session.lastActiveAt)}</small>
+            <strong data-i18n-preserve>${escapeHtml(session.title)}</strong>
+            <small><span data-i18n-preserve>${escapeHtml(session.projectLabel)}</span>${state.sessionSource === "claude_code" ? ` · ${escapeHtml(shortSessionId(session.id))}` : ""} · ${formatDate(session.lastActiveAt)}</small>
           </span>
           <em>${stateLabel}</em>
         </label>
@@ -3653,7 +3698,7 @@ function projectOptions(selectedId = "") {
   return [
     '<option value="">暂不归入项目</option>',
     ...state.projects.map(
-      (project) => `<option value="${escapeHtml(project.id)}" ${project.id === selectedId ? "selected" : ""}>${escapeHtml(project.name)}</option>`,
+      (project) => `<option value="${escapeHtml(project.id)}" data-i18n-preserve ${project.id === selectedId ? "selected" : ""}>${escapeHtml(project.name)}</option>`,
     ),
   ].join("");
 }
@@ -3698,7 +3743,7 @@ function renderCreateProjectMaterials() {
   }
   const recommended = new Set(selection.recommendedIds);
   list.innerHTML = selection.materials.length
-    ? selection.materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="createProjectMaterialId" value="${escapeHtml(material.id)}" ${recommended.has(material.id) ? "checked" : ""} /><span><strong>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}</small></span></label>`).join("")
+    ? selection.materials.map((material) => `<label class="project-material-choice"><input type="checkbox" name="createProjectMaterialId" value="${escapeHtml(material.id)}" ${recommended.has(material.id) ? "checked" : ""} /><span><strong data-i18n-preserve>${escapeHtml(material.label)}</strong><small>${escapeHtml(projectMaterialKindLabel(material.kind))}</small></span></label>`).join("")
     : '<p class="muted">这个项目还没有素材。</p>';
 }
 
@@ -3763,14 +3808,23 @@ function truncateText(value, maxLength) {
 function visibleStatus(workOrder, allWorkOrders) {
   const presented = allWorkOrders.find((candidate) => candidate.id === workOrder.id);
   if (presented?.userStatus && presented?.statusReason) {
-    return { status: presented.userStatus, reason: presented.statusReason };
+    return {
+      status: presented.userStatus,
+      reason: translateMessage(state.locale, presented.statusMessage, presented.statusReason),
+      message: presented.statusMessage ?? { code: "legacy.text", params: { text: presented.statusReason } },
+    };
   }
-  return { status: "planning", reason: "正在读取状态" };
+  return {
+    status: "planning",
+    reason: "正在读取状态",
+    message: { code: "status.loading", params: {} },
+  };
 }
 
 function formatVisibleStatus(status, reason) {
   const label = visibleStatusLabels[status] ?? "规划中";
-  return reason === label ? label : `${label} · ${reason}`;
+  const localizedReason = translateFixedText(state.locale, reason);
+  return localizedReason === label ? label : `${label} · ${localizedReason}`;
 }
 
 function scheduleRefresh() {
@@ -3943,18 +3997,28 @@ function formatDuration(milliseconds) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
   const hours = Math.floor(totalSeconds / 3_600);
   const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  if (state.locale !== "zh-CN") {
+    if (hours > 0) return `${hours} hr ${minutes} min`;
+    if (minutes > 0) return `${minutes} min`;
+    return `${totalSeconds} sec`;
+  }
   if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
   if (minutes > 0) return `${minutes} 分钟`;
   return `${totalSeconds} 秒`;
 }
 
 function formatRunLimit(minutes) {
+  if (state.locale !== "zh-CN") {
+    if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+    const hours = minutes / 60;
+    return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
   return minutes < 60 ? `${minutes} 分钟` : `${minutes / 60} 小时`;
 }
 
 function formatDate(value) {
   const date = new Date(value);
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(state.locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -3963,19 +4027,22 @@ function formatDate(value) {
 }
 
 function formatRemaining(window) {
-  return window ? `${Math.max(0, 100 - window.usedPercent)}% 可用` : "不可用";
+  if (!window) return state.locale === "zh-CN" ? "不可用" : "Unavailable";
+  return state.locale === "zh-CN"
+    ? `${Math.max(0, 100 - window.usedPercent)}% 可用`
+    : `${Math.max(0, 100 - window.usedPercent)}% available`;
 }
 
 function formatReset(value) {
-  return `重置于 ${formatDate(value)}`;
+  return state.locale === "zh-CN" ? `重置于 ${formatDate(value)}` : `Resets ${formatDate(value)}`;
 }
 
 function formatUsage(usage) {
   if (!usage || typeof usage.amount !== "number") return "不可用";
   if (usage.unit === "usd") {
-    return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "USD" }).format(usage.amount);
+    return new Intl.NumberFormat(state.locale, { style: "currency", currency: "USD" }).format(usage.amount);
   }
-  return `${new Intl.NumberFormat("zh-CN").format(usage.amount)} tokens`;
+  return `${new Intl.NumberFormat(state.locale).format(usage.amount)} tokens`;
 }
 
 function resourceStatusLabel(status) {
@@ -4048,12 +4115,20 @@ function referenceTypeLabel(type) {
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "请求失败");
+  if (!response.ok) {
+    const error = new Error(result.error || "请求失败");
+    error.code = result.code;
+    error.messageDescriptor = result.message ?? (result.code
+      ? { code: result.code, params: result.params ?? {} }
+      : null);
+    throw error;
+  }
   return result;
 }
 
 function messageFrom(error, fallback) {
-  return error instanceof Error && error.message ? error.message : fallback;
+  const compatibility = error instanceof Error && error.message ? error.message : fallback;
+  return translateMessage(state.locale, error?.messageDescriptor, compatibility);
 }
 
 function escapeHtml(value) {

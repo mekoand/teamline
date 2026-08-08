@@ -1,4 +1,9 @@
 import type { WorkOrder } from "./work-order";
+import {
+  semanticMessage,
+  semanticMessageFromLegacy,
+  type SemanticMessage,
+} from "./semantic-message";
 
 export type UserVisibleStatus =
   | "planning"
@@ -11,6 +16,7 @@ export type UserVisibleStatus =
 export type ConsoleWorkOrder = WorkOrder & {
   userStatus: UserVisibleStatus;
   statusReason: string;
+  statusMessage: SemanticMessage;
 };
 
 export function presentConsoleWorkOrders(
@@ -38,37 +44,47 @@ function presentStatus(
   capacityReached: boolean,
   currentExecutionIdentityId: string | null,
   defaultExecutionIdentityId: string | null,
-): Pick<ConsoleWorkOrder, "userStatus" | "statusReason"> {
+): Pick<ConsoleWorkOrder, "userStatus" | "statusReason" | "statusMessage"> {
+  const presented = (
+    userStatus: UserVisibleStatus,
+    statusReason: string,
+    code: string,
+    params: SemanticMessage["params"] = {},
+  ) => ({ userStatus, statusReason, statusMessage: semanticMessage(code, params) });
   if (workOrder.pendingClarification) {
-    return { userStatus: "response", statusReason: "待补充关键信息" };
+    return presented("response", "待补充关键信息", "status.awaiting_clarification");
   }
   if (workOrder.importContext && !workOrder.plan) {
     if (workOrder.importContext.status === "pending") {
-      return { userStatus: "planning", statusReason: "正在整理历史" };
+      return presented("planning", "正在整理历史", "status.organizing_history");
     }
     if (workOrder.importContext.status === "failed") {
-      return {
-        userStatus: "planning",
-        statusReason: workOrder.importContext.error === "历史整理中断"
-          ? "历史整理中断"
-          : "历史整理失败",
-      };
+      const interrupted = semanticMessageFromLegacy(
+        workOrder.importContext.error ?? "",
+      ).code === "import.interrupted";
+      return presented(
+        "planning",
+        interrupted ? "历史整理中断" : "历史整理失败",
+        interrupted ? "import.interrupted" : "import.failed",
+      );
     }
     if (workOrder.importContext.error) {
-      return {
-        userStatus: "planning",
-        statusReason: workOrder.importContext.error === "历史整理中断"
-          ? "历史整理中断"
-          : "历史整理失败",
-      };
+      const interrupted = semanticMessageFromLegacy(
+        workOrder.importContext.error,
+      ).code === "import.interrupted";
+      return presented(
+        "planning",
+        interrupted ? "历史整理中断" : "历史整理失败",
+        interrupted ? "import.interrupted" : "import.failed",
+      );
     }
-    return { userStatus: "planning", statusReason: "待生成后续计划" };
+    return presented("planning", "待生成后续计划", "status.awaiting_followup_plan");
   }
   if (workOrder.status === "delivered") {
-    return { userStatus: "completed", statusReason: "已确认交付" };
+    return presented("completed", "已确认交付", "status.delivered");
   }
   if (workOrder.status === "review") {
-    return { userStatus: "review", statusReason: "待验收" };
+    return presented("review", "待验收", "status.awaiting_review");
   }
   if (workOrder.status === "interrupted") {
     const externalStage = workOrder.plan?.stages.find(
@@ -80,21 +96,27 @@ function presentStatus(
     const needsNodeConfirmation = workOrder.result?.verifications.some(
       (verification) => verification.status === "not_configured",
     );
-    return {
-      userStatus: "response",
-      statusReason: externalStage
-        ? `待完成外部节点：${externalStage.outcome}`
-        : workOrder.currentSummary.includes("最长运行时间") ||
-            workOrder.currentSummary.includes("本轮上限")
-          ? "已达到本轮上限"
-          : failedVerification
-            ? "自动验证未通过"
-            : needsNodeConfirmation
-              ? "待确认当前节点结果"
-              : workOrder.runStatus === "failed"
-                ? "执行失败"
-                : "执行中断",
-    };
+    if (externalStage) {
+      return presented(
+        "response",
+        `待完成外部节点：${externalStage.outcome}`,
+        "status.awaiting_external_stage",
+        { outcome: externalStage.outcome },
+      );
+    }
+    const interruption = semanticMessageFromLegacy(workOrder.currentSummary);
+    if (interruption.code === "status.run_limit_reached") {
+      return presented("response", "已达到本轮上限", interruption.code);
+    }
+    if (failedVerification) {
+      return presented("response", "自动验证未通过", "status.verification_failed");
+    }
+    if (needsNodeConfirmation) {
+      return presented("response", "待确认当前节点结果", "status.awaiting_node_confirmation");
+    }
+    return workOrder.runStatus === "failed"
+      ? presented("response", "执行失败", "status.execution_failed")
+      : presented("response", "执行中断", "status.execution_interrupted");
   }
   if (workOrder.status === "running") {
     const statusReason =
@@ -104,23 +126,31 @@ function presentStatus(
         completed: "正在整理结果",
         running: "Codex 执行中",
       }[workOrder.runStatus ?? ""] ?? "正在推进";
-    return { userStatus: "running", statusReason };
+    const code = {
+      stopping: "status.stopping",
+      verifying: "status.processing_result",
+      completed: "status.processing_result",
+      running: "status.running_codex",
+    }[workOrder.runStatus ?? ""] ?? "status.running";
+    return presented("running", statusReason, code);
   }
   if (workOrder.status === "ready") {
     if (workOrder.plan?.confirmationRequired) {
-      return { userStatus: "planning", statusReason: "待确认计划" };
+      return presented("planning", "待确认计划", "status.awaiting_plan_confirmation");
     }
     const externalStage = workOrder.plan?.stages.find(
       (stage) => stage.executionMethod === "external" && stage.status === "response",
     );
     if (externalStage) {
-      return {
-        userStatus: "response",
-        statusReason: `待完成外部节点：${externalStage.outcome}`,
-      };
+      return presented(
+        "response",
+        `待完成外部节点：${externalStage.outcome}`,
+        "status.awaiting_external_stage",
+        { outcome: externalStage.outcome },
+      );
     }
     if (!workOrder.workspace) {
-      return { userStatus: "queued", statusReason: "等待选择工作空间" };
+      return presented("queued", "等待选择工作空间", "status.awaiting_workspace");
     }
     const targetExecutionIdentityId =
       workOrder.executionIdentityId ?? defaultExecutionIdentityId;
@@ -129,7 +159,7 @@ function presentStatus(
       targetExecutionIdentityId &&
       currentExecutionIdentityId !== targetExecutionIdentityId
     ) {
-      return { userStatus: "queued", statusReason: "等待账号" };
+      return presented("queued", "等待账号", "status.awaiting_identity");
     }
     if (
       workOrder.resourcePlan.runWhenQuotaAvailable &&
@@ -138,11 +168,12 @@ function presentStatus(
       return {
         userStatus: "queued",
         statusReason: workOrder.resourcePlan.autoRunReason,
+        statusMessage: semanticMessageFromLegacy(workOrder.resourcePlan.autoRunReason),
       };
     }
     return capacityReached
-      ? { userStatus: "queued", statusReason: "等待可用并发位置" }
-      : { userStatus: "queued", statusReason: "可以开始运行" };
+      ? presented("queued", "等待可用并发位置", "status.awaiting_capacity")
+      : presented("queued", "可以开始运行", "status.ready_to_run");
   }
-  return { userStatus: "planning", statusReason: "待生成计划" };
+  return presented("planning", "待生成计划", "status.awaiting_plan");
 }

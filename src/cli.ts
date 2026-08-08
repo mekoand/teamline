@@ -1,4 +1,14 @@
 import type { ConsoleWorkOrder, UserVisibleStatus } from "./console-presentation";
+import {
+  formatLegacyMessage,
+  formatMessage,
+  formatSemanticMessage,
+  normalizeLocale,
+  resolveInterfaceLocale,
+  type InterfaceLocale,
+  type MessageKey,
+  type MessageParams,
+} from "./i18n";
 import type { PlanStage, WorkOrder } from "./work-order";
 
 type CliDependencies = {
@@ -17,25 +27,13 @@ class CliUsageError extends Error {}
 
 class CliRequestError extends Error {}
 
-const help = `Teamline CLI
-
-用法：
-  teamline create <目标> [--acceptance <验收标准>]
-  teamline list
-  teamline show <目标 ID 或唯一前缀>
-  teamline interrupt <目标 ID 或唯一前缀>
-  teamline continue <目标 ID 或唯一前缀>
-  teamline open <目标 ID 或唯一前缀>
-
-CLI 只负责日常入口；计划编辑、执行图和资源安排请在网页中完成。`;
-
-const statusLabels: Record<UserVisibleStatus, string> = {
-  planning: "待规划",
-  running: "进行中",
-  queued: "待运行",
-  response: "需响应",
-  review: "待验收",
-  completed: "已完成",
+const statusKeys: Record<UserVisibleStatus, MessageKey> = {
+  planning: "status.planning",
+  running: "status.running",
+  queued: "status.queued",
+  response: "status.response",
+  review: "status.review",
+  completed: "status.completed",
 };
 
 export async function runCli(
@@ -53,32 +51,66 @@ export async function runCli(
     ...overrides,
   };
 
+  let locale = resolveInterfaceLocale({ environment: dependencies.env.TEAMLINE_LANG });
   try {
-    const [command, ...commandArgs] = args;
+    const language = extractLanguageOption(args, locale);
+    if (
+      !language.explicit &&
+      dependencies.env.TEAMLINE_LANG &&
+      !normalizeLocale(dependencies.env.TEAMLINE_LANG)
+    ) {
+      throw new CliUsageError(t(locale, "locale.invalid", {
+        value: dependencies.env.TEAMLINE_LANG,
+      }));
+    }
+    const [command, ...commandArgs] = language.args;
     if (!command || command === "help" || command === "--help" || command === "-h") {
-      dependencies.stdout(help);
+      let saved: InterfaceLocale | null = null;
+      if (!language.explicit && !dependencies.env.TEAMLINE_LANG) {
+        try {
+          saved = await readSavedLocale(localBaseUrl(dependencies.env, locale), dependencies);
+        } catch {
+          // Help remains available when the local service URL is invalid or unavailable.
+        }
+      }
+      locale = resolveInterfaceLocale({
+        explicit: language.explicit,
+        environment: dependencies.env.TEAMLINE_LANG,
+        saved,
+      });
+      dependencies.stdout(formatMessage(locale, "cli.help"));
       return 0;
     }
+    const baseUrl = localBaseUrl(dependencies.env, locale);
+    const saved = language.explicit || dependencies.env.TEAMLINE_LANG
+      ? null
+      : await readSavedLocale(baseUrl, dependencies);
+    locale = resolveInterfaceLocale({
+      explicit: language.explicit,
+      environment: dependencies.env.TEAMLINE_LANG,
+      saved,
+    });
 
-    const baseUrl = localBaseUrl(dependencies.env);
     if (command === "create") {
-      await createCommand(commandArgs, baseUrl, dependencies);
+      await createCommand(commandArgs, baseUrl, dependencies, locale);
       return 0;
     }
     if (command === "list" || command === "ls") {
-      requireNoArguments(commandArgs, command);
-      await listCommand(baseUrl, dependencies);
+      requireNoArguments(commandArgs, command, locale);
+      await listCommand(baseUrl, dependencies, locale);
       return 0;
     }
     if (["show", "interrupt", "continue", "open"].includes(command)) {
-      const reference = requireReference(commandArgs, command);
-      await workOrderCommand(command, reference, baseUrl, dependencies);
+      const reference = requireReference(commandArgs, command, locale);
+      await workOrderCommand(command, reference, baseUrl, dependencies, locale);
       return 0;
     }
 
-    throw new CliUsageError(`未知命令：${command}\n\n${help}`);
+    throw new CliUsageError(
+      `${t(locale, "cli.unknown_command", { command })}\n\n${t(locale, "cli.help")}`,
+    );
   } catch (error) {
-    dependencies.stderr(error instanceof Error ? error.message : "Teamline CLI 执行失败");
+    dependencies.stderr(error instanceof Error ? error.message : t(locale, "cli.failed"));
     return error instanceof CliUsageError ? 2 : 1;
   }
 }
@@ -91,12 +123,14 @@ async function createCommand(
   args: string[],
   baseUrl: URL,
   dependencies: CliDependencies,
+  locale: InterfaceLocale,
 ): Promise<void> {
-  const { goal, acceptance } = parseCreateArguments(args);
+  const { goal, acceptance } = parseCreateArguments(args, locale);
   const response = await requestJson(
     baseUrl,
     "/api/work-orders",
     dependencies,
+    locale,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -108,26 +142,32 @@ async function createCommand(
     },
   );
   const workOrder = response.workOrder as WorkOrder | undefined;
-  if (!workOrder?.id) throw new CliRequestError("本地服务返回了无法识别的创建结果");
+  if (!workOrder?.id) throw new CliRequestError(t(locale, "cli.invalid_create_result"));
 
-  dependencies.stdout(`已创建：${workOrder.title}`);
-  dependencies.stdout(`ID：${workOrder.id}`);
-  dependencies.stdout(`网页：${workOrderUrl(baseUrl, workOrder.id)}`);
+  dependencies.stdout(t(locale, "cli.created", { title: workOrder.title }));
+  dependencies.stdout(t(locale, "cli.id", { id: workOrder.id }));
+  dependencies.stdout(t(locale, "cli.web", { url: workOrderUrl(baseUrl, workOrder.id) }));
 }
 
-async function listCommand(baseUrl: URL, dependencies: CliDependencies): Promise<void> {
-  const workOrders = await consoleWorkOrders(baseUrl, dependencies);
+async function listCommand(
+  baseUrl: URL,
+  dependencies: CliDependencies,
+  locale: InterfaceLocale,
+): Promise<void> {
+  const workOrders = await consoleWorkOrders(baseUrl, dependencies, locale);
   if (workOrders.length === 0) {
-    dependencies.stdout("还没有目标。");
+    dependencies.stdout(t(locale, "cli.no_goals"));
     return;
   }
 
   for (const workOrder of workOrders) {
     dependencies.stdout(
-      `${shortId(workOrder.id)}  ${statusLabels[workOrder.userStatus]}  ${workOrder.title}`,
+      `${shortId(workOrder.id)}  ${t(locale, statusKeys[workOrder.userStatus])}  ${workOrder.title}`,
     );
-    dependencies.stdout(`  当前：${currentNode(workOrder)}`);
-    dependencies.stdout(`  原因：${workOrder.statusReason}`);
+    dependencies.stdout(t(locale, "cli.current", { value: currentNode(workOrder, locale) }));
+    dependencies.stdout(t(locale, "cli.reason", {
+      value: formatSemanticMessage(locale, workOrder.statusMessage, workOrder.statusReason),
+    }));
   }
 }
 
@@ -136,18 +176,26 @@ async function workOrderCommand(
   reference: string,
   baseUrl: URL,
   dependencies: CliDependencies,
+  locale: InterfaceLocale,
 ): Promise<void> {
-  const workOrders = await consoleWorkOrders(baseUrl, dependencies);
-  const workOrder = resolveWorkOrder(workOrders, reference);
+  const workOrders = await consoleWorkOrders(baseUrl, dependencies, locale);
+  const workOrder = resolveWorkOrder(workOrders, reference, locale);
 
   if (command === "show") {
-    showWorkOrder(workOrder, baseUrl, dependencies);
+    showWorkOrder(workOrder, baseUrl, dependencies, locale);
     return;
   }
   if (command === "open") {
     const url = workOrderUrl(baseUrl, workOrder.id);
-    await dependencies.openUrl(url);
-    dependencies.stdout(`已打开：${url}`);
+    try {
+      await dependencies.openUrl(url);
+    } catch (error) {
+      if (error instanceof Error && error.message !== t("en", "cli.open_failed")) {
+        throw error;
+      }
+      throw new CliRequestError(t(locale, "cli.open_failed"));
+    }
+    dependencies.stdout(t(locale, "cli.opened", { url }));
     return;
   }
 
@@ -156,14 +204,15 @@ async function workOrderCommand(
     baseUrl,
     `/api/work-orders/${encodeURIComponent(workOrder.id)}/${action}`,
     dependencies,
+    locale,
     { method: "POST" },
   );
   const updated = response.workOrder as WorkOrder | undefined;
-  if (!updated?.id) throw new CliRequestError("本地服务返回了无法识别的目标状态");
+  if (!updated?.id) throw new CliRequestError(t(locale, "cli.invalid_goal_state"));
   dependencies.stdout(
     command === "interrupt"
-      ? `正在中断：${updated.title}`
-      : `已继续：${updated.title}`,
+      ? t(locale, "cli.interrupting", { title: updated.title })
+      : t(locale, "cli.continued", { title: updated.title }),
   );
 }
 
@@ -171,26 +220,33 @@ function showWorkOrder(
   workOrder: ConsoleWorkOrder,
   baseUrl: URL,
   dependencies: CliDependencies,
+  locale: InterfaceLocale,
 ): void {
   dependencies.stdout(workOrder.title);
-  dependencies.stdout(`ID：${workOrder.id}`);
-  dependencies.stdout(
-    `状态：${statusLabels[workOrder.userStatus]}（${workOrder.statusReason}）`,
-  );
-  dependencies.stdout(`当前节点：${currentNode(workOrder)}`);
-  dependencies.stdout(`工作空间：${workOrder.workspace?.path ?? "未选择"}`);
-  dependencies.stdout(`目标：${workOrder.goal}`);
-  dependencies.stdout(`验收：${workOrder.acceptance ?? "未填写"}`);
-  dependencies.stdout(`网页：${workOrderUrl(baseUrl, workOrder.id)}`);
+  dependencies.stdout(t(locale, "cli.id", { id: workOrder.id }));
+  dependencies.stdout(t(locale, "cli.status", {
+    status: t(locale, statusKeys[workOrder.userStatus]),
+    reason: formatSemanticMessage(locale, workOrder.statusMessage, workOrder.statusReason),
+  }));
+  dependencies.stdout(t(locale, "cli.current_node", { value: currentNode(workOrder, locale) }));
+  dependencies.stdout(t(locale, "cli.workspace", {
+    value: workOrder.workspace?.path ?? t(locale, "cli.not_selected"),
+  }));
+  dependencies.stdout(t(locale, "cli.goal", { value: workOrder.goal }));
+  dependencies.stdout(t(locale, "cli.acceptance", {
+    value: workOrder.acceptance ?? t(locale, "cli.not_provided"),
+  }));
+  dependencies.stdout(t(locale, "cli.web", { url: workOrderUrl(baseUrl, workOrder.id) }));
 }
 
 async function consoleWorkOrders(
   baseUrl: URL,
   dependencies: CliDependencies,
+  locale: InterfaceLocale,
 ): Promise<ConsoleWorkOrder[]> {
-  const response = await requestJson(baseUrl, "/api/console", dependencies);
+  const response = await requestJson(baseUrl, "/api/console", dependencies, locale);
   if (!Array.isArray(response.workOrders)) {
-    throw new CliRequestError("本地服务返回了无法识别的目标列表");
+    throw new CliRequestError(t(locale, "cli.invalid_goal_list"));
   }
   return response.workOrders as ConsoleWorkOrder[];
 }
@@ -199,6 +255,7 @@ async function requestJson(
   baseUrl: URL,
   path: string,
   dependencies: CliDependencies,
+  locale: InterfaceLocale,
   init?: RequestInit,
 ): Promise<JsonObject> {
   let response: Response;
@@ -209,7 +266,7 @@ async function requestJson(
     });
   } catch {
     throw new CliRequestError(
-      `无法连接 Teamline 本地服务（${baseUrl.origin}）。请先运行 bun run dev。`,
+      t(locale, "cli.connect_failed", { origin: baseUrl.origin }),
     );
   }
 
@@ -217,17 +274,22 @@ async function requestJson(
   try {
     body = (await response.json()) as JsonObject;
   } catch {
-    if (response.ok) throw new CliRequestError("本地服务返回了无法识别的响应");
+    if (response.ok) throw new CliRequestError(t(locale, "cli.invalid_response"));
   }
   if (!response.ok) {
     throw new CliRequestError(
-      typeof body.error === "string" ? body.error : `本地服务请求失败（${response.status}）`,
+      typeof body.error === "string"
+        ? formatLegacyMessage(locale, body.error)
+        : t(locale, "cli.request_failed", { status: response.status }),
     );
   }
   return body;
 }
 
-function parseCreateArguments(args: string[]): { goal: string; acceptance?: string } {
+function parseCreateArguments(
+  args: string[],
+  locale: InterfaceLocale,
+): { goal: string; acceptance?: string } {
   const goalParts: string[] = [];
   let acceptance: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
@@ -235,7 +297,7 @@ function parseCreateArguments(args: string[]): { goal: string; acceptance?: stri
     if (argument === "--acceptance" || argument === "-a") {
       const value = args[index + 1];
       if (!value || value.startsWith("-")) {
-        throw new CliUsageError("--acceptance 需要一个验收标准");
+        throw new CliUsageError(t(locale, "cli.acceptance_required"));
       }
       acceptance = value;
       index += 1;
@@ -243,17 +305,17 @@ function parseCreateArguments(args: string[]): { goal: string; acceptance?: stri
     }
     if (argument.startsWith("--acceptance=")) {
       acceptance = argument.slice("--acceptance=".length);
-      if (!acceptance) throw new CliUsageError("--acceptance 需要一个验收标准");
+      if (!acceptance) throw new CliUsageError(t(locale, "cli.acceptance_required"));
       continue;
     }
     if (argument.startsWith("-")) {
-      throw new CliUsageError(`未知选项：${argument}`);
+      throw new CliUsageError(t(locale, "cli.unknown_option", { option: argument }));
     }
     goalParts.push(argument);
   }
   const goal = goalParts.join(" ").trim();
   if (!goal) {
-    throw new CliUsageError("请提供目标：teamline create <目标> [--acceptance <验收标准>]");
+    throw new CliUsageError(t(locale, "cli.goal_required"));
   }
   return { goal, ...(acceptance ? { acceptance } : {}) };
 }
@@ -261,29 +323,32 @@ function parseCreateArguments(args: string[]): { goal: string; acceptance?: stri
 function resolveWorkOrder(
   workOrders: ConsoleWorkOrder[],
   reference: string,
+  locale: InterfaceLocale,
 ): ConsoleWorkOrder {
   const exact = workOrders.find((workOrder) => workOrder.id === reference);
   if (exact) return exact;
   const matches = workOrders.filter((workOrder) => workOrder.id.startsWith(reference));
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
-    throw new CliUsageError(`目标 ID 前缀“${reference}”不唯一，请多输入几位`);
+    throw new CliUsageError(t(locale, "cli.ambiguous_id", { reference }));
   }
-  throw new CliUsageError(`找不到目标：${reference}`);
+  throw new CliUsageError(t(locale, "cli.goal_not_found", { reference }));
 }
 
-function currentNode(workOrder: WorkOrder): string {
+function currentNode(workOrder: WorkOrder, locale: InterfaceLocale): string {
   const stages = workOrder.plan?.stages ?? [];
   const stage =
     stages.find((candidate) => candidate.status === "running") ??
     stages.find((candidate) => candidate.status === "response") ??
     stages.find((candidate) => candidate.status !== "completed") ??
     stages.at(-1);
-  return stage ? describeStage(stage) : workOrder.currentSummary;
+  return stage ? describeStage(stage, locale) : formatLegacyMessage(locale, workOrder.currentSummary);
 }
 
-function describeStage(stage: PlanStage): string {
-  return stage.statusReason ? `${stage.outcome}（${stage.statusReason}）` : stage.outcome;
+function describeStage(stage: PlanStage, locale: InterfaceLocale): string {
+  if (!stage.statusReason) return stage.outcome;
+  const reason = formatLegacyMessage(locale, stage.statusReason);
+  return locale === "zh-CN" ? `${stage.outcome}（${reason}）` : `${stage.outcome} (${reason})`;
 }
 
 function shortId(id: string): string {
@@ -294,13 +359,16 @@ function workOrderUrl(baseUrl: URL, id: string): string {
   return new URL(`/goals/${encodeURIComponent(id)}`, baseUrl).toString();
 }
 
-function localBaseUrl(env: Record<string, string | undefined>): URL {
+function localBaseUrl(
+  env: Record<string, string | undefined>,
+  locale: InterfaceLocale,
+): URL {
   const raw = env.TEAMLINE_URL ?? `http://127.0.0.1:${env.TEAMLINE_PORT ?? "4310"}`;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new CliUsageError(`TEAMLINE_URL 无效：${raw}`);
+    throw new CliUsageError(t(locale, "cli.invalid_url", { value: raw }));
   }
   const localHosts = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
   if (
@@ -312,20 +380,89 @@ function localBaseUrl(env: Record<string, string | undefined>): URL {
     url.search ||
     url.hash
   ) {
-    throw new CliUsageError("TEAMLINE_URL 必须是本机 HTTP 地址，例如 http://127.0.0.1:4310");
+    throw new CliUsageError(t(locale, "cli.local_url_required"));
   }
   return url;
 }
 
-function requireReference(args: string[], command: string): string {
+function requireReference(
+  args: string[],
+  command: string,
+  locale: InterfaceLocale,
+): string {
   if (args.length !== 1 || !args[0]) {
-    throw new CliUsageError(`用法：teamline ${command} <目标 ID 或唯一前缀>`);
+    throw new CliUsageError(t(locale, "cli.reference_usage", { command }));
   }
   return args[0];
 }
 
-function requireNoArguments(args: string[], command: string): void {
-  if (args.length > 0) throw new CliUsageError(`用法：teamline ${command}`);
+function requireNoArguments(
+  args: string[],
+  command: string,
+  locale: InterfaceLocale,
+): void {
+  if (args.length > 0) {
+    throw new CliUsageError(t(locale, "cli.command_usage", { command }));
+  }
+}
+
+function t(
+  locale: InterfaceLocale,
+  key: MessageKey,
+  params: MessageParams = {},
+): string {
+  return formatMessage(locale, key, params);
+}
+
+function extractLanguageOption(
+  args: string[],
+  errorLocale: InterfaceLocale,
+): { args: string[]; explicit: InterfaceLocale | null } {
+  const remaining: string[] = [];
+  let explicit: InterfaceLocale | null = null;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--lang" || argument === "--language") {
+      const value = args[index + 1];
+      const locale = normalizeLocale(value);
+      if (!locale) {
+        throw new CliUsageError(t(errorLocale, "locale.invalid", {
+          value: value ?? "",
+        }));
+      }
+      explicit = locale;
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--lang=") || argument.startsWith("--language=")) {
+      const value = argument.slice(argument.indexOf("=") + 1);
+      const locale = normalizeLocale(value);
+      if (!locale) {
+        throw new CliUsageError(t(errorLocale, "locale.invalid", { value }));
+      }
+      explicit = locale;
+      continue;
+    }
+    remaining.push(argument);
+  }
+  return { args: remaining, explicit };
+}
+
+async function readSavedLocale(
+  baseUrl: URL,
+  dependencies: CliDependencies,
+): Promise<InterfaceLocale | null> {
+  try {
+    const response = await dependencies.fetch(
+      new URL("/api/preferences/language", baseUrl),
+      { redirect: "manual" },
+    );
+    if (!response.ok) return null;
+    const body = await response.json() as { language?: unknown };
+    return normalizeLocale(body.language);
+  } catch {
+    return null;
+  }
 }
 
 export function openInBrowser(
@@ -336,7 +473,7 @@ export function openInBrowser(
   const result = spawn(["open", url]);
   if (result.exitCode !== 0) {
     const detail = result.stderr.toString().trim();
-    throw new CliRequestError(detail || "无法打开 Teamline 网页");
+    throw new CliRequestError(detail || formatMessage("en", "cli.open_failed"));
   }
 }
 

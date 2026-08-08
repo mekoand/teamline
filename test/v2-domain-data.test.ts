@@ -546,6 +546,8 @@ describe("V2 domain data", () => {
       resolveWorkspace: async (cwd: string) => cwd,
     };
 
+    dependencies.env.TEAMLINE_LANG = "zh-CN";
+
     expect(await runCli(["list"], dependencies)).toBe(0);
     expect(stdout.join("\n")).toContain("待验收  验收 CLI 输出");
     expect(stdout.join("\n")).toContain("需响应  处理 CLI 响应");
@@ -633,11 +635,12 @@ describe("V2 domain data", () => {
       await app.fetch(new Request("http://teamline.local/app.js"))
     ).text();
 
-    expect(page).toContain("<h1>目标</h1>");
+    expect(page).toContain('data-i18n="shell.goals">Goals</h1>');
+    expect(page).toContain('id="language-select"');
     expect(page).toContain('name="name"');
     expect(page).toContain('name="description"');
-    expect(script).toContain('review: "待验收"');
-    expect(script).toContain('["review", "待验收"]');
+    expect(script).toContain("visibleStatusLabels");
+    expect(script).toContain('["review", visibleStatusLabels.review]');
     expect(script).toContain("<dt>来源会话</dt>");
     expect(script).toContain("<dt>当前执行会话</dt>");
     expect(script).toContain("(?:goals|work-orders)");

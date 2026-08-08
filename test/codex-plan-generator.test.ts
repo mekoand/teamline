@@ -97,7 +97,8 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     expect(argumentsUsed.at(-1)).toContain("历史工作已经完成需求确认");
     expect(argumentsUsed.at(-1)).toContain("等待形成后续执行计划");
     expect(argumentsUsed.at(-1)).not.toContain(".jsonl");
-    expect(argumentsUsed.at(-1)).toContain("不得把当前规划使用的临时目录写入 scope");
+    expect(argumentsUsed.at(-1)).toContain("never place the temporary planning directory in scope");
+    expect(argumentsUsed.at(-1)).toContain("in Simplified Chinese");
   });
 
   test("includes bounded prior result context without local details", async () => {

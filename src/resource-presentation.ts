@@ -7,6 +7,7 @@ import type {
 } from "./resource-provider";
 import { presentExecutionIdentity, type ExecutionIdentity } from "./execution-identity";
 import type { WorkOrder } from "./work-order";
+import { semanticMessage, type SemanticMessage } from "./semantic-message";
 
 const RESOURCE_SIGNAL_FUTURE_TOLERANCE_MS = 60_000;
 export const DEFAULT_BACKUP_REMAINING_THRESHOLD_PERCENT = 10;
@@ -47,6 +48,15 @@ export function presentIdentityQuota(
           : backupStatus === "insufficient"
             ? "备用账号额度不足"
             : "备用账号额度未知",
+      backupMessage: semanticMessage(
+        current
+          ? "resource.identity.current"
+          : backupStatus === "available"
+            ? "resource.identity.backup_available"
+            : backupStatus === "insufficient"
+              ? "resource.identity.backup_insufficient"
+              : "resource.identity.backup_unknown",
+      ),
     };
   });
 }
@@ -107,9 +117,18 @@ export function presentResources(
         usageByWorkOrder.get(workOrder.id),
         snapshot.observedAt,
       ),
-      recommendation: workOrder.sourceSessions[0]?.kind === "claude_code_session"
-        ? "仅保留导入状态"
-        : recommendation(workOrder, snapshot.codex),
+      ...(() => {
+        const result = workOrder.sourceSessions[0]?.kind === "claude_code_session"
+          ? {
+              text: "仅保留导入状态",
+              message: semanticMessage("resource.recommendation.import_only"),
+            }
+          : recommendation(workOrder, snapshot.codex);
+        return {
+          recommendation: result.text,
+          recommendationMessage: result.message,
+        };
+      })(),
     })),
   };
 }
@@ -122,6 +141,7 @@ function presentWorkOrderUsage(
     return {
       status: "unavailable" as const,
       message: "当前没有可归因到这个目标的用量",
+      messageDescriptor: semanticMessage("resource.usage.unattributed"),
     };
   }
   const usageObservedAt = Date.parse(usage.observedAt);
@@ -130,6 +150,7 @@ function presentWorkOrderUsage(
     return {
       status: "unavailable" as const,
       message: "目标用量缺少有效采集时间，无法显示精确值",
+      messageDescriptor: semanticMessage("resource.usage.invalid_observed_at"),
     };
   }
   if (
@@ -143,6 +164,7 @@ function presentWorkOrderUsage(
       status: "unavailable" as const,
       observedAt: usage.observedAt,
       message: "目标用量数据无效，无法显示精确值",
+      messageDescriptor: semanticMessage("resource.usage.invalid"),
     };
   }
   const age = snapshotTime - usageObservedAt;
@@ -157,6 +179,9 @@ function presentWorkOrderUsage(
         age < 0
           ? "目标用量采集时间异常，需要重新读取后才能显示精确值"
           : "目标用量已过期，需要重新读取后才能显示精确值",
+      messageDescriptor: semanticMessage(
+        age < 0 ? "resource.usage.future" : "resource.usage.stale",
+      ),
     };
   }
   return {
@@ -171,39 +196,54 @@ function presentWorkOrderUsage(
 function recommendation(
   workOrder: ReturnType<typeof presentConsoleWorkOrders>[number],
   codex: CodexResourceSignal,
-): string {
+): { text: string; message: SemanticMessage } {
+  const result = (text: string, code: string, params: SemanticMessage["params"] = {}) => ({
+    text,
+    message: semanticMessage(code, params),
+  });
   if (workOrder.userStatus === "running") {
-    return "保持观察，运行结束后再评估";
+    return result("保持观察，运行结束后再评估", "resource.recommendation.observe_running");
   }
   if (
     workOrder.userStatus === "queued" &&
-    workOrder.statusReason === "等待可用并发位置"
+    workOrder.statusMessage.code === "status.awaiting_capacity"
   ) {
-    return "等待当前运行结束";
+    return result("等待当前运行结束", "resource.recommendation.await_capacity");
   }
-  if (workOrder.statusReason === "等待选择工作空间") {
-    return "先选择工作空间，再安排运行";
+  if (workOrder.statusMessage.code === "status.awaiting_workspace") {
+    return result("先选择工作空间，再安排运行", "resource.recommendation.select_workspace");
   }
   if (workOrder.userStatus === "response") {
-    return "先处理这个目标需要的响应";
+    return result("先处理这个目标需要的响应", "resource.recommendation.handle_response");
   }
-  if (workOrder.userStatus === "review") return "先验收这个目标";
+  if (workOrder.userStatus === "review") {
+    return result("先验收这个目标", "resource.recommendation.review");
+  }
   if (workOrder.status === "ready") {
     if (workOrder.resourcePlan.runWhenQuotaAvailable) {
       return workOrder.resourcePlan.autoRunReason
-        ? `待运行 · ${workOrder.resourcePlan.autoRunReason}`
-        : "额度满足时可自动启动一轮";
+        ? result(
+            `待运行 · ${workOrder.resourcePlan.autoRunReason}`,
+            "resource.recommendation.auto_run_waiting",
+            { reason: workOrder.resourcePlan.autoRunReason },
+          )
+        : result("额度满足时可自动启动一轮", "resource.recommendation.auto_run_ready");
     }
     if (codex.status !== "available") {
-      return "额度信号不可用，无法判断是否适合运行";
+      return result(
+        "额度信号不可用，无法判断是否适合运行",
+        "resource.recommendation.quota_unknown",
+      );
     }
     const nearlyExhausted = [codex.shortWindow, codex.longWindow]
       .filter((window) => window !== null)
       .some((window) => window.usedPercent >= 90);
     return nearlyExhausted
-      ? "额度接近上限，建议等待重置后再运行"
-      : "额度可用，可以手动启动";
+      ? result("额度接近上限，建议等待重置后再运行", "resource.recommendation.await_reset")
+      : result("额度可用，可以手动启动", "resource.recommendation.manual_start");
   }
-  if (workOrder.userStatus === "planning") return "先确认计划，再安排运行";
-  return "无需继续分配运行资源";
+  if (workOrder.userStatus === "planning") {
+    return result("先确认计划，再安排运行", "resource.recommendation.confirm_plan");
+  }
+  return result("无需继续分配运行资源", "resource.recommendation.none");
 }

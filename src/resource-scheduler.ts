@@ -5,10 +5,15 @@ import {
   type CodexResourceSignal,
 } from "./resource-provider";
 import type { WorkOrder, WorkOrderPace, WorkOrderPriority } from "./work-order";
+import {
+  semanticMessageFromLegacy,
+  type SemanticMessage,
+} from "./semantic-message";
 
 export type AutoRunDecision = {
   candidateId: string | null;
   reasons: Map<string, string | null>;
+  reasonMessages: Map<string, SemanticMessage | null>;
 };
 
 export type AutoRunIdentityContext = {
@@ -47,15 +52,14 @@ export function decideAutoRun(
         Date.parse(left.createdAt) - Date.parse(right.createdAt),
     );
   const reasons = new Map<string, string | null>();
+  const reasonMessages = new Map<string, SemanticMessage | null>();
   const capacityReached =
     workOrders.filter((workOrder) =>
       ["running", "stopping", "verifying"].includes(workOrder.runStatus ?? ""),
     ).length >= maxConcurrency;
 
   for (const workOrder of enabled) {
-    reasons.set(
-      workOrder.id,
-      blockingReason(
+    const reason = blockingReason(
         workOrder,
         workOrders,
         quotaForWorkOrder(workOrder, codex, identityContext),
@@ -63,24 +67,27 @@ export function decideAutoRun(
         now,
         identityBlockingReason(workOrder, identityContext),
         identityContext?.paidFallbackReasons,
-      ),
+      );
+    reasons.set(workOrder.id, reason);
+    reasonMessages.set(
+      workOrder.id,
+      reason === null ? null : semanticMessageFromLegacy(reason),
     );
   }
 
   const candidate = enabled.find((workOrder) => reasons.get(workOrder.id) === null);
-  if (!candidate) return { candidateId: null, reasons };
+  if (!candidate) return { candidateId: null, reasons, reasonMessages };
 
   for (const workOrder of enabled) {
     if (workOrder.id === candidate.id || reasons.get(workOrder.id) !== null) continue;
-    reasons.set(
-      workOrder.id,
-      priorityRank[workOrder.resourcePlan.priority] >
+    const reason = priorityRank[workOrder.resourcePlan.priority] >
         priorityRank[candidate.resourcePlan.priority]
         ? "等待更高优先级目标"
-        : "等待本轮资源位置",
-    );
+        : "等待本轮资源位置";
+    reasons.set(workOrder.id, reason);
+    reasonMessages.set(workOrder.id, semanticMessageFromLegacy(reason));
   }
-  return { candidateId: candidate.id, reasons };
+  return { candidateId: candidate.id, reasons, reasonMessages };
 }
 
 function blockingReason(
@@ -100,8 +107,8 @@ function blockingReason(
   if (hasRunnableExternalStage(workOrder)) return "等待完成外部节点";
   if (workOrder.status === "interrupted") {
     if (
-      workOrder.currentSummary.includes("最长运行时间") ||
-      workOrder.currentSummary.includes("本轮上限")
+      semanticMessageFromLegacy(workOrder.currentSummary).code ===
+        "status.run_limit_reached"
     ) {
       return "已达到本轮上限，等待继续";
     }

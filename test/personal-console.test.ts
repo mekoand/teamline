@@ -56,12 +56,12 @@ describe("personal console", () => {
     expect(page).toContain('id="open-projects"');
     expect(projectsPageResponse.status).toBe(200);
     expect(script).toContain("renderAllGoalsWorkspace");
-    expect(script).toContain('["response", "需响应"]');
-    expect(script).toContain('["review", "待验收"]');
-    expect(script).toContain('["running", "运行中"]');
-    expect(script).toContain('["planning", "规划中"]');
-    expect(script).toContain('["queued", "待运行"]');
-    expect(script).toContain('["completed", "已完成"]');
+    expect(script).toContain('["response", visibleStatusLabels.response]');
+    expect(script).toContain('["review", visibleStatusLabels.review]');
+    expect(script).toContain('["running", visibleStatusLabels.running]');
+    expect(script).toContain('["planning", visibleStatusLabels.planning]');
+    expect(script).toContain('["queued", visibleStatusLabels.queued]');
+    expect(script).toContain('["completed", visibleStatusLabels.completed]');
     expect(script).toContain('data-home-status="${status}"');
     expect(script).toContain('id="open-create-home"');
     expect(script).toContain('id="open-session-import-home"');
@@ -285,7 +285,7 @@ describe("personal console", () => {
     expect(script).toContain('id="max-concurrency"');
     expect(script).toContain('id="goal-resource-form"');
     expect(script).toContain("资源设置 ·");
-    expect(script).toContain('presentation.reason === "等待可用并发位置"');
+    expect(script).toContain('presentation.message.code === "status.awaiting_capacity"');
     expect(script).not.toContain(
       'const queued = visibleStatus(workOrder, state.workOrders).status === "queued"',
     );

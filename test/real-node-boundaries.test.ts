@@ -119,9 +119,9 @@ describe("real AI node boundaries", () => {
       runNumber: 3,
       plan: {
         stages: [
-          { id: "A", status: "completed" },
-          { id: "B", status: "completed" },
-          { id: "C", status: "completed" },
+          { id: "A", status: "completed", pendingVerification: false },
+          { id: "B", status: "completed", pendingVerification: false },
+          { id: "C", status: "completed", pendingVerification: false },
         ],
       },
       result: {
@@ -198,7 +198,7 @@ describe("real AI node boundaries", () => {
       expect(invocations[2]).not.toContain("ALPHA_ONLY");
       expect(invocations[2]).not.toContain("BETA_ONLY");
       for (const invocation of invocations) {
-        expect(invocation).toContain("完成当前节点后退出");
+        expect(invocation).toContain("exit when this node is complete");
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });

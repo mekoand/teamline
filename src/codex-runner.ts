@@ -1,6 +1,7 @@
 import type { WorkOrder } from "./work-order";
 import type { ExecutionIdentity } from "./execution-identity";
 import { codexProcessEnvironment } from "./codex-environment";
+import { workingLanguageInstruction } from "./working-language";
 
 export type CodexRunEvent =
   | { type: "session"; sessionId: string }
@@ -42,6 +43,8 @@ export type StartedCodexRun = {
 };
 
 export type CodexBillingMode = "subscription" | "paid_api";
+
+export class CodexCommandNotFoundError extends Error {}
 
 export interface CodexRunner {
   start(input: {
@@ -113,7 +116,7 @@ export class CodexExecutionRunner implements CodexRunner {
       };
     } catch (error) {
       if (isMissingCommand(error)) {
-        throw new Error("找不到 Codex，请先安装并登录 Codex");
+        throw new CodexCommandNotFoundError("找不到 Codex，请先安装并登录 Codex");
       }
       throw new Error("Codex 无法启动，请确认本机 Codex 安装和配置后重试");
     }
@@ -159,7 +162,7 @@ export class CodexExecutionRunner implements CodexRunner {
       };
     } catch (error) {
       if (isMissingCommand(error)) {
-        throw new Error("找不到 Codex，请先安装并登录 Codex");
+        throw new CodexCommandNotFoundError("找不到 Codex，请先安装并登录 Codex");
       }
       throw new Error("Codex 无法继续，请确认本机 Codex 安装和配置后重试");
     }
@@ -349,7 +352,7 @@ function codexFailureMessage(stderr: string): string {
   return "Codex 运行失败，请检查本机 Codex 配置后重试";
 }
 
-function buildExecutionPrompt(
+export function buildExecutionPrompt(
   workOrder: WorkOrder,
   continuation?: ContinuationContext,
 ): string {
@@ -357,34 +360,34 @@ function buildExecutionPrompt(
     .filter((stage) => stage.executionMethod === "codex")
     .map(
       (stage, index) =>
-        `${index + 1}. 节点：${stage.id}\n   目标结果：${stage.outcome}\n   前置节点：${stage.dependsOn.length ? stage.dependsOn.join("、") : "无"}\n   执行方式：${stage.executionMethod === "external" ? "外部工作" : "Codex AI 执行"}\n   工作空间：${stage.workspace.path || stage.workspace.kind}\n   影响范围：${stage.scope}\n   验证方式：${stage.verification}\n   自动验证命令：${stage.verificationCommand || "未配置"}\n   补充上下文：${stage.contextNotes?.length ? stage.contextNotes.join("；") : "无"}`,
+        `${index + 1}. Node: ${stage.id}\n   Outcome: ${stage.outcome}\n   Dependencies: ${stage.dependsOn.length ? stage.dependsOn.join(", ") : "none"}\n   Execution method: Codex AI\n   Workspace: ${stage.workspace.path || stage.workspace.kind}\n   Scope: ${stage.scope}\n   Verification: ${stage.verification}\n   Automatic verification command: ${stage.verificationCommand || "not configured"}\n   Additional context: ${stage.contextNotes?.length ? stage.contextNotes.join("; ") : "none"}`,
     )
     .join("\n");
   const acceptance = workOrder.acceptance
-    ? `\n完成要求：\n${workOrder.acceptance}`
+    ? `\nAcceptance criteria:\n${workOrder.acceptance}`
     : "";
   const revision = workOrder.revisionNote
-    ? `\n补充要求：\n${workOrder.revisionNote}`
+    ? `\nAdditional requirement:\n${workOrder.revisionNote}`
     : "";
   const materials = workOrder.materials.length
-    ? `\n参考素材：\n${workOrder.materials
+    ? `\nReference materials:\n${workOrder.materials
         .map((material) => `- ${material.kind}: ${material.value}`)
         .join("\n")}`
     : "";
 
   const currentContext = continuation
-    ? `\n\n这是从已中断现场启动的新执行。\n最近进展：\n${
+    ? `\n\nThis is a new execution started from interrupted work.\nRecent progress:\n${
         continuation.recentProgress.length
           ? continuation.recentProgress.map((message) => `- ${message}`).join("\n")
-          : "暂无已保存进展"
-      }\n\n当前工作空间状态：\n${continuation.gitStatus || "工作区干净"}${
+          : "No saved progress"
+      }\n\nCurrent workspace state:\n${continuation.gitStatus || "Workspace is clean"}${
         continuation.reexecuteStage
-          ? `\n\n当前现场已恢复到最近完整检查点。只重新执行当前节点“${continuation.reexecuteStage.outcome}”（${continuation.reexecuteStage.id}），不要重做已经完成的节点。`
+          ? `\n\nThe workspace was restored to the latest complete checkpoint. Re-execute only the current node "${continuation.reexecuteStage.outcome}" (${continuation.reexecuteStage.id}); do not redo completed nodes.`
           : ""
       }`
     : "";
   const sessionHandoff = workOrder.sessionHandoff
-    ? `\n\n这是确认切换 Codex 账号后的新会话，不要恢复旧线程。\n此前进展：${workOrder.sessionHandoff.summary || "暂无摘要"}\n当前节点：${workOrder.sessionHandoff.currentStageOutcome ?? "等待继续"}${
+    ? `\n\nThis is a new session after a confirmed Codex account switch. Do not resume the old thread.\nPrior progress: ${workOrder.sessionHandoff.summary || "No summary"}\nCurrent node: ${workOrder.sessionHandoff.currentStageOutcome ?? "Waiting to continue"}${
         workOrder.sessionHandoff.currentStageId
           ? `（${workOrder.sessionHandoff.currentStageId}）`
           : ""
@@ -393,9 +396,9 @@ function buildExecutionPrompt(
 
   const workspaceRule =
     workOrder.workspace?.kind === "directory"
-      ? "请在用户明确选择的当前本地文件夹中完成以下已确认的工作目标。"
-      : "请在当前独立 Git worktree 中完成以下已确认的工作目标。";
-  return `${workspaceRule}不要修改工作区之外的文件。\n\n工作目标：\n${workOrder.goal}${acceptance}${revision}${materials}\n\n当前 AI 节点：\n${stages ?? "未提供"}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。\n\n进展提示（可选，每条单独一行）：\n- TEAMLINE_STAGE_START:<节点 ID>\n- TEAMLINE_STAGE_COMPLETE:<节点 ID>\n- TEAMLINE_NEEDS_RESPONSE:<需要用户补充的内容>\n- TEAMLINE_SUGGEST_STAGE:<建议增加的节点>\n这些提示只用于展示；Teamline 仍会根据实际启动、退出和验证结果决定节点状态，新增节点也需要用户确认。${sessionHandoff}${currentContext}`;
+      ? "Complete the confirmed goal in the local directory explicitly selected by the user."
+      : "Complete the confirmed goal in the current isolated Git worktree.";
+  return `${workspaceRule} Do not modify files outside the workspace.\n\nLanguage contract:\n${workingLanguageInstruction(workOrder)}\n\nGoal:\n${workOrder.goal}${acceptance}${revision}${materials}\n\nCurrent AI node:\n${stages || "Not provided"}\n\nComplete only the current node. Do not start any other planned node, and exit when this node is complete.\n\nOptional progress markers, each on its own line:\n- TEAMLINE_STAGE_START:<node ID>\n- TEAMLINE_STAGE_COMPLETE:<node ID>\n- TEAMLINE_NEEDS_RESPONSE:<what the user must provide>\n- TEAMLINE_SUGGEST_STAGE:<suggested node>\nThese markers are display hints only. Teamline determines node state from actual start, exit, and verification evidence; a proposed node also requires user confirmation.${sessionHandoff}${currentContext}`;
 }
 
 export function buildResumePrompt(workOrder: WorkOrder): string {
@@ -407,17 +410,17 @@ export function buildResumePrompt(workOrder: WorkOrder): string {
     (candidate) => candidate.executionMethod === "codex",
   );
   const revision = workOrder.revisionNote
-    ? `\n补充要求：\n${workOrder.revisionNote}`
+    ? `\nAdditional requirement:\n${workOrder.revisionNote}`
     : "";
   const materials = workOrder.materials.length
-    ? `\n参考素材：\n${workOrder.materials
+    ? `\nReference materials:\n${workOrder.materials
         .map((material) => `- ${material.kind}: ${material.value}`)
         .join("\n")}`
     : "";
   const stageContext = stage
-    ? `\n\n当前 AI 节点：\n节点：${stage.id}\n目标结果：${stage.outcome}\n影响范围：${stage.scope}\n验证方式：${stage.verification}\n补充上下文：${stage.contextNotes?.length ? stage.contextNotes.join("；") : "无"}`
+    ? `\n\nCurrent AI node:\nNode: ${stage.id}\nOutcome: ${stage.outcome}\nScope: ${stage.scope}\nVerification: ${stage.verification}\nAdditional context: ${stage.contextNotes?.length ? stage.contextNotes.join("; ") : "none"}`
     : "";
-  return `请继续推进已确认的工作目标：${workOrder.goal}${revision}${materials}${stageContext}\n\n只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出。需要时可单独输出 TEAMLINE_STAGE_START:<节点 ID>、TEAMLINE_STAGE_COMPLETE:<节点 ID>、TEAMLINE_NEEDS_RESPONSE:<内容> 或 TEAMLINE_SUGGEST_STAGE:<建议>。这些提示只用于展示，不决定节点状态。`;
+  return `Continue the confirmed goal: ${workOrder.goal}${revision}${materials}${stageContext}\n\nLanguage contract:\n${workingLanguageInstruction(workOrder)}\n\nComplete only the current node. Do not start another planned node, and exit when this node is complete. When useful, output TEAMLINE_STAGE_START:<node ID>, TEAMLINE_STAGE_COMPLETE:<node ID>, TEAMLINE_NEEDS_RESPONSE:<content>, or TEAMLINE_SUGGEST_STAGE:<suggestion> on a line by itself. These are display hints and do not determine node state.`;
 }
 
 function readableEventType(type: string): string {
