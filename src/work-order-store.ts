@@ -4360,7 +4360,15 @@ function mergeResults(
   current: WorkOrderResult,
   pruneMissingDirectoryArtifacts = false,
 ): WorkOrderResult {
-  if (!previous || previous.planVersion !== current.planVersion) return current;
+  if (!previous) return current;
+  const artifacts = mergeResultArtifacts(
+    previous.artifacts,
+    current.artifacts,
+    pruneMissingDirectoryArtifacts,
+  );
+  if (previous.planVersion !== current.planVersion) {
+    return { ...current, artifacts };
+  }
   const byStage = new Map(
     previous.verifications.map((verification) => [verification.stageId, verification]),
   );
@@ -4369,11 +4377,7 @@ function mergeResults(
   }
   return {
     ...current,
-    artifacts: mergeResultArtifacts(
-      previous.artifacts,
-      current.artifacts,
-      pruneMissingDirectoryArtifacts,
-    ),
+    artifacts,
     verifications: [...byStage.values()],
   };
 }
