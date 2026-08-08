@@ -164,6 +164,41 @@ describe("personal console", () => {
     expect(styles).toContain(".primary-action-slot .context-action");
   });
 
+  test("uses the shared inspector for selected project and resource details", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [script, styles] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
+    ]);
+
+    expect(script).toContain('state.inspector.open ? renderProjectContext() : ""');
+    expect(script).toContain('state.inspector.open ? renderResourceContext() : ""');
+    expect(script).toContain('type: "project-material"');
+    expect(script).toContain('type: "project-result"');
+    expect(script).toContain('type: "resource-account"');
+    expect(script).toContain('type: "resource-work-order"');
+    expect(script).toContain('data-project-material-id=');
+    expect(script).toContain('data-project-result-id=');
+    expect(script).toContain('data-resource-account-id=');
+    expect(script).toContain('data-resource-work-order-id=');
+    expect(script).toContain("可归因用量");
+    expect(script).not.toContain("<h2>当前安排</h2>");
+    expect(script).not.toContain("<summary>数据来源与口径</summary>");
+    expect(styles).toContain(".inspector-selection-button");
+    expect(styles).toContain(".context-quota-windows");
+  });
+
+  test("clears a goal inspector before opening resources from the quota summary", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+    const summaryStart = script.indexOf("function renderResourceSummary()");
+    const summaryEnd = script.indexOf("function renderTopbarAccountQuota", summaryStart);
+    const summaryRenderer = script.slice(summaryStart, summaryEnd);
+
+    expect(summaryRenderer.match(/resetGoalSelection\(\)/g)).toHaveLength(2);
+    expect(summaryRenderer).toContain('history.pushState({}, "", "/resources")');
+  });
+
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const [pageResponse, scriptResponse] = await Promise.all([
@@ -357,14 +392,15 @@ describe("personal console", () => {
     expect(script).not.toContain("data-continue-imported-goal");
   });
 
-  test("keeps resource provenance secondary to quota and work-order allocation", async () => {
+  test("keeps resource provenance secondary and out of the default workspace", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
 
     expect(script).toContain("额度状态");
     expect(script).toContain("目标资源");
-    expect(script).toContain('<details class="resource-details">');
-    expect(script).toContain("数据来源与口径");
+    expect(script).not.toContain('<details class="resource-details">');
+    expect(script).not.toContain("数据来源与口径");
+    expect(script).toContain("用量更新于");
     expect(script).not.toContain("可靠性优先");
     expect(script).not.toContain("不推测某个节点正在运行");
   });

@@ -665,13 +665,13 @@ function renderConsole(feedback = "") {
   }
   if (isProjectsView()) {
     workspaceElement.innerHTML = renderProjectsWorkspace();
-    contextElement.innerHTML = "";
+    contextElement.innerHTML = state.inspector.open ? renderProjectContext() : "";
     bindOverviewEvents();
     return;
   }
   if (isResourceView()) {
     workspaceElement.innerHTML = renderResourceWorkspace();
-    contextElement.innerHTML = "";
+    contextElement.innerHTML = state.inspector.open ? renderResourceContext() : "";
     document.querySelector("#retry-resources")?.addEventListener("click", () => {
       state.resourceError = "";
       state.resources = null;
@@ -948,14 +948,14 @@ function renderProjectGoalRow(goal) {
 }
 
 function renderProjectMaterialCard(material) {
-  return `<article class="project-material-card"><span>${escapeHtml(projectMaterialKindLabel(material.kind))}${material.sourceGoalId ? " · 来自目标" : ""}</span><strong>${escapeHtml(material.label)}</strong><code>${escapeHtml(material.kind === "text" ? truncateText(material.value, 64) : shortPath(material.value))}</code></article>`;
+  return `<button class="project-material-card" data-project-material-id="${escapeHtml(material.id)}" type="button"><span>${escapeHtml(projectMaterialKindLabel(material.kind))}${material.sourceGoalId ? " · 来自目标" : ""}</span><strong>${escapeHtml(material.label)}</strong><code>${escapeHtml(material.kind === "text" ? truncateText(material.value, 64) : shortPath(material.value))}</code></button>`;
 }
 
 function renderProjectResultCard(result) {
   const goal = state.workOrders.find((candidate) => candidate.id === result.workOrderId);
   const presentation = goal ? visibleStatus(goal, state.workOrders) : { status: "completed", reason: "已产生结果" };
   const artifact = result.artifacts?.[0];
-  return `<button class="project-result-card" data-work-order-id="${escapeHtml(result.workOrderId)}" type="button"><span>${escapeHtml(visibleStatusLabels[presentation.status] || presentation.reason)}</span><strong>${escapeHtml(result.title)}</strong><p>${escapeHtml(artifact?.label || result.gitSummary || result.summary)}</p></button>`;
+  return `<button class="project-result-card" data-project-result-id="${escapeHtml(result.workOrderId)}" type="button"><span>${escapeHtml(visibleStatusLabels[presentation.status] || presentation.reason)}</span><strong>${escapeHtml(result.title)}</strong><p>${escapeHtml(artifact?.label || result.gitSummary || result.summary)}</p></button>`;
 }
 
 function bindOverviewEvents() {
@@ -1000,9 +1000,25 @@ function bindOverviewEvents() {
     document.querySelector("#create-project-select").value = state.projectDetail.project.id;
     void refreshCreateProjectMaterials();
   });
-  document.querySelectorAll(".project-goal-row, .project-result-card").forEach((button) => {
+  document.querySelectorAll(".project-goal-row").forEach((button) => {
     button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
   });
+  document.querySelectorAll("[data-project-material-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openContextInspector({ type: "project-material", id: button.dataset.projectMaterialId });
+      renderConsole();
+    });
+  });
+  document.querySelectorAll("[data-project-result-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openContextInspector({ type: "project-result", id: button.dataset.projectResultId });
+      renderConsole();
+    });
+  });
+  document.querySelector("[data-open-project-result-goal]")?.addEventListener("click", (event) => {
+    selectWorkOrder(event.currentTarget.dataset.openProjectResultGoal);
+  });
+  document.querySelector("#close-context-inspector")?.addEventListener("click", dismissContextInspector);
   document.querySelector("#project-material-form [name=kind]")?.addEventListener("change", toggleProjectMaterialValue);
   document.querySelector("#project-material-form")?.addEventListener("submit", createProjectMaterial);
   document.querySelector("#project-upload-form")?.addEventListener("submit", uploadProjectMaterial);
@@ -1032,6 +1048,54 @@ function openProject(id) {
   state.projectDetail = null;
   state.inspector = clearContextInspector();
   refreshConsole();
+}
+
+function renderProjectContext() {
+  const selection = state.inspector.selection;
+  if (!selection || !state.projectDetail) return renderUnavailableContext();
+  if (selection.type === "project-material") {
+    const material = state.projectDetail.materials.find((candidate) => candidate.id === selection.id);
+    if (!material) return renderUnavailableContext();
+    const sourceGoal = material.sourceGoalId
+      ? state.workOrders.find((goal) => goal.id === material.sourceGoalId)
+      : null;
+    return `
+      <section class="context-content">
+        <div class="context-heading">
+          <div><p class="overline">项目素材</p><h2>${escapeHtml(material.label)}</h2></div>
+          ${renderContextCloseButton()}
+        </div>
+        <dl class="context-list">
+          <div><dt>类型</dt><dd>${escapeHtml(projectMaterialKindLabel(material.kind))}</dd></div>
+          <div><dt>来源</dt><dd>${escapeHtml(sourceGoal ? `目标 · ${sourceGoal.name}` : "项目内添加")}</dd></div>
+          <div><dt>更新于</dt><dd>${formatDate(material.updatedAt)}</dd></div>
+        </dl>
+        <div class="context-section project-context-value">
+          <span>${material.kind === "text" ? "内容" : material.kind === "goal" ? "引用目标" : "位置"}</span>
+          ${material.kind === "text" || material.kind === "goal"
+            ? `<p>${escapeHtml(material.kind === "goal" ? sourceGoal?.name || "原目标已不可用" : material.value)}</p>`
+            : `<code>${escapeHtml(material.value)}</code>`}
+        </div>
+      </section>`;
+  }
+  if (selection.type === "project-result") {
+    const result = state.projectDetail.results.find((candidate) => candidate.workOrderId === selection.id);
+    if (!result) return renderUnavailableContext();
+    return `
+      <section class="context-content">
+        <div class="context-heading">
+          <div><p class="overline">项目成果</p><h2>${escapeHtml(result.title)}</h2></div>
+          ${renderContextCloseButton()}
+        </div>
+        <p class="context-summary">${escapeHtml(result.summary)}</p>
+        ${result.gitSummary ? `<div class="context-section"><span>文件变化</span><p>${escapeHtml(result.gitSummary)}</p></div>` : ""}
+        ${result.artifacts?.length
+          ? `<div class="context-section"><span>成果位置</span><ul class="context-reference-list">${result.artifacts.map((artifact) => `<li><strong>${escapeHtml(artifact.label || shortPath(artifact.location))}</strong><code>${escapeHtml(artifact.location)}</code></li>`).join("")}</ul></div>`
+          : ""}
+        <div class="context-section"><button class="secondary-button" type="button" data-open-project-result-goal="${escapeHtml(result.workOrderId)}">查看目标</button></div>
+      </section>`;
+  }
+  return renderUnavailableContext();
 }
 
 function openProjects() {
@@ -1095,6 +1159,7 @@ function renderResourceSummary() {
       : "<span>Codex 额度正在读取…</span>";
     resourceSummaryElement.querySelector("button")?.addEventListener("click", () => {
       history.pushState({}, "", "/resources");
+      resetGoalSelection();
       renderConsole();
     });
     return;
@@ -1121,6 +1186,7 @@ function renderResourceSummary() {
   resourceSummaryElement.querySelector("[data-open-resource-summary]")?.addEventListener("click", () => {
     resourceSummaryElement.querySelector(".topbar-quota-control")?.removeAttribute("open");
     history.pushState({}, "", "/resources");
+    resetGoalSelection();
     renderConsole();
   });
 }
@@ -1209,10 +1275,10 @@ function renderCodexAccountQuota(accounts) {
           const login = state.identityLoginStates[identity.id];
           return `
           <article class="identity-quota-row">
-            <div class="identity-quota-heading">
+            <button class="identity-quota-heading inspector-selection-button" type="button" data-resource-account-id="${escapeHtml(identity.id)}">
               <div><strong>${escapeHtml(identity.label)}</strong><small>${resourceStatusLabel(quota.status)}</small></div>
               <span class="status-pill ${backupStatus === "available" ? "running" : backupStatus === "unknown" ? "response" : "queued"}">${escapeHtml(compactBackupLabel(backupLabel))}</span>
-            </div>
+            </button>
             <div class="quota-windows compact">
               ${renderQuotaWindow("5 小时", quota.shortWindow)}
               ${renderQuotaWindow("周额度", quota.longWindow)}
@@ -1276,7 +1342,7 @@ function renderResourceOrder(workOrder) {
     : escapeHtml(workOrder.usage.message || "不可用");
   return `
     <article class="resource-order-row">
-      <div class="resource-order-title"><span class="status-dot ${workOrder.status}"></span><div><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></div></div>
+      <button class="resource-order-title inspector-selection-button" type="button" data-resource-work-order-id="${escapeHtml(workOrder.id)}"><span class="status-dot ${workOrder.status}"></span><span><strong>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></span><i class="row-arrow" aria-hidden="true">›</i></button>
       <dl>
         ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
           ["high", "优先推进"],
@@ -1325,6 +1391,19 @@ function bindResourceEvents() {
   document.querySelectorAll("[data-refresh-identity]").forEach((button) => {
     button.addEventListener("click", () => refreshExecutionIdentity(button.dataset.refreshIdentity, button));
   });
+  document.querySelectorAll("[data-resource-account-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openContextInspector({ type: "resource-account", id: button.dataset.resourceAccountId });
+      renderConsole();
+    });
+  });
+  document.querySelectorAll("[data-resource-work-order-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openContextInspector({ type: "resource-work-order", id: button.dataset.resourceWorkOrderId });
+      renderConsole();
+    });
+  });
+  document.querySelector("#close-context-inspector")?.addEventListener("click", dismissContextInspector);
 }
 
 async function clearPaidApiPending(event) {
@@ -1583,30 +1662,62 @@ async function savePaidApiBudget(event) {
 
 function renderResourceContext() {
   if (state.resourceError) {
-    return `<section class="context-empty"><p class="overline">资源详情</p><h2>稍后重试</h2><p>目标不受影响，可以继续处理。</p></section>`;
+    return `<section class="context-content context-empty"><div class="context-heading"><div><p class="overline">资源详情</p><h2>稍后重试</h2></div>${renderContextCloseButton()}</div><p>目标不受影响，可以继续处理。</p></section>`;
   }
   const resources = state.resources;
   if (!resources) return '<div class="loading-state">正在准备资源详情…</div>';
-  const api = resources.openaiApi;
-  const workOrders = resources?.workOrders ?? [];
-  const autoRunCount = workOrders.filter((workOrder) => workOrder.runWhenQuotaAvailable).length;
-  const highPriorityCount = workOrders.filter((workOrder) => workOrder.priority === "high").length;
-  return `
-    <section class="context-content">
-      <div class="context-heading"><div><p class="overline">资源详情</p><h2>当前安排</h2></div></div>
-      <dl class="context-list resource-summary-list">
-        <div><dt>运行中</dt><dd>${resources?.runningCount ?? 0} 项</dd></div>
-        <div><dt>优先推进</dt><dd>${highPriorityCount} 项</dd></div>
-        <div><dt>自动运行</dt><dd>${autoRunCount} 项</dd></div>
-      </dl>
-      <p class="context-summary resource-next-step">在“目标资源”中调整优先级、执行节奏和自动运行。</p>
-      <details class="resource-details">
-        <summary>数据来源与口径</summary>
-        <p>Codex 额度来自本地接口，采集于 ${formatDate(resources.codex.observedAt)}；读取失败时显示“不可用”。</p>
-        <p>${escapeHtml(api?.message || "OpenAI API 用量为可选连接。")}</p>
-        <p>账户聚合用量不会自动归入具体目标。</p>
-      </details>
-    </section>`;
+  const selection = state.inspector.selection;
+  if (!selection) return renderUnavailableContext();
+  if (selection.type === "resource-account") {
+    const account = resources.codexAccounts?.find(({ identity }) => identity.id === selection.id);
+    if (!account) return renderUnavailableContext();
+    const { identity, quota, backupLabel } = account;
+    return `
+      <section class="context-content">
+        <div class="context-heading">
+          <div><p class="overline">Codex 账号</p><h2>${escapeHtml(identity.label)}</h2></div>
+          ${renderContextCloseButton()}
+        </div>
+        <dl class="context-list">
+          <div><dt>可用状态</dt><dd>${escapeHtml(resourceStatusLabel(quota.status))}</dd></div>
+          <div><dt>当前用途</dt><dd>${escapeHtml(compactBackupLabel(backupLabel))}</dd></div>
+          <div><dt>登录状态</dt><dd>${escapeHtml(identityLoginMessage(state.identityLoginStates[identity.id], identity))}</dd></div>
+          <div><dt>更新于</dt><dd>${formatDate(quota.observedAt)}</dd></div>
+        </dl>
+        <div class="quota-windows context-quota-windows">
+          ${renderQuotaWindow("5 小时", quota.shortWindow)}
+          ${renderQuotaWindow("周额度", quota.longWindow)}
+        </div>
+        ${quota.message ? `<p class="context-summary">${escapeHtml(quota.message)}</p>` : ""}
+      </section>`;
+  }
+  if (selection.type === "resource-work-order") {
+    const resourceGoal = resources.workOrders.find((workOrder) => workOrder.id === selection.id);
+    if (!resourceGoal) return renderUnavailableContext();
+    const goal = state.workOrders.find((workOrder) => workOrder.id === resourceGoal.id);
+    const identityId = goal?.executionIdentityId ?? state.executionIdentities.defaultIdentityId;
+    const identity = state.executionIdentities.identities.find((candidate) => candidate.id === identityId);
+    const usage = resourceGoal.usage.status === "available"
+      ? formatUsage(resourceGoal.usage)
+      : resourceGoal.usage.message || "不可用";
+    return `
+      <section class="context-content">
+        <div class="context-heading">
+          <div><p class="overline">目标资源</p><h2>${escapeHtml(resourceGoal.title)}</h2></div>
+          ${renderContextCloseButton()}
+        </div>
+        <dl class="context-list">
+          <div><dt>账号</dt><dd>${escapeHtml(identity?.label || "未指定")}</dd></div>
+          <div><dt>优先级</dt><dd>${escapeHtml(resourcePriorityLabel(resourceGoal.priority))}</dd></div>
+          <div><dt>执行节奏</dt><dd>${escapeHtml(resourcePaceLabel(resourceGoal.pace))}</dd></div>
+          <div><dt>单轮上限</dt><dd>${escapeHtml(formatRunLimit(resourceGoal.maxRunMinutes))}</dd></div>
+          <div><dt>可归因用量</dt><dd>${escapeHtml(usage)}</dd></div>
+          ${resourceGoal.usage.observedAt ? `<div><dt>用量更新于</dt><dd>${formatDate(resourceGoal.usage.observedAt)}</dd></div>` : ""}
+        </dl>
+        <p class="context-summary">${escapeHtml(resourceGoal.recommendation)}</p>
+      </section>`;
+  }
+  return renderUnavailableContext();
 }
 
 function renderOrderRow(workOrder) {
