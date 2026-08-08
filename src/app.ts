@@ -123,6 +123,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     path: "public/context-inspector.js",
     type: "text/javascript; charset=utf-8",
   },
+  "/goal-workbench.js": {
+    path: "public/goal-workbench.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/result-artifacts.js": {
     path: "public/result-artifacts.js",
     type: "text/javascript; charset=utf-8",
@@ -253,7 +257,9 @@ export function createApp({
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const generated = await Promise.race([
-      planGenerator.generate(planningInput, controller.signal),
+      planGenerator.generate(planningInput, controller.signal, {
+        reasoningEffort: pendingReply && workOrder.pendingClarification ? "high" : "medium",
+      }),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
@@ -3195,7 +3201,7 @@ export function createApp({
       );
       if (request.method === "POST" && generatePlanMatch) {
         const id = decodeURIComponent(generatePlanMatch[1]);
-        const workOrder = store.get(id);
+        let workOrder = store.get(id);
         if (!workOrder) {
           return Response.json(
             { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
@@ -3204,6 +3210,12 @@ export function createApp({
         }
         if (isImportOnlyWorkOrder(workOrder)) {
           return importOnlyResponse();
+        }
+        if (workOrder.importContext && workOrder.importContext.status !== "ready") {
+          return Response.json(
+            { code: "WORK_ORDER_IMPORT_NOT_READY", error: "来源会话整理完成后才能生成计划" },
+            { status: 409 },
+          );
         }
         if (!planIsEditable(workOrder)) {
           return Response.json(
@@ -3227,8 +3239,11 @@ export function createApp({
         planningWorkOrderIds.add(id);
         try {
           const body = request.headers.get("content-type")?.includes("application/json")
-            ? await request.json() as { continuationNote?: unknown }
+            ? await request.json() as { continuationNote?: unknown; goal?: unknown }
             : {};
+          if (typeof body.goal === "string") {
+            workOrder = store.updatePlanningGoal(id, body.goal);
+          }
           const continuationNote = typeof body.continuationNote === "string"
             ? body.continuationNote.trim() || undefined
             : undefined;

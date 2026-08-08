@@ -1863,6 +1863,24 @@ export class WorkOrderStore {
     return this.get(id)!;
   }
 
+  updatePlanningGoal(id: string, goalInput: string): WorkOrder {
+    const workOrder = this.get(id);
+    if (!workOrder) throw new Error("找不到这个目标");
+    if (!workOrder.importContext) throw new Error("只有导入目标可以在这里修改一句话目标");
+    if (workOrder.runStatus !== null || !["draft", "ready"].includes(workOrder.status)) {
+      throw new PlanLockedError("目标开始执行后不能直接修改一句话目标");
+    }
+    const goal = publicPlanningText(goalInput.trim());
+    if (!goal) throw new Error("请填写一句话目标");
+    if (goal.length > 500) throw new Error("一句话目标请控制在 500 字以内");
+    if (goal === workOrder.goal) return workOrder;
+    const now = new Date().toISOString();
+    this.database
+      .query("UPDATE work_orders SET goal = ?, updated_at = ? WHERE id = ?")
+      .run(goal, now, id);
+    return this.get(id)!;
+  }
+
   applyGeneratedPlan(
     id: string,
     generated: {

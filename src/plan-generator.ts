@@ -22,6 +22,14 @@ export type GeneratedPlan = {
   };
 };
 
+export type PlanGenerationOptions = {
+  reasoningEffort?: "medium" | "high";
+};
+
 export interface PlanGenerator {
-  generate(workOrder: WorkOrder, signal?: AbortSignal): Promise<GeneratedPlan>;
+  generate(
+    workOrder: WorkOrder,
+    signal?: AbortSignal,
+    options?: PlanGenerationOptions,
+  ): Promise<GeneratedPlan>;
 }

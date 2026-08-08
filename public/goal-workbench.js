@@ -1,0 +1,22 @@
+export function defaultGoalWorkbenchView(status) {
+  if (status === "response") return "conversation";
+  if (status === "review" || status === "completed") return "result";
+  return "progress";
+}
+
+export function visibleGoalConversation(messages) {
+  return (messages ?? []).filter((message) =>
+    message.role === "user"
+      ? message.kind === "reply" || message.kind === "supplement"
+      : message.kind === "question" || message.kind === "decision",
+  );
+}
+
+export function completedGoalHighlights(workOrder) {
+  const imported = workOrder.importContext?.completedHighlights ?? [];
+  const executed = (workOrder.plan?.stages ?? [])
+    .filter((stage) => stage.status === "completed")
+    .map((stage) => stage.outcome);
+  return [...new Set([...executed, ...imported].map((item) => item?.trim()).filter(Boolean))]
+    .slice(0, 3);
+}

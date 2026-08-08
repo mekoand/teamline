@@ -149,7 +149,7 @@ describe("personal console", () => {
     const mapEnd = script.indexOf("function renderMapNode", mapStart);
     const mapRenderer = script.slice(mapStart, mapEnd);
     expect(script).toContain('<div class="primary-action-slot">${renderContextAction(workOrder)}</div>');
-    expect(script).toContain('<div class="workspace-support">${renderContextSupport(workOrder)}</div>');
+    expect(script).not.toContain('<div class="workspace-support">${renderContextSupport(workOrder)}</div>');
     expect(contextRenderer).not.toContain("renderContextAction(workOrder)");
     expect(contextRenderer).not.toContain("renderContextSupport(workOrder)");
     expect(contextRenderer).toContain('selection.type === "artifact"');
@@ -298,9 +298,15 @@ describe("personal console", () => {
 
     expect(script).toContain('progressView: "map"');
     expect(script).toContain('contextTab: "artifacts"');
-    expect(script).toContain('const defaultView = "map"');
-    expect(script).toContain(">执行图</button>");
-    expect(script).toContain(">成果与验证</button>");
+    expect(script).toContain("defaultGoalWorkbenchView(presentation.status)");
+    expect(script).toContain('workOrder.importContext?.status === "ready" && !workOrder.plan');
+    expect(script).toContain("workOrder.plan?.stages?.[preferredStageIndex(workOrder)]");
+    expect(script).toContain('workOrder.importContext?.status === "pending"');
+    expect(script).toContain('workOrder.importContext?.status === "failed"');
+    expect(script).toContain('["progress", "进展"]');
+    expect(script).toContain('["conversation", "对话"]');
+    expect(script).toContain('["result", "成果"]');
+    expect(script).toContain("从这里开始由 Teamline 推进");
     expect(script).toContain("完整工具与日志");
   });
 
@@ -337,20 +343,18 @@ describe("personal console", () => {
     expect(script).not.toContain("data-session-goal");
   });
 
-  test("offers one-step confirmation before continuing a ready Codex import", async () => {
+  test("confirms an editable imported goal while generating the follow-up plan", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const [page, script] = await Promise.all([
       app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
       app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
     ]);
 
-    expect(page).toContain('id="continue-goal-dialog"');
-    expect(page).toContain('id="continue-goal-form"');
-    expect(page).toContain('name="continuationNote"');
-    expect(page).toContain("确认并生成计划");
-    expect(script).toContain("data-continue-imported-goal");
-    expect(script).toContain("continuationNote");
-    expect(script).toContain("继续这个目标");
+    expect(page).not.toContain('id="continue-goal-dialog"');
+    expect(script).toContain('id="workbench-goal-input"');
+    expect(script).toContain("生成后续计划");
+    expect(script).toContain('JSON.stringify({ goal })');
+    expect(script).not.toContain("data-continue-imported-goal");
   });
 
   test("keeps resource provenance secondary to quota and work-order allocation", async () => {
