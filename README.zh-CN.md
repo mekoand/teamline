@@ -64,8 +64,11 @@ Teamline 目前处于 Early access，当前产品版本为 `v2.1`。
 - [Bun](https://bun.sh/)
 - 已在本机安装并登录的 Codex CLI
 - 本地网页和 CLI
+- 从源码运行的 Electron 桌面壳
 
 目前还没有正式安装包，也暂不支持 Windows、Linux、云端账号以及 Codex 之外工具的完整执行能力。
+
+本票只交付从源码运行的 Electron 桌面壳；正式打包与分发另行处理。
 
 ## 从源码运行
 
@@ -77,7 +80,16 @@ bun run dev
 
 然后打开 <http://127.0.0.1:4310>。
 
-Teamline 默认将本地数据库保存在 `.teamline/`。如需使用其他位置，可以设置 `TEAMLINE_DATA_DIR`。
+本地网页和 Electron 桌面壳连接同一个 `http://127.0.0.1:4310` Local Core，本地网页不会自动打开浏览器。Teamline 默认将 Local Core 数据保存在 `.teamline/`。如需使用其他位置，可以设置 `TEAMLINE_DATA_DIR`。
+
+从源码启动桌面壳前先安装依赖，然后运行：
+
+```bash
+bun install
+bun run desktop
+```
+
+关闭 Electron 窗口只会隐藏客户端，不会停止由 Local Core 持有的目标执行；重新打开窗口后会连接到同一份本地数据。
 
 付费 API 接力是默认关闭的可选功能。需要设置项目级 `OPENAI_API_KEY`、`OPENAI_ADMIN_KEY` 和对应的 `OPENAI_PROJECT_ID`，并为 Teamline 使用独立项目。付费节点会串行执行，项目实际费用的增量会归入当时运行的目标。Teamline 不保存 Key。资源页还必须设置全局月度预算，目标也必须单独设置付费限额。由于供应商费用可能延迟回传，Teamline 会在观察到限额后停止后续节点，但不承诺绝不超支；实际用量无法归因到目标时，也不会使用估算值继续运行。确认是零费用或跨月边界时，可以在资源页手动解除等待。
 

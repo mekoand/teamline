@@ -8,7 +8,11 @@
   "scripts": {
     "cli": "bun bin/teamline.ts",
     "dev": "bun --hot src/server.ts",
+    "desktop": "electron src/electron/main.mjs",
     "start": "bun src/server.ts",
     "test": "bun test"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
   }
 }

@@ -52,6 +52,10 @@ _Avoid_: Personal Alpha, private enterprise edition, general collaboration suite
 The browser interface served on the user's computer by the personal local console. It shares a frontend and local service with any desktop wrapper and does not imply that data is uploaded to the cloud. The first phase does not provide a separate hosted personal web service.
 _Avoid_: cloud personal edition, remote status page, sign-in-required web app
 
+**Local Core** (`本地核心`):
+The independently running local service that owns persisted projects, goals, execution state, and running goal processes. The browser interface and Electron shell are clients of its local interface; closing or disconnecting a client does not stop the Local Core or a goal it owns.
+_Avoid_: renderer-owned execution, window-bound service, browser-only backend
+
 ## User Roles
 
 **Heavy individual developer** (`重度个人开发者`):
