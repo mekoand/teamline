@@ -133,9 +133,11 @@ describe("work-order clarification and conversation", () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const created = store.create({ goal: "调整导入流程" });
     let calls = 0;
+    const reasoningEfforts: Array<string | undefined> = [];
     const planGenerator: PlanGenerator = {
-      async generate(workOrder) {
+      async generate(workOrder, _signal, options) {
         calls += 1;
+        reasoningEfforts.push(options?.reasoningEffort);
         if (calls === 1) {
           return {
             outcome: "clarification",
@@ -220,6 +222,7 @@ describe("work-order clarification and conversation", () => {
       kind: "decision",
       requiresPlanConfirmation: true,
     });
+    expect(reasoningEfforts).toEqual(["medium", "high"]);
     expect(JSON.stringify(result.workOrder)).not.toContain("Ask Matt");
   });
 

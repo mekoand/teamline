@@ -299,6 +299,10 @@ describe("personal console", () => {
     expect(script).toContain('progressView: "map"');
     expect(script).toContain('contextTab: "artifacts"');
     expect(script).toContain("defaultGoalWorkbenchView(presentation.status)");
+    expect(script).toContain('workOrder.importContext?.status === "ready" && !workOrder.plan');
+    expect(script).toContain("workOrder.plan?.stages?.[preferredStageIndex(workOrder)]");
+    expect(script).toContain('workOrder.importContext?.status === "pending"');
+    expect(script).toContain('workOrder.importContext?.status === "failed"');
     expect(script).toContain('["progress", "进展"]');
     expect(script).toContain('["conversation", "对话"]');
     expect(script).toContain('["result", "成果"]');

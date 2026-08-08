@@ -81,14 +81,18 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
       },
     });
 
-    const result = await new CodexPlanGenerator(executablePath).generate(workOrder);
+    const result = await new CodexPlanGenerator(executablePath).generate(
+      workOrder,
+      undefined,
+      { reasoningEffort: "high" },
+    );
     const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
 
     expect(result.stages).toHaveLength(1);
     expect(result.stages[0]?.scope).toBe("RESULT.md");
     expect(argumentsUsed).toContain("--skip-git-repo-check");
     expect(argumentsUsed[argumentsUsed.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
-    expect(argumentsUsed).toContain("model_reasoning_effort=medium");
+    expect(argumentsUsed).toContain("model_reasoning_effort=high");
     expect(argumentsUsed[argumentsUsed.indexOf("--cd") + 1]).toContain("teamline-plan-");
     expect(argumentsUsed.at(-1)).toContain("历史工作已经完成需求确认");
     expect(argumentsUsed.at(-1)).toContain("等待形成后续执行计划");
@@ -168,6 +172,7 @@ await Bun.write(args[outputIndex + 1], JSON.stringify({
     const argumentsUsed = JSON.parse(readFileSync(capturedArgumentsPath, "utf8")) as string[];
     const prompt = argumentsUsed.at(-1) ?? "";
 
+    expect(argumentsUsed).toContain("model_reasoning_effort=medium");
     expect(prompt).toContain('"status":"completed"');
     expect(prompt).toContain('"statusReason":"自动验证通过"');
     expect(prompt).toContain('"artifacts":[{"type":"file","label":"approved-output.pdf"}]');

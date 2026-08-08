@@ -257,7 +257,9 @@ export function createApp({
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const generated = await Promise.race([
-      planGenerator.generate(planningInput, controller.signal),
+      planGenerator.generate(planningInput, controller.signal, {
+        reasoningEffort: pendingReply && workOrder.pendingClarification ? "high" : "medium",
+      }),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
@@ -3208,6 +3210,12 @@ export function createApp({
         }
         if (isImportOnlyWorkOrder(workOrder)) {
           return importOnlyResponse();
+        }
+        if (workOrder.importContext && workOrder.importContext.status !== "ready") {
+          return Response.json(
+            { code: "WORK_ORDER_IMPORT_NOT_READY", error: "来源会话整理完成后才能生成计划" },
+            { status: 409 },
+          );
         }
         if (!planIsEditable(workOrder)) {
           return Response.json(

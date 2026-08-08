@@ -1632,7 +1632,7 @@ function renderWorkspace(workOrder, feedback) {
   const stages = state.draftStages ?? workOrder.plan?.stages ?? null;
   const canEditPlan = state.draftStages !== null;
   const highlights = completedGoalHighlights(workOrder);
-  const currentState = workOrder.importContext?.status === "ready"
+  const currentState = workOrder.importContext?.status === "ready" && !workOrder.plan
     ? workOrder.importContext.currentState || workOrder.currentSummary
     : workOrder.currentSummary;
   const nextAction = workOrder.importContext?.status === "ready" && !workOrder.plan
@@ -1755,7 +1755,7 @@ function renderImportedHistorySurface(workOrder, feedback) {
           ? '<div class="plan-empty"><p>历史正在后台整理，完成后会自动更新。</p></div>'
           : `<div class="plan-empty"><p>${escapeHtml(context.error || "历史整理失败，可以重试。")}</p></div>`}
       <div class="import-history-actions">
-        ${pending ? "" : `<button class="secondary-button" data-reorganize-sessions type="button">${ready ? "重新整理" : "重试整理"}</button>`}
+        ${ready ? '<button class="secondary-button" data-reorganize-sessions type="button">重新整理</button>' : ""}
         ${context.status === "failed" ? '<button class="text-button danger-text" data-delete-imported-goal type="button">删除目标</button>' : ""}
       </div>
       <p class="inline-feedback" id="plan-feedback" role="status">${escapeHtml(feedback)}</p>
@@ -2687,6 +2687,12 @@ function renderContextAction(workOrder) {
   if (workOrder.pendingClarification) {
     return '<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="show-conversation" type="button">回答问题</button></section>';
   }
+  if (workOrder.importContext?.status === "pending") {
+    return '<section class="context-action completed-action"><p class="overline">正在整理</p><strong>历史整理完成后再生成计划</strong></section>';
+  }
+  if (workOrder.importContext?.status === "failed") {
+    return '<section class="context-action"><p class="overline">下一步</p><button class="primary-button" data-reorganize-sessions type="button">重试整理</button></section>';
+  }
   if (!workOrder.plan && !workOrder.runStatus) {
     return `<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="generate-plan" type="button">${workOrder.importContext ? "生成后续计划" : "生成执行计划"}</button></section>`;
   }
@@ -2697,7 +2703,7 @@ function renderContextAction(workOrder) {
   ) {
     return '<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="review-plan" type="button">检查并确认计划</button></section>';
   }
-  const stage = workOrder.plan?.stages?.[state.selectedStageIndex];
+  const stage = workOrder.plan?.stages?.[preferredStageIndex(workOrder)];
   const needsStageConfirmation = workOrder.plan?.stages?.some(
     (candidate) =>
       candidate.executionMethod === "codex" &&

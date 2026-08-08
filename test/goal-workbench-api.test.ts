@@ -62,4 +62,85 @@ describe("goal workbench API", () => {
     expect(receivedGoal).toBe("完成 macOS 远程访问配置");
     expect(store.get(imported.id)?.goal).toBe("完成 macOS 远程访问配置");
   });
+
+  test("blocks plan generation until an imported session is organized", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const imported = store.create({
+      goal: "整理导入会话",
+      sourceSessions: [{
+        kind: "codex_session",
+        id: "pending-session",
+        lastActiveAt: "2026-08-04T01:00:00.000Z",
+        version: 1,
+      }],
+      importContext: {
+        status: "pending",
+        summary: null,
+        currentState: null,
+        completedHighlights: [],
+        nextAction: null,
+        historicalStages: [],
+        artifacts: [],
+        organizedAt: null,
+        error: null,
+      },
+    });
+    let calls = 0;
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate() {
+          calls += 1;
+          return { outcome: "plan" as const, stages: [] };
+        },
+      },
+    });
+
+    const blocked = await app.fetch(new Request(
+      `http://teamline.local/api/work-orders/${imported.id}/plan/generate`,
+      { method: "POST" },
+    ));
+
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({ code: "WORK_ORDER_IMPORT_NOT_READY" });
+    store.markSessionOrganizationFailed(imported.id, "历史整理失败");
+    const failed = await app.fetch(new Request(
+      `http://teamline.local/api/work-orders/${imported.id}/plan/generate`,
+      { method: "POST" },
+    ));
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toMatchObject({ code: "WORK_ORDER_IMPORT_NOT_READY" });
+    expect(calls).toBe(0);
+  });
+
+  test("keeps plan generation available for an ordinary new goal", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const ordinary = store.create({ goal: "整理普通目标" });
+    const app = createApp({
+      store,
+      planGenerator: {
+        async generate() {
+          return {
+            outcome: "plan" as const,
+            stages: [{
+              id: "ordinary",
+              outcome: "完成普通目标",
+              scope: "当前工作区",
+              verification: "人工检查",
+              verificationCommand: null,
+              dependsOn: [],
+              executionMethod: "codex" as const,
+            }],
+          };
+        },
+      },
+    });
+
+    const response = await app.fetch(new Request(
+      `http://teamline.local/api/work-orders/${ordinary.id}/plan/generate`,
+      { method: "POST" },
+    ));
+
+    expect(response.status).toBe(200);
+  });
 });

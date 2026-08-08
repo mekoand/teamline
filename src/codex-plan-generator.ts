@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { GeneratedPlan, PlanGenerator } from "./plan-generator";
+import type { GeneratedPlan, PlanGenerationOptions, PlanGenerator } from "./plan-generator";
 import type { WorkOrder } from "./work-order";
 import { codexProcessEnvironment } from "./codex-environment";
 
@@ -12,7 +12,11 @@ export class CodexPlanGenerator implements PlanGenerator {
     private readonly codexPath = Bun.env.TEAMLINE_CODEX_PATH || "codex",
   ) {}
 
-  async generate(workOrder: WorkOrder, signal?: AbortSignal): Promise<GeneratedPlan> {
+  async generate(
+    workOrder: WorkOrder,
+    signal?: AbortSignal,
+    options: PlanGenerationOptions = {},
+  ): Promise<GeneratedPlan> {
     const temporaryDirectory = mkdtempSync(join(tmpdir(), "teamline-plan-"));
     const outputPath = join(temporaryDirectory, "plan.json");
     let subprocess: ReturnType<typeof Bun.spawn> | undefined;
@@ -49,7 +53,7 @@ export class CodexPlanGenerator implements PlanGenerator {
           "--model",
           "gpt-5.6-sol",
           "-c",
-          "model_reasoning_effort=medium",
+          `model_reasoning_effort=${options.reasoningEffort ?? "medium"}`,
           buildPrompt(workOrder),
         ],
         {
