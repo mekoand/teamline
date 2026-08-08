@@ -87,6 +87,10 @@ describe("local language contract", () => {
     expect(translateFixedText("en", " · 已移除")).toBe(" · Removed");
     expect(translateFixedText("en", "将恢复 3 个目标")).toBe("Restore 3 goals");
     expect(translateFixedText("en", "依赖：节点 1")).toBe("Dependencies: Node 1");
+    expect(translateFixedText("en", "会话监控")).toBe("Session monitoring");
+    expect(translateFixedText("en", "已读取 2 个本机会话，排除 1 个 Teamline 执行会话")).toBe(
+      "Read 2 local sessions; excluded 1 Teamline execution sessions",
+    );
     expect(translateFixedText("zh-CN", "新建目标")).toBe("新建目标");
   });
 

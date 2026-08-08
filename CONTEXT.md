@@ -166,6 +166,10 @@ _Avoid_: goal, session task, continuing several original sessions together
 A local Codex session imported by the user to reconstruct a goal's history. It remains in its original system; Teamline stores only a reference and organized results. After several source sessions are grouped into one goal, later work continues in a new execution session.
 _Avoid_: current execution session, complete session copy, bidirectional session sync
 
+**Session monitoring catalog** (`会话监控目录`):
+A local catalog of discovered sessions from supported AI tools. It stores a reference and user-selected project, monitoring, discovery, read-position, and organization state without creating a goal, grouping object, or control channel for the external session.
+_Avoid_: execution session, complete session copy, monitoring group, bidirectional session sync
+
 **Goal conversation** (`目标对话`):
 One continuous user-visible conversation with Teamline about the entire goal. It may contain whole-goal discussion and additions for the current node. Execution nodes reference relevant messages but do not create separate chatrooms.
 _Avoid_: node chatroom, Codex session list, general chat
