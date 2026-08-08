@@ -301,7 +301,7 @@ describe("work-order clarification and conversation", () => {
       }
 
       expect(readFileSync(invocation, "utf8")).toContain(
-        "补充上下文：按钮必须在 320px 宽度完整显示",
+        "Additional context: 按钮必须在 320px 宽度完整显示",
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });

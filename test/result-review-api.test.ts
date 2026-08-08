@@ -1016,7 +1016,7 @@ describe("result review persistence", () => {
         // Drain the process events so the invocation file is complete.
       }
 
-      expect(readFileSync(invocation, "utf8")).toContain("补充要求：\n补充移动端空状态");
+      expect(readFileSync(invocation, "utf8")).toContain("Additional requirement:\n补充移动端空状态");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

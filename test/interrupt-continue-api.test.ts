@@ -355,10 +355,10 @@ describe("interrupt and continue API", () => {
       expect(invocation).toContain(
         "<exec>\n<--skip-git-repo-check>\n<resume>\n<session-missing>",
       );
-      expect(invocation).toContain("只完成当前节点，不要开始计划中的其他节点；完成当前节点后退出");
+      expect(invocation).toContain("Complete only the current node");
       expect(invocation.match(/<exec>/g)).toHaveLength(2);
-      expect(invocation).toContain("工作目标：\n为设置页面增加深色模式");
-      expect(invocation).toContain("当前 AI 节点：");
+      expect(invocation).toContain("Goal:\n为设置页面增加深色模式");
+      expect(invocation).toContain("Current AI node:");
       expect(invocation).toContain("第一轮完成了主题变量整理");
       expect(invocation).toContain(" M README.md");
       expect(invocation).not.toContain("secret-token");

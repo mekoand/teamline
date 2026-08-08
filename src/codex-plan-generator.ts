@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import type { GeneratedPlan, PlanGenerationOptions, PlanGenerator } from "./plan-generator";
 import type { WorkOrder } from "./work-order";
 import { codexProcessEnvironment } from "./codex-environment";
+import { workingLanguageInstruction } from "./working-language";
 
 const schemaPath = resolve(import.meta.dir, "plan-output-schema.json");
 
@@ -54,7 +55,7 @@ export class CodexPlanGenerator implements PlanGenerator {
           "gpt-5.6-sol",
           "-c",
           `model_reasoning_effort=${options.reasoningEffort ?? "medium"}`,
-          buildPrompt(workOrder),
+          buildPlanPrompt(workOrder),
         ],
         {
           env: codexProcessEnvironment(),
@@ -89,7 +90,11 @@ export class CodexPlanGenerator implements PlanGenerator {
 
       return workOrder.workspace
         ? result as GeneratedPlan
-        : sanitizeWorkspaceFreePlan(result as GeneratedPlan, temporaryDirectory);
+        : sanitizeWorkspaceFreePlan(
+            result as GeneratedPlan,
+            temporaryDirectory,
+            workingLanguageInstruction(workOrder).includes("Simplified Chinese"),
+          );
     } catch (error) {
       if (error instanceof Error && error.message.includes("ENOENT")) {
         throw new Error("找不到 Codex，请先安装并登录 Codex");
@@ -102,22 +107,22 @@ export class CodexPlanGenerator implements PlanGenerator {
   }
 }
 
-function buildPrompt(workOrder: WorkOrder): string {
+export function buildPlanPrompt(workOrder: WorkOrder): string {
   const acceptance = workOrder.acceptance
-    ? `\n完成要求：\n${workOrder.acceptance}`
+    ? `\nAcceptance criteria:\n${workOrder.acceptance}`
     : "";
   const materials = workOrder.materials.length
-    ? `\n参考素材：\n${workOrder.materials
+    ? `\nReference materials:\n${workOrder.materials
         .map((material) => `- ${material.kind}: ${material.value}`)
         .join("\n")}`
     : "";
   const conversation = workOrder.conversation.length
-    ? `\n目标对话与已形成的决定：\n${workOrder.conversation
-        .map((message) => `- ${message.role === "user" ? "用户" : "Teamline"}：${message.content}${message.requiresPlanConfirmation ? "（要求更新计划）" : ""}`)
+    ? `\nGoal conversation and confirmed decisions:\n${workOrder.conversation
+        .map((message) => `- ${message.role === "user" ? "User" : "Teamline"}: ${message.content}${message.requiresPlanConfirmation ? " (plan update required)" : ""}`)
         .join("\n")}`
     : "";
   const currentPlan = workOrder.plan
-    ? `\n当前计划：\n${JSON.stringify(workOrder.plan.stages.map((stage) => ({
+    ? `\nCurrent plan:\n${JSON.stringify(workOrder.plan.stages.map((stage) => ({
         id: stage.id,
         outcome: stage.outcome,
         scope: stage.scope,
@@ -132,7 +137,7 @@ function buildPrompt(workOrder: WorkOrder): string {
       })))}`
     : "";
   const previousResult = workOrder.result
-    ? `\n上一轮精简结果（只用于判断仍需调整的内容）：\n${JSON.stringify({
+    ? `\nCompact prior result (only for deciding remaining changes):\n${JSON.stringify({
         planVersion: workOrder.result.planVersion,
         git: {
           hasChanges: countGitChanges(workOrder.result.git.statusShort) > 0,
@@ -145,7 +150,7 @@ function buildPrompt(workOrder: WorkOrder): string {
       })}`
     : "";
   const importedHistory = workOrder.importContext?.status === "ready"
-    ? `\n导入会话整理结果（仅作为历史上下文，不是未来执行计划）：\n${JSON.stringify({
+    ? `\nImported session organization (historical context, not a future plan):\n${JSON.stringify({
         summary: workOrder.importContext.summary,
         currentState: workOrder.importContext.currentState,
         completedHighlights: workOrder.importContext.completedHighlights,
@@ -154,41 +159,45 @@ function buildPrompt(workOrder: WorkOrder): string {
         artifacts: workOrder.importContext.artifacts,
       })}`
     : "";
-  const resources = `\n当前资源偏好：\n${JSON.stringify({
+  const resources = `\nCurrent resource preferences:\n${JSON.stringify({
     priority: workOrder.resourcePlan.priority,
     pace: workOrder.resourcePlan.pace,
     runWhenQuotaAvailable: workOrder.resourcePlan.runWhenQuotaAvailable,
   })}`;
 
-  return `你正在为一项工作生成简短的执行计划。只读取已选择的工作空间和参考素材，不要修改文件或运行会产生写入的命令。
+  return `You are generating a concise execution plan for a delegated goal. Read only the selected workspace and reference materials. Do not modify files or run commands that write to disk.
 
-工作目标：
+Language contract:
+${workingLanguageInstruction(workOrder)}
+
+Goal:
 ${workOrder.goal}${acceptance}${materials}${conversation}${importedHistory}${currentPlan}${previousResult}${resources}
 
-先判断这些信息是否足以形成可确认的计划。信息足够时必须直接返回计划，不要为了完善细节而提问。只有缺少会改变目标边界、节点关系、素材选择或资源安排的关键信息时，才返回 clarification；每次只能提出一个短且可直接回答的问题，不得提及内部 skill 或 Ask Matt 名称。
+First decide whether the information is sufficient for a confirmable plan. When it is sufficient, return a plan directly. Do not ask questions merely to improve detail. Return clarification only when information is missing that would change the goal boundary, node relationships, material selection, or resource arrangement. Ask at most one short, directly answerable question at a time. Never mention internal skills or the name Ask Matt.
 
-始终返回目标、完成要求、素材和资源方案的完整快照。用户回答过澄清问题或要求更新计划时，把已经确认的决定写入这些快照和计划；不要只复述聊天。普通节点补充已经由 Teamline 归入节点上下文，不需要改动计划结构。
+Always return a complete snapshot of the goal, acceptance criteria, materials, and resource plan. Incorporate confirmed decisions into those snapshots and the plan; do not merely repeat the conversation. Ordinary node supplements are already attached to node context and do not require structural plan changes.
 
-如果提供了上一轮精简结果，它只代表此前已经得到的成果与验证状态。结合用户的调整要求，只规划仍需完成或修改的部分，不要把此前已经完成且不受影响的工作重复列入计划。
+If a compact prior result is provided, it represents existing outcomes and verification state. Plan only the remaining or changed work and do not repeat unaffected completed work.
 
-返回 clarification 时：stages 填空数组，questions 填必须回答的问题，message 简要说明为何需要回答。
-返回 plan 时：questions 填空数组，stages 至少包含一个节点；message 简要说明计划或结构化决定已经更新。
+For clarification: return an empty stages array, put the required question in questions, and briefly explain why it is needed in message.
+For a plan: return an empty questions array, at least one stage, and briefly state in message that the plan or structured decision was updated.
 
-请把工作拆成少量能够独立检查的阶段。未选择工作空间时，scope 使用相对路径或描述“启动前选择执行工作区”，不得把当前规划使用的临时目录写入 scope。每个阶段填写：
-- id：在本计划内唯一、简短稳定的英文标识
-- outcome：完成后得到什么结果
-- scope：预计影响哪些代码、文件、文档或外部工作范围
-- verification：如何检查这一阶段完成
-- verificationCommand：只有存在明确、可直接运行的自动验证命令时才填写，否则填写 null。不要把自然语言说明复制为命令
-- dependsOn：这个阶段依赖的前置阶段 id；没有依赖时填写空数组。不要仅因书写顺序假定依赖，可以并行时保持为空
-- executionMethod：需要 Codex 修改或检查本地工作空间时填写 codex；需要用户在设计、文档协作或其他外部工具中完成时填写 external。外部节点只记录状态和成果引用，不要要求 Teamline 控制、复制或自动核验外部正文
+Split the work into a small number of independently verifiable stages. Without a selected workspace, use a relative scope or say that the execution workspace will be selected before start; never place the temporary planning directory in scope. Each stage must include:
+- id: a short, stable English identifier unique within the plan
+- outcome: the result produced by the stage
+- scope: affected code, files, documentation, or external work
+- verification: how completion is checked
+- verificationCommand: an explicit directly runnable automatic check, or null; never copy natural-language verification into this field
+- dependsOn: prerequisite stage IDs, or an empty array; do not infer dependencies from list order
+- executionMethod: codex when Codex must change or inspect the local workspace, external when the user must work in another tool. External nodes track status and result references only; Teamline does not control, copy, or automatically verify their content
 
-不要执行计划，只返回符合指定 JSON Schema 的结果。`;
+Do not execute the plan. Return only a result matching the supplied JSON Schema.`;
 }
 
 function sanitizeWorkspaceFreePlan(
   plan: GeneratedPlan,
   temporaryDirectory: string,
+  useChinese: boolean,
 ): GeneratedPlan {
   const planningDirectories = new Set([temporaryDirectory]);
   try {
@@ -201,7 +210,7 @@ function sanitizeWorkspaceFreePlan(
     ...plan,
     stages: plan.stages.map((stage) => ({
       ...stage,
-      scope: removePlanningDirectory(stage.scope, planningDirectories),
+      scope: removePlanningDirectory(stage.scope, planningDirectories, useChinese),
     })),
   };
 }
@@ -209,15 +218,21 @@ function sanitizeWorkspaceFreePlan(
 function removePlanningDirectory(
   scope: string,
   planningDirectories: Set<string>,
+  useChinese: boolean,
 ): string {
   let normalized = scope;
   for (const directory of [...planningDirectories].sort(
     (left, right) => right.length - left.length,
   )) {
     normalized = normalized.replaceAll(`${directory}/`, "");
-    normalized = normalized.replaceAll(directory, "启动前选择的执行工作区");
+    normalized = normalized.replaceAll(
+      directory,
+      useChinese ? "启动前选择的执行工作区" : "execution workspace selected before start",
+    );
   }
-  return normalized.trim() || "启动前选择执行工作区";
+  return normalized.trim() || (useChinese
+    ? "启动前选择执行工作区"
+    : "Select the execution workspace before start");
 }
 
 function countGitChanges(statusShort: string): number {

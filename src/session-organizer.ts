@@ -151,22 +151,24 @@ function buildPrompt(input: SessionOrganizationInput): string {
     lastActiveAt: session.lastActiveAt,
     sourcePath: session.sourcePath,
   }));
-  return `你正在把一个或多个 ${input.sourceLabel ?? "AI 编码工具"} 历史会话整理成 Teamline 中的一个目标。只读取下面列出的本地 JSONL 会话文件，不要修改任何文件，不要继续执行原会话，也不要创建新的开发任务。
+  return `You are organizing one or more historical ${input.sourceLabel ?? "AI coding tool"} sessions into one Teamline goal. Read only the listed local JSONL files. Do not modify files, continue the original sessions, or create development tasks.
 
-目标名称：${input.name}
-来源会话：
+Goal name: ${input.name}
+Source sessions:
 ${JSON.stringify(sources, null, 2)}
 
-请完整读取每个来源文件，再返回：
-- description：一句面向结果的目标，不写历史过程、当前故障或解决方案，最多 120 个字符；
-- summary：供后续规划使用的内部历史摘要，最多 240 个字符；
-- currentState：一行说明现在做到哪里，最多 100 个字符；
-- completedHighlights：已经完成的关键内容，最多三项，每项最多 80 个字符；
-- nextAction：一行说明最合适的下一步，最多 100 个字符；
-- historicalStages：最多八个关键历史节点。节点名称最多 80 个字符，摘要最多 120 个字符；它们只是历史，不是未来可执行计划；每个节点引用实际相关的来源会话 ID；
-- artifacts：会话中明确出现的主要文件、文件夹、仓库、图片或链接。无法确认位置时不要猜。
+Infer the working language from the user's goal name and the dominant user language in the source conversations, never from Teamline's interface language. Write all newly generated user-visible fields in that working language. Preserve quoted or mixed-language source content, file names, commands, and URLs as written; do not translate imported history.
 
-不要复制大段原始对话或日志，不要把每次工具调用当成节点。多个来源有冲突时在摘要中如实说明。只返回符合 JSON Schema 的结果。`;
+Read every source file fully, then return:
+- description: one outcome-focused goal, without process history, current failures, or proposed solutions, at most 120 characters;
+- summary: an internal historical summary for later planning, at most 240 characters;
+- currentState: one line describing the current state, at most 100 characters;
+- completedHighlights: up to three completed highlights, at most 80 characters each;
+- nextAction: one line with the most appropriate next action, at most 100 characters;
+- historicalStages: up to eight important historical nodes. Outcomes are at most 80 characters and summaries at most 120 characters. They are history, not a future executable plan, and each cites the relevant source session IDs;
+- artifacts: major files, folders, repositories, images, or links explicitly present in the sessions. Do not guess locations.
+
+Do not copy long passages of conversation or logs and do not turn every tool call into a node. Report conflicts between sources truthfully in the summary. Return only a result matching the JSON Schema.`;
 }
 
 function lastUsefulLine(output: string): string {
