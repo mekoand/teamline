@@ -310,6 +310,9 @@ describe("personal console", () => {
     expect(script).toContain('"备用账号额度未知": "备用未知"');
     expect(script).toContain("data-login-identity");
     expect(script).toContain('id="add-identity-form"');
+    expect(script).toContain("data-close-floating-disclosure");
+    expect(script).toContain("closeOpenFloatingDisclosures");
+    expect(script).toContain("details.identity-add-disclosure[open]");
     expect(script).toContain('requestJson("/api/execution-identities"');
     expect(script).toContain("添加并登录");
     expect(script).toContain("JSON.stringify({ confirm: true })");
@@ -325,6 +328,7 @@ describe("personal console", () => {
     expect(script).toContain("/refresh`");
     expect(styles).toContain(".topbar-quota-popover");
     expect(styles).toContain(".identity-actions");
+    expect(styles).toContain(".floating-disclosure-close");
   });
 
   test("keeps the execution graph primary while prioritizing artifacts and verification", async () => {

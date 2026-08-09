@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createApp } from "../src/app";
 import type { SessionDiscoveryResult, SessionProvider } from "../src/session-discovery";
 import { WorkOrderStore } from "../src/work-order-store";
@@ -51,6 +51,21 @@ async function waitForReadyImport(store: WorkOrderStore, id: string) {
 }
 
 describe("non-Codex session import", () => {
+  test("uses a Codex-compatible response schema for explicit future stages", () => {
+    const schema = JSON.parse(readFileSync(
+      resolve(import.meta.dir, "../src/session-organization-schema.json"),
+      "utf8",
+    ));
+
+    expect(schema.properties.futureStages.items.properties.explicit).toEqual({
+      type: "boolean",
+      const: true,
+    });
+    expect(schema.required).toEqual(Object.keys(schema.properties));
+    expect(schema.properties.futureStages.type).toEqual(["array", "null"]);
+    expect(schema.properties.currentProgressPercent.type).toEqual(["integer", "null"]);
+  });
+
   test("removes explicit sidechain records before Claude Code organization", () => {
     const filtered = filterClaudeCodeMainChain([
       JSON.stringify({ type: "user", sessionId: "session-a", message: "main request" }),
@@ -122,6 +137,36 @@ writeFileSync(outputPath, JSON.stringify({
       expect(argumentsUsed[argumentsUsed.indexOf("--config") + 1]).toBe(
         "model_reasoning_effort=medium",
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reports a failed organization without implying that Codex is logged out", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-organizer-failure-"));
+    const sourcePath = join(root, "source.jsonl");
+    const fakeCodex = join(root, "fake-codex");
+    writeFileSync(sourcePath, `${JSON.stringify({ type: "user", message: "hello" })}\n`);
+    writeFileSync(fakeCodex, `#!/usr/bin/env bun
+console.log(JSON.stringify({ type: "error", message: JSON.stringify({ error: { message: "Invalid schema" } }) }));
+process.exit(1);
+`);
+    chmodSync(fakeCodex, 0o755);
+
+    try {
+      await expect(new CodexSessionOrganizer(fakeCodex).organize({
+        name: "整理失败",
+        sessions: [{
+          id: "session-a",
+          title: "session-a",
+          workspacePath: root,
+          projectLabel: "root",
+          lastActiveAt: "2026-08-04T06:00:00.000Z",
+          sourcePath,
+          availability: "available",
+          message: null,
+        }],
+      })).rejects.toThrow("Codex 会话整理失败，请稍后重试");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

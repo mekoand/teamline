@@ -635,7 +635,7 @@ describe("V2 domain data", () => {
       await app.fetch(new Request("http://teamline.local/app.js"))
     ).text();
 
-    expect(page).toContain('data-i18n="shell.goals">Goals</h1>');
+    expect(page).toContain('data-i18n="shell.goals">目标</h1>');
     expect(page).toContain('id="language-select"');
     expect(page).toContain('name="name"');
     expect(page).toContain('name="description"');

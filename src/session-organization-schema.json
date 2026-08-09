@@ -7,11 +7,11 @@
     "summary": { "type": "string" },
     "currentState": { "type": "string" },
     "completedHighlights": {
-      "type": "array",
+      "type": ["array", "null"],
       "maxItems": 3,
       "items": { "type": "string" }
     },
-    "nextAction": { "type": "string" },
+    "nextAction": { "type": ["string", "null"] },
     "historicalStages": {
       "type": "array",
       "items": {
@@ -34,7 +34,7 @@
       }
     },
     "futureStages": {
-      "type": "array",
+      "type": ["array", "null"],
       "maxItems": 4,
       "items": {
         "type": "object",
@@ -51,18 +51,18 @@
             "type": "array",
             "items": { "type": "string" }
           },
-          "explicit": { "const": true }
+          "explicit": { "type": "boolean", "const": true }
         },
         "required": ["id", "outcome", "summary", "status", "sourceSessionIds", "explicit"]
       }
     },
     "currentProgressPercent": {
-      "type": "integer",
+      "type": ["integer", "null"],
       "minimum": 0,
       "maximum": 100
     },
     "enumerablePlan": {
-      "type": "object",
+      "type": ["object", "null"],
       "additionalProperties": false,
       "properties": {
         "completed": { "type": "integer", "minimum": 0 },
@@ -71,7 +71,7 @@
       "required": ["completed", "total"]
     },
     "inferredRelations": {
-      "type": "array",
+      "type": ["array", "null"],
       "maxItems": 24,
       "items": {
         "type": "object",
@@ -86,12 +86,12 @@
       }
     },
     "toolCalls": {
-      "type": "array",
+      "type": ["array", "null"],
       "maxItems": 8,
       "items": { "type": "string" }
     },
     "logs": {
-      "type": "array",
+      "type": ["array", "null"],
       "maxItems": 8,
       "items": { "type": "string" }
     },
@@ -113,5 +113,19 @@
       }
     }
   },
-  "required": ["description", "summary", "currentState", "completedHighlights", "nextAction", "historicalStages", "artifacts"]
+  "required": [
+    "description",
+    "summary",
+    "currentState",
+    "completedHighlights",
+    "nextAction",
+    "historicalStages",
+    "futureStages",
+    "currentProgressPercent",
+    "enumerablePlan",
+    "inferredRelations",
+    "toolCalls",
+    "logs",
+    "artifacts"
+  ]
 }

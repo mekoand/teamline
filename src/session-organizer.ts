@@ -140,9 +140,23 @@ export class CodexSessionOrganizer implements SessionOrganizer {
       if (exitCode !== 0) {
         const diagnostic = lastCodexError(stdout) ?? lastUsefulLine(stderr);
         if (diagnostic) console.error("Codex session organization failed", diagnostic);
-        throw new Error("Codex 暂时无法整理会话，请确认已经安装并登录后重试");
+        throw new Error("Codex 会话整理失败，请稍后重试");
       }
-      return JSON.parse(await Bun.file(outputPath).text()) as SessionOrganization;
+      const result = JSON.parse(await Bun.file(outputPath).text()) as SessionOrganization &
+        Record<string, unknown>;
+      for (const key of [
+        "completedHighlights",
+        "nextAction",
+        "futureStages",
+        "currentProgressPercent",
+        "enumerablePlan",
+        "inferredRelations",
+        "toolCalls",
+        "logs",
+      ]) {
+        if (result[key] === null) delete result[key];
+      }
+      return result;
     } catch (error) {
       if (error instanceof Error && error.message.includes("ENOENT")) {
         throw new Error("找不到 Codex，请先安装并登录 Codex");
@@ -235,6 +249,15 @@ function lastUsefulLine(output: string): string {
     .at(-1) ?? "";
 }
 
+function nestedErrorMessage(message: string): string {
+  try {
+    const parsed = JSON.parse(message) as { error?: { message?: string }; message?: string };
+    return parsed.error?.message ?? parsed.message ?? message;
+  } catch {
+    return message;
+  }
+}
+
 function lastCodexError(output: string): string | null {
   for (const line of output.split(/\r?\n/).reverse()) {
     if (!line.trim()) continue;
@@ -246,7 +269,7 @@ function lastCodexError(output: string): string | null {
       };
       if (event.type !== "error" && event.type !== "turn.failed") continue;
       const message = event.error?.message ?? event.message;
-      if (message) return lastUsefulLine(message);
+      if (message) return lastUsefulLine(nestedErrorMessage(message));
     } catch {
       // Ignore non-JSON diagnostic lines.
     }

@@ -933,13 +933,16 @@ export function createApp({
         "来源会话读取超时，请重试",
         controller,
       );
+      const sourceMessage = sourceRead.truncated
+        ? "会话历史较长，已从最近进展开始监控"
+        : candidate.message;
       ensureActive();
       if (!sourceRead.content) {
         store.updateSessionMonitoring(record.key, {
           lastReadPosition: sourceRead.nextPosition,
           lastReadAt: new Date().toISOString(),
           organizationStatus: "ready",
-          message: candidate.message,
+          message: sourceMessage,
         });
         return;
       }
@@ -996,7 +999,7 @@ export function createApp({
         lastReadAt: new Date().toISOString(),
         organizationStatus: "ready",
         workGraphSnapshot: organization,
-        message: candidate.message,
+        message: sourceMessage,
       });
       store.finishSessionMonitoringResourceUsage(usage.id, "succeeded");
     } catch (error) {

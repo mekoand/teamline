@@ -313,6 +313,10 @@ describe("local work-order notifications", () => {
     expect(script).toContain('searchParams.delete("stage")');
     expect(script).toContain('requestJson("/api/notifications/release"');
     expect(script).toContain("unread-indicator");
+    expect(script).toContain("bindDismissibleDialog(notificationDialog");
+    expect(script).toContain("bindDismissibleDialog(localStateDialog");
+    expect(script).toContain("bindDismissibleDialog(createDialog");
+    expect(script).toContain("bindDismissibleDialog(sessionImportDialog");
     expect(styles).toContain(".notification-dialog");
     expect(styles).toContain("@media (max-width: 680px)");
   });

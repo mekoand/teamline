@@ -122,7 +122,7 @@ describe("session monitoring catalog", () => {
     expect(script).toContain("估算");
     expect(script).toContain('if (isSessionMonitoringView()) {\n    state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 30_000);');
     expect(script).toContain("未归类");
-    expect(script).toContain("event.target === monitoringGoalDialog");
+    expect(script).toContain("bindDismissibleDialog(monitoringGoalDialog");
     expect(script).toContain('monitoringGoalSubmit.dataset.busy === "true"');
     expect(script).toContain("closeMonitoringGoal(true)");
     expect(script).toContain('executionModeButton?.setAttribute("aria-selected"');

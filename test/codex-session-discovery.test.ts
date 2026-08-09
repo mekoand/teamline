@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -102,6 +103,76 @@ describe("local Codex session discovery", () => {
       });
       rmSync(rollout);
       await expect(provider.read!(session, 0)).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("starts monitoring an oversized existing session from a bounded recent window", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-codex-sessions-"));
+    const id = "019fc374-5a5b-78b0-81da-c5bf1452cebf";
+    const directory = join(root, "sessions", "2026", "08", "03");
+    const rollout = join(directory, `rollout-2026-08-03T01-10-10-${id}.jsonl`);
+    mkdirSync(directory, { recursive: true });
+    const recentRecord = `${JSON.stringify({
+      type: "response_item",
+      payload: { role: "assistant", content: "recent progress" },
+    })}\n`;
+    writeFileSync(rollout, `${"x".repeat(33 * 1024 * 1024)}\n${recentRecord}`);
+
+    try {
+      const sourcePosition = Buffer.byteLength(readFileSync(rollout));
+      const result = await new LocalCodexSessionProvider(root).read!({
+        id,
+        title: "大型现有会话",
+        workspacePath: root,
+        projectLabel: "project",
+        lastActiveAt: "2026-08-03T02:00:00.000Z",
+        sourcePath: rollout,
+        sourcePosition,
+        availability: "available",
+        message: null,
+      }, 0);
+
+      expect(result.content).toBe(recentRecord);
+      expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(512 * 1024);
+      expect(result.nextPosition).toBe(sourcePosition);
+      expect(result.truncated).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the first record when a bounded recent window starts at a line boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-codex-sessions-"));
+    const id = "019fc374-5a5b-78b0-81da-c5bf1452cebf";
+    const directory = join(root, "sessions", "2026", "08", "03");
+    const rollout = join(directory, `rollout-2026-08-03T01-10-10-${id}.jsonl`);
+    mkdirSync(directory, { recursive: true });
+    const firstRecord = `${JSON.stringify({ type: "event_msg", payload: { message: "first recent record" } })}\n`;
+    const fillerRecord = `${JSON.stringify({ type: "event_msg", payload: { message: "x".repeat(400) } })}\n`;
+    let recentWindow = firstRecord;
+    while (Buffer.byteLength(recentWindow + fillerRecord) <= 512 * 1024) {
+      recentWindow += fillerRecord;
+    }
+    recentWindow += " ".repeat(512 * 1024 - Buffer.byteLength(recentWindow) - 1) + "\n";
+    writeFileSync(rollout, `x\n${recentWindow}`);
+
+    try {
+      const result = await new LocalCodexSessionProvider(root).read!({
+        id,
+        title: "边界会话",
+        workspacePath: root,
+        projectLabel: "project",
+        lastActiveAt: "2026-08-03T02:00:00.000Z",
+        sourcePath: rollout,
+        sourcePosition: Buffer.byteLength(readFileSync(rollout)),
+        availability: "available",
+        message: null,
+      }, 0);
+
+      expect(result.content.startsWith(firstRecord)).toBe(true);
+      expect(result.truncated).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
