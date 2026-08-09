@@ -46,6 +46,160 @@ describe("local work-order notifications", () => {
     ]);
   });
 
+  test("uses the four notification preferences, stable target codes, and resource dedupe", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const responseGoal = externalWorkOrder(store);
+    const reviewGoal = store.create({ goal: "等待验收" });
+    store.database
+      .query("UPDATE work_orders SET status = 'review' WHERE id = ?")
+      .run(reviewGoal.id);
+    const failedGoal = store.create({ goal: "运行失败" });
+    store.database
+      .query("UPDATE work_orders SET status = 'interrupted', run_status = 'failed', run_number = 1 WHERE id = ?")
+      .run(failedGoal.id);
+    const app = createApp({ store });
+
+    const defaults = await app.fetch(
+      new Request("http://teamline.local/api/preferences/notifications"),
+    );
+    expect(await defaults.json()).toEqual({
+      settings: {
+        needsResponse: true,
+        runFailed: true,
+        goalPendingAcceptance: true,
+        resourceUnavailable: true,
+      },
+    });
+
+    store.syncWorkOrderNotifications();
+    store.syncResourceNotifications([{
+      workOrderId: failedGoal.id,
+      executionIdentityId: "account-a",
+      identityLabel: "工作账号",
+      signal: {
+        status: "unavailable",
+        source: "codex-app-server",
+        observedAt: new Date().toISOString(),
+        message: "额度不可用",
+        shortWindow: null,
+        longWindow: null,
+      },
+    }]);
+    store.syncResourceNotifications([{
+      workOrderId: failedGoal.id,
+      executionIdentityId: "account-a",
+      identityLabel: "工作账号",
+      signal: {
+        status: "unavailable",
+        source: "codex-app-server",
+        observedAt: new Date().toISOString(),
+        message: "额度不可用",
+        shortWindow: null,
+        longWindow: null,
+      },
+    }]);
+
+    expect(store.listNotifications()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "response",
+        workOrderId: responseGoal.id,
+        targetCode: "goal.response",
+      }),
+      expect.objectContaining({
+        kind: "review",
+        workOrderId: reviewGoal.id,
+        targetCode: "goal.stage",
+      }),
+      expect.objectContaining({
+        kind: "run_failed",
+        workOrderId: failedGoal.id,
+        targetCode: "goal.failure",
+      }),
+      expect.objectContaining({
+        kind: "resource_unavailable",
+        workOrderId: failedGoal.id,
+        targetCode: "resource.account",
+        targetUrl: `/resources?account=account-a&goal=${failedGoal.id}&project=unclassified`,
+      }),
+    ]));
+    expect(store.listNotifications().filter((notification) => notification.kind === "resource_unavailable")).toHaveLength(1);
+
+    store.syncResourceNotifications([{
+      workOrderId: failedGoal.id,
+      executionIdentityId: "account-a",
+      identityLabel: "工作账号",
+      signal: {
+        status: "available",
+        source: "codex-app-server",
+        observedAt: new Date().toISOString(),
+        message: null,
+        shortWindow: null,
+        longWindow: null,
+      },
+    }]);
+    store.syncResourceNotifications([{
+      workOrderId: failedGoal.id,
+      executionIdentityId: "account-a",
+      identityLabel: "工作账号",
+      signal: {
+        status: "unavailable",
+        source: "codex-app-server",
+        observedAt: new Date().toISOString(),
+        message: "额度不可用",
+        shortWindow: null,
+        longWindow: null,
+      },
+    }]);
+    expect(store.listNotifications().filter((notification) => notification.kind === "resource_unavailable")).toHaveLength(2);
+
+    const saved = await app.fetch(
+      new Request("http://teamline.local/api/preferences/notifications", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          settings: {
+            needsResponse: true,
+            runFailed: false,
+            goalPendingAcceptance: true,
+            resourceUnavailable: true,
+          },
+        }),
+      }),
+    );
+    expect(await saved.json()).toEqual({
+      settings: {
+        needsResponse: true,
+        runFailed: false,
+        goalPendingAcceptance: true,
+        resourceUnavailable: true,
+      },
+    });
+    const claim = await app.fetch(
+      new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
+    );
+    expect((await claim.json()).notifications).toEqual(expect.not.arrayContaining([
+      expect.objectContaining({ kind: "run_failed" }),
+    ]));
+  });
+
+  test("claims resource notices after refreshing the resource snapshot", async () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const goal = externalWorkOrder(store);
+    const app = createApp({ store });
+
+    const claim = await app.fetch(
+      new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
+    );
+    const notifications = (await claim.json()).notifications;
+    expect(notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "resource_unavailable",
+        workOrderId: goal.id,
+        targetCode: "resource.account",
+      }),
+    ]));
+  });
+
   test("keeps response and completed notices unread without duplicating after restart", () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-notifications-"));
     const databasePath = join(directory, "teamline.db");
@@ -93,7 +247,7 @@ describe("local work-order notifications", () => {
     }
   });
 
-  test("claims each native notice once and persists independent auto-run settings", async () => {
+  test("keeps legacy auto-run history without exposing it as a system notice", async () => {
     const database = new Database(":memory:");
     const store = new WorkOrderStore(database);
     const workOrder = store.create({ goal: "自动运行委托" });
@@ -120,34 +274,13 @@ describe("local work-order notifications", () => {
 
     store.recordAutoRunStarted(workOrder.id, 1);
     store.recordAutoRunStopped(workOrder.id, 1);
+    expect(store.listNotifications().map((notification) => notification.kind)).toEqual([
+      "auto_run_stopped",
+    ]);
     const firstClaim = await app.fetch(
       new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
     );
-    const secondClaim = await app.fetch(
-      new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
-    );
-    const first = await firstClaim.json();
-    const second = await secondClaim.json();
-
-    expect(first.notifications.map((notification: { kind: string }) => notification.kind)).toEqual([
-      "auto_run_stopped",
-    ]);
-    expect(second.notifications).toEqual([]);
-
-    const release = await app.fetch(
-      new Request("http://teamline.local/api/notifications/release", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: first.notifications[0].id }),
-      }),
-    );
-    const retried = await app.fetch(
-      new Request("http://teamline.local/api/notifications/claim", { method: "POST" }),
-    );
-    expect(release.status).toBe(200);
-    expect((await retried.json()).notifications).toEqual([
-      expect.objectContaining({ id: first.notifications[0].id, kind: "auto_run_stopped" }),
-    ]);
+    expect(await firstClaim.json()).toEqual({ notifications: [] });
   });
 
   test("keeps completed history in the console without claiming it as a native notice", async () => {
@@ -305,10 +438,13 @@ describe("local work-order notifications", () => {
 
     expect(page).toContain('id="open-notifications"');
     expect(page).toContain('id="notification-dialog"');
-    expect(page).toContain('id="auto-run-started-notifications"');
-    expect(page).toContain('id="auto-run-stopped-notifications"');
+    expect(page).toContain('id="notification-needs-response"');
+    expect(page).toContain('id="notification-run-failed"');
+    expect(page).toContain('id="notification-goal-pending-acceptance"');
+    expect(page).toContain('id="notification-resource-unavailable"');
     expect(script).toContain("Notification.requestPermission()");
     expect(script).toContain('requestJson("/api/notifications/claim"');
+    expect(script).toContain('requestJson("/api/preferences/notifications"');
     expect(script).toContain('searchParams.get("stage")');
     expect(script).toContain('searchParams.delete("stage")');
     expect(script).toContain('requestJson("/api/notifications/release"');

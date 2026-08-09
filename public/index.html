@@ -190,12 +190,20 @@
           <button class="secondary-button" id="enable-notifications" type="button">开启</button>
         </div>
         <label>
-          <input id="auto-run-started-notifications" type="checkbox" checked />
-          <span>自动开始</span>
+          <input id="notification-needs-response" type="checkbox" checked />
+          <span>需要响应</span>
         </label>
         <label>
-          <input id="auto-run-stopped-notifications" type="checkbox" checked />
-          <span>自动停止</span>
+          <input id="notification-run-failed" type="checkbox" checked />
+          <span>运行失败</span>
+        </label>
+        <label>
+          <input id="notification-goal-pending-acceptance" type="checkbox" checked />
+          <span>目标待验收</span>
+        </label>
+        <label>
+          <input id="notification-resource-unavailable" type="checkbox" checked />
+          <span>账号或额度不可用</span>
         </label>
       </section>
       <div id="notification-list" class="notification-list" aria-live="polite">

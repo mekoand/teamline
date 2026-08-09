@@ -256,6 +256,8 @@ export type ExecutionIdentityQuotaSnapshot = {
 export type LocalNotificationKind =
   | "response"
   | "review"
+  | "run_failed"
+  | "resource_unavailable"
   | "completed"
   | "auto_run_started"
   | "auto_run_stopped";
@@ -269,6 +271,7 @@ export type LocalNotification = {
   body: string;
   titleMessage: SemanticMessage;
   bodyMessage: SemanticMessage;
+  targetCode: string;
   targetUrl: string;
   readAt: string | null;
   claimedAt: string | null;
@@ -280,6 +283,20 @@ export type NotificationSettings = {
   autoRunStopped: boolean;
 };
 
+export type NotificationPreferences = {
+  needsResponse: boolean;
+  runFailed: boolean;
+  goalPendingAcceptance: boolean;
+  resourceUnavailable: boolean;
+};
+
+const defaultNotificationPreferences: NotificationPreferences = {
+  needsResponse: true,
+  runFailed: true,
+  goalPendingAcceptance: true,
+  resourceUnavailable: true,
+};
+
 type LocalNotificationRow = {
   id: number;
   notification_kind: LocalNotificationKind;
@@ -287,6 +304,7 @@ type LocalNotificationRow = {
   stage_id: string | null;
   title: string;
   body: string;
+  target_code: string;
   target_url: string;
   read_at: string | null;
   claimed_at: string | null;
@@ -551,6 +569,7 @@ export class WorkOrderStore {
         stage_id TEXT,
         title TEXT NOT NULL,
         body TEXT NOT NULL,
+        target_code TEXT NOT NULL DEFAULT 'goal',
         target_url TEXT NOT NULL,
         read_at TEXT,
         claimed_at TEXT,
@@ -559,10 +578,26 @@ export class WorkOrderStore {
       );
       CREATE INDEX IF NOT EXISTS local_notifications_recent
       ON local_notifications(created_at DESC, id DESC);
+      CREATE TABLE IF NOT EXISTS local_resource_notification_states (
+        work_order_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        sequence INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (work_order_id, account_id)
+      );
       UPDATE local_notifications
       SET notification_kind = 'review'
       WHERE notification_kind = 'response' AND dedupe_key LIKE 'response:%:review:%';
     `);
+    const notificationColumns = this.database
+      .query<{ name: string }, []>("PRAGMA table_info(local_notifications)")
+      .all();
+    if (!notificationColumns.some((column) => column.name === "target_code")) {
+      this.database.exec(
+        "ALTER TABLE local_notifications ADD COLUMN target_code TEXT NOT NULL DEFAULT 'goal'",
+      );
+    }
     this.backfillSessionMonitoringWorks();
   }
 
@@ -1951,6 +1986,56 @@ export class WorkOrderStore {
     return this.getNotificationSettings();
   }
 
+  getNotificationPreferences(): NotificationPreferences {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'notification-preferences'",
+      )
+      .get();
+    if (!row) return { ...defaultNotificationPreferences };
+    try {
+      const value = JSON.parse(row.value) as Record<string, unknown>;
+      if (
+        typeof value.needsResponse !== "boolean" ||
+        typeof value.runFailed !== "boolean" ||
+        typeof value.goalPendingAcceptance !== "boolean" ||
+        typeof value.resourceUnavailable !== "boolean"
+      ) {
+        return { ...defaultNotificationPreferences };
+      }
+      return {
+        needsResponse: value.needsResponse,
+        runFailed: value.runFailed,
+        goalPendingAcceptance: value.goalPendingAcceptance,
+        resourceUnavailable: value.resourceUnavailable,
+      };
+    } catch {
+      return { ...defaultNotificationPreferences };
+    }
+  }
+
+  saveNotificationPreferences(
+    preferences: NotificationPreferences,
+  ): NotificationPreferences {
+    if (
+      typeof preferences.needsResponse !== "boolean" ||
+      typeof preferences.runFailed !== "boolean" ||
+      typeof preferences.goalPendingAcceptance !== "boolean" ||
+      typeof preferences.resourceUnavailable !== "boolean"
+    ) {
+      throw new Error("通知偏好无效");
+    }
+    const normalized = { ...preferences };
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('notification-preferences', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(JSON.stringify(normalized), new Date().toISOString());
+    return normalized;
+  }
+
   syncWorkOrderNotifications(): void {
     for (const workOrder of this.list()) {
       const notification = stateNotification(workOrder);
@@ -1958,11 +2043,64 @@ export class WorkOrderStore {
     }
   }
 
+  syncResourceNotifications(
+    observations: Array<{
+      workOrderId: string;
+      executionIdentityId: string | null;
+      identityLabel?: string | null;
+      signal: CodexResourceSignal;
+    }>,
+  ): void {
+    for (const observation of observations) {
+      const workOrder = this.get(observation.workOrderId);
+      if (!workOrder) continue;
+      const accountId = observation.executionIdentityId || "default";
+      const accountLabel = observation.identityLabel?.trim() || "当前账号";
+      const status = observation.signal.status;
+      const query = new URLSearchParams({
+        account: accountId,
+        goal: workOrder.id,
+        project: workOrder.projectId || "unclassified",
+      });
+      const previous = this.database
+        .query<{ status: string; sequence: number }, [string, string]>(`
+          SELECT status, sequence
+          FROM local_resource_notification_states
+          WHERE work_order_id = ? AND account_id = ?
+        `)
+        .get(workOrder.id, accountId);
+      const statusChanged = previous?.status !== status;
+      const sequence = statusChanged ? (previous?.sequence ?? 0) + 1 : (previous?.sequence ?? 0);
+      this.database
+        .query(`
+          INSERT INTO local_resource_notification_states (
+            work_order_id, account_id, status, sequence, updated_at
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(work_order_id, account_id) DO UPDATE SET
+            status = excluded.status,
+            sequence = excluded.sequence,
+            updated_at = excluded.updated_at
+        `)
+        .run(workOrder.id, accountId, status, sequence, new Date().toISOString());
+      if (!resourceSignalNeedsAttention(observation.signal) || !statusChanged) continue;
+      this.insertNotification({
+        dedupeKey: `resource-unavailable:${workOrder.id}:${accountId}:${status}:${sequence}`,
+        kind: "resource_unavailable",
+        workOrderId: workOrder.id,
+        stageId: null,
+        title: "账号或额度不可用",
+        body: `${accountLabel} · ${observation.signal.message || resourceStatusMessage(status)}`,
+        targetCode: "resource.account",
+        targetUrl: `/resources?${query.toString()}`,
+      });
+    }
+  }
+
   listNotifications(limit = 50): LocalNotification[] {
     return this.database
       .query<LocalNotificationRow, [number]>(`
         SELECT id, notification_kind, work_order_id, stage_id, title, body,
-               target_url, read_at, claimed_at, created_at
+               target_code, target_url, read_at, claimed_at, created_at
         FROM local_notifications
         ORDER BY created_at DESC, id DESC
         LIMIT ?
@@ -1983,22 +2121,29 @@ export class WorkOrderStore {
 
   claimPendingNotifications(limit = 10): LocalNotification[] {
     const transaction = this.database.transaction(() => {
-      const settings = this.getNotificationSettings();
+      const preferences = this.getNotificationPreferences();
       const pending = this.database
-        .query<LocalNotificationRow, [number, number, number]>(`
+        .query<LocalNotificationRow, [number, number, number, number, number]>(`
           SELECT id, notification_kind, work_order_id, stage_id, title, body,
-                 target_url, read_at, claimed_at, created_at
+                 target_code, target_url, read_at, claimed_at, created_at
           FROM local_notifications
           WHERE claimed_at IS NULL AND read_at IS NULL
             AND (
-              notification_kind IN ('response', 'review')
-              OR (notification_kind = 'auto_run_started' AND ? = 1)
-              OR (notification_kind = 'auto_run_stopped' AND ? = 1)
+              (notification_kind = 'response' AND ? = 1)
+              OR (notification_kind = 'run_failed' AND ? = 1)
+              OR (notification_kind = 'review' AND ? = 1)
+              OR (notification_kind = 'resource_unavailable' AND ? = 1)
             )
           ORDER BY created_at ASC, id ASC
           LIMIT ?
         `)
-        .all(Number(settings.autoRunStarted), Number(settings.autoRunStopped), limit);
+        .all(
+          Number(preferences.needsResponse),
+          Number(preferences.runFailed),
+          Number(preferences.goalPendingAcceptance),
+          Number(preferences.resourceUnavailable),
+          limit,
+        );
       if (pending.length === 0) return [];
       const claimedAt = new Date().toISOString();
       const claim = this.database.query(`
@@ -2083,8 +2228,11 @@ export class WorkOrderStore {
     stageId: string | null;
     title: string;
     body: string;
+    targetCode?: string;
+    targetUrl?: string;
   }): void {
-    const targetUrl = notificationTargetUrl(
+    const targetCode = notification.targetCode ?? defaultNotificationTargetCode(notification.kind);
+    const targetUrl = notification.targetUrl ?? notificationTargetUrl(
       notification.workOrderId,
       notification.stageId,
     );
@@ -2092,8 +2240,8 @@ export class WorkOrderStore {
       .query(`
         INSERT OR IGNORE INTO local_notifications (
           dedupe_key, notification_kind, work_order_id, stage_id,
-          title, body, target_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          title, body, target_code, target_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         notification.dedupeKey,
@@ -2102,6 +2250,7 @@ export class WorkOrderStore {
         notification.stageId,
         notification.title,
         notification.body,
+        targetCode,
         targetUrl,
         new Date().toISOString(),
       );
@@ -4482,6 +4631,18 @@ function stateNotification(workOrder: WorkOrder): {
     };
   }
 
+  if (workOrder.runStatus === "failed") {
+    const stage = notificationStage(workOrder, "stopped");
+    return {
+      dedupeKey: `run-failed:${workOrder.id}:${workOrder.runNumber}`,
+      kind: "run_failed",
+      workOrderId: workOrder.id,
+      stageId: stage?.id ?? null,
+      title: "目标运行失败",
+      body: `${workOrder.title} · ${workOrder.currentSummary}`,
+    };
+  }
+
   if (workOrder.status === "interrupted") {
     const stage = notificationStage(workOrder, "stopped");
     return {
@@ -4494,6 +4655,32 @@ function stateNotification(workOrder: WorkOrder): {
     };
   }
   return null;
+}
+
+function defaultNotificationTargetCode(kind: LocalNotificationKind): string {
+  if (kind === "resource_unavailable") return "resource.account";
+  if (kind === "review") return "goal.stage";
+  if (kind === "run_failed") return "goal.failure";
+  if (kind === "response") return "goal.response";
+  return "goal";
+}
+
+function resourceSignalNeedsAttention(signal: CodexResourceSignal): boolean {
+  return ["unavailable", "stale", "conflict", "error", "not_connected"].includes(
+    signal.status,
+  );
+}
+
+function resourceStatusMessage(status: CodexResourceSignal["status"]): string {
+  return {
+    loading: "额度状态未知",
+    unavailable: "账号或额度当前不可用",
+    stale: "额度数据已过期",
+    conflict: "额度数据有冲突",
+    error: "额度读取失败",
+    not_connected: "账号尚未连接",
+    available: "额度可用",
+  }[status];
 }
 
 function notificationStage(
@@ -4537,6 +4724,7 @@ function mapLocalNotificationRow(row: LocalNotificationRow): LocalNotification {
     body: row.body,
     titleMessage: semanticMessage(`notification.title.${codeKind}`),
     bodyMessage: semanticMessage(`notification.body.${codeKind}`, { text: row.body }),
+    targetCode: row.target_code,
     targetUrl: row.target_url,
     readAt: row.read_at,
     claimedAt: row.claimed_at,
