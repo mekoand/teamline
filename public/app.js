@@ -145,9 +145,7 @@ function bindShellEvents() {
     renderNotificationShell();
     notificationDialog.showModal();
   });
-  document.querySelector("#close-notifications").addEventListener("click", () => {
-    notificationDialog.close();
-  });
+  document.querySelector("#close-notifications").addEventListener("click", () => notificationDialog.close());
   document.querySelector("#enable-notifications").addEventListener("click", enableNativeNotifications);
   document
     .querySelector("#auto-run-started-notifications")
@@ -178,31 +176,29 @@ function bindShellEvents() {
     resetRestorePreview();
     localStateDialog.showModal();
   });
-  document.querySelector("#close-local-state").addEventListener("click", closeLocalState);
-  document.querySelector("#cancel-local-state").addEventListener("click", closeLocalState);
+  document.querySelector("#close-local-state").addEventListener("click", () => closeLocalState());
+  document.querySelector("#cancel-local-state").addEventListener("click", () => closeLocalState());
   document.querySelector("#export-local-state").addEventListener("click", exportLocalState);
   document.querySelector("#restore-state-file").addEventListener("change", previewStateRestore);
   document.querySelector("#confirm-state-restore").addEventListener("click", confirmStateRestore);
   document.querySelector("#open-session-import").addEventListener("click", () => {
-    closeCreateDialog();
+    closeCreateDialog(true);
     openSessionImport();
   });
-  document.querySelector("#close-session-import").addEventListener("click", closeSessionImport);
-  document.querySelector("#cancel-session-import").addEventListener("click", closeSessionImport);
-  document.querySelector("#close-monitoring-goal").addEventListener("click", closeMonitoringGoal);
-  document.querySelector("#cancel-monitoring-goal").addEventListener("click", closeMonitoringGoal);
+  document.querySelector("#close-session-import").addEventListener("click", () => closeSessionImport());
+  document.querySelector("#cancel-session-import").addEventListener("click", () => closeSessionImport());
+  document.querySelector("#close-monitoring-goal").addEventListener("click", () => closeMonitoringGoal());
+  document.querySelector("#cancel-monitoring-goal").addEventListener("click", () => closeMonitoringGoal());
   monitoringGoalForm.addEventListener("submit", createGoalFromMonitoring);
-  monitoringGoalDialog.addEventListener("click", (event) => {
-    if (event.target === monitoringGoalDialog) closeMonitoringGoal();
-  });
-  monitoringGoalDialog.addEventListener("cancel", (event) => {
-    if (monitoringGoalSubmit.dataset.busy === "true") {
-      event.preventDefault();
-      return;
-    }
-    event.preventDefault();
-    closeMonitoringGoal();
-  });
+  bindDismissibleDialog(notificationDialog, () => notificationDialog.close());
+  bindDismissibleDialog(localStateDialog, closeLocalState, localStateDialogBusy);
+  bindDismissibleDialog(createDialog, closeCreateDialog, () => createButton.dataset.busy === "true");
+  bindDismissibleDialog(sessionImportDialog, closeSessionImport, () =>
+    document.querySelector("#submit-session-import").dataset.busy === "true",
+  );
+  bindDismissibleDialog(monitoringGoalDialog, closeMonitoringGoal, () =>
+    monitoringGoalSubmit.dataset.busy === "true",
+  );
   document.querySelector("#session-search").addEventListener("input", (event) => {
     state.sessionSearch = event.currentTarget.value;
     renderSessionCandidates();
@@ -219,22 +215,70 @@ function bindShellEvents() {
     await loadSessionDiscovery();
   });
   sessionImportForm.addEventListener("submit", importSelectedSessions);
-  document.querySelector("#close-create").addEventListener("click", closeCreateDialog);
-  document.querySelector("#cancel-create").addEventListener("click", closeCreateDialog);
+  document.querySelector("#close-create").addEventListener("click", () => closeCreateDialog());
+  document.querySelector("#cancel-create").addEventListener("click", () => closeCreateDialog());
   createForm.addEventListener("submit", createWorkOrder);
   document.querySelector("#add-material").addEventListener("click", () => addMaterialRow());
   document.querySelector("#create-project-select").addEventListener("change", refreshCreateProjectMaterials);
   createForm.querySelector('[name="name"]').addEventListener("blur", refreshCreateProjectMaterials);
   createForm.querySelector('[name="description"]').addEventListener("blur", refreshCreateProjectMaterials);
   contextBackdrop.addEventListener("click", () => dismissContextInspector());
+  document.addEventListener("click", handleFloatingDisclosureClick);
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    if (closeOpenFloatingDisclosures()) {
+      event.preventDefault();
+      return;
+    }
     dismissContextInspector();
   });
   window.addEventListener("popstate", () => {
     resetGoalSelection();
     refreshConsole();
   });
+}
+
+function bindDismissibleDialog(dialog, close, isBusy = () => false) {
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog && !isBusy()) close();
+  });
+  dialog.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    if (!isBusy()) close();
+  });
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (!isBusy()) close();
+  });
+}
+
+function floatingDisclosures() {
+  return [...document.querySelectorAll(
+    "details.topbar-quota-control[open], details.identity-add-disclosure[open]",
+  )];
+}
+
+function closeOpenFloatingDisclosures(except = null) {
+  let closed = false;
+  for (const disclosure of floatingDisclosures()) {
+    if (disclosure === except || disclosure.querySelector('[data-busy="true"]')) continue;
+    disclosure.open = false;
+    closed = true;
+  }
+  return closed;
+}
+
+function handleFloatingDisclosureClick(event) {
+  const closeButton = event.target.closest("[data-close-floating-disclosure]");
+  if (closeButton) {
+    const disclosure = closeButton.closest("details");
+    if (disclosure && !disclosure.querySelector('[data-busy="true"]')) disclosure.open = false;
+    return;
+  }
+  closeOpenFloatingDisclosures(event.target.closest(
+    "details.topbar-quota-control, details.identity-add-disclosure",
+  ));
 }
 
 async function initializeLanguage() {
@@ -274,6 +318,7 @@ function applyLanguage(locale) {
   document.querySelector("#language-select").value = locale;
   applyStaticTranslations(document, locale);
   localizeTree(document.body, locale);
+  applyTheme(state.theme);
 }
 
 function openCreateDialog() {
@@ -303,7 +348,14 @@ function dismissContextInspector() {
   renderConsole();
 }
 
-function closeLocalState() {
+function localStateDialogBusy() {
+  return document.querySelector("#confirm-state-restore").disabled ||
+    document.querySelector("#export-local-state").disabled ||
+    Boolean(document.querySelector("#restore-preview .loading-state"));
+}
+
+function closeLocalState(force = false) {
+  if (!force && localStateDialogBusy()) return;
   localStateDialog.close();
 }
 
@@ -783,10 +835,10 @@ function renderConsole(feedback = "") {
   monitoringModeButton?.setAttribute("aria-selected", String(isSessionMonitoringView()));
   document.querySelector("#open-create")?.toggleAttribute("hidden", isSessionMonitoringView());
   document.querySelector(".recent-goals-heading span")?.replaceChildren(
-    document.createTextNode(isSessionMonitoringView() ? "本机会话" : "Recent goals"),
+    document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "本机会话" : "最近目标")),
   );
   document.querySelector(".sidebar-heading h1")?.replaceChildren(
-    document.createTextNode(isSessionMonitoringView() ? "会话监控" : "Goals"),
+    document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "会话监控" : "目标")),
   );
   if (isAllGoalsView()) {
     workspaceElement.innerHTML = renderAllGoalsWorkspace();
@@ -901,7 +953,7 @@ function renderMonitoringSidebar(sessions) {
     .map((entry) => `
       <section class="sidebar-object-group" data-sidebar-group="${escapeHtml(entry.key)}">
         <button class="sidebar-project-row ${activeMonitoringProjectKey(sessions) === entry.key ? "selected" : ""}" data-monitoring-project="${escapeHtml(entry.key)}" type="button">
-          <strong>${escapeHtml(entry.name)}</strong><span>${entry.sessions.length}</span>
+          <strong ${entry.key === "unclassified" ? "" : "data-i18n-preserve"}>${entry.key === "unclassified" ? translateFixedText(state.locale, "未归类") : escapeHtml(entry.name)}</strong><span>${entry.sessions.length}</span>
         </button>
         <div class="sidebar-project-sessions">${entry.sessions.map(renderSessionMonitoringSidebarRow).join("")}</div>
       </section>`)
@@ -918,7 +970,7 @@ function renderSessionMonitoringSidebarRow(session) {
       <span class="status-dot ${session.monitoringEnabled ? "running" : "queued"}"></span>
       <span class="order-row-copy">
         <strong data-i18n-preserve>${escapeHtml(session.title)}${identity}</strong>
-        <small>${escapeHtml(session.sourceKind === "claude_code_session" ? "Claude Code" : "Codex")}${session.monitoringEnabled ? " · 监控中" : " · 未监控"}</small>
+        <small>${escapeHtml(session.sourceKind === "claude_code_session" ? "Claude Code" : "Codex")} · ${translateFixedText(state.locale, session.monitoringEnabled ? "监控中" : "未监控")}</small>
       </span>
       <time>${formatDate(session.lastActiveAt)}</time>
     </button>`;
@@ -978,39 +1030,42 @@ function renderSessionMonitoringWorkspace() {
   const currentProject = projectEntries.find((entry) => entry.key === projectKey);
   const sessions = currentProject?.sessions ?? [];
   const graph = buildMonitoringProjectGraph(sessions);
-  const projectName = currentProject?.name ?? "未归类";
+  const projectName = currentProject?.key === "unclassified" || !currentProject
+    ? translateFixedText(state.locale, "未归类")
+    : currentProject.name;
+  const preserveProjectName = currentProject?.key !== "unclassified";
   return `
     <section class="workspace-content session-monitoring-workspace">
       <header class="overview-heading">
-        <div><p class="overline">会话监控 · 项目</p><h1 data-i18n-preserve>${escapeHtml(projectName)}</h1><p class="workspace-lede">查看来源会话的关键进展。每条线路只保留有意义的节点，原始会话仍由对应工具负责。</p></div>
+        <div><p class="overline">会话监控 · 项目</p><h1 ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</h1><p class="workspace-lede">查看来源会话的关键进展。每条线路只保留有意义的节点，原始会话仍由对应工具负责。</p></div>
         <div class="overview-actions">
           <button class="secondary-button" id="refresh-session-monitoring" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>${state.sessionMonitoringRefreshInFlight ? "正在扫描…" : "手动刷新"}</button>
         </div>
       </header>
       <section class="session-monitoring-toolbar">
-        <label><span>当前项目</span><select id="session-monitoring-project-filter"><option value="" disabled ${projectKey ? "" : "selected"}>选择项目</option>${projectEntries.map((entry) => `<option value="${escapeHtml(entry.key)}" ${entry.key === projectKey ? "selected" : ""} data-i18n-preserve>${escapeHtml(entry.name)}</option>`).join("")}</select></label>
-        <span class="saved-state">${monitoring.lastScannedAt ? `上次发现于 ${formatDate(monitoring.lastScannedAt)}` : "尚未扫描"}</span>
+        <label><span>当前项目</span><select id="session-monitoring-project-filter"><option value="" disabled ${projectKey ? "" : "selected"}>选择项目</option>${projectEntries.map((entry) => `<option value="${escapeHtml(entry.key)}" ${entry.key === projectKey ? "selected" : ""} ${entry.key === "unclassified" ? "" : "data-i18n-preserve"}>${entry.key === "unclassified" ? translateFixedText(state.locale, "未归类") : escapeHtml(entry.name)}</option>`).join("")}</select></label>
+        <span class="saved-state">${monitoring.lastScannedAt ? `${state.locale === "zh-CN" ? "上次发现于" : "Last discovered"} ${formatDate(monitoring.lastScannedAt)}` : translateFixedText(state.locale, "尚未扫描")}</span>
       </section>
       ${state.sessionMonitoringError ? `<p class="form-error" role="alert">${escapeHtml(state.sessionMonitoringError)}</p>` : ""}
       ${monitoring.message ? `<p class="session-monitoring-message" role="status">${escapeHtml(monitoring.message)}</p>` : ""}
       ${allSessions.length === 0
         ? `<section class="session-monitoring-empty"><strong>还没有本机会话</strong><p>点击“手动刷新”读取 Codex 和 Claude Code 的本地会话。</p><button class="secondary-button" id="refresh-session-monitoring-empty" type="button">开始扫描</button></section>`
         : graph.lanes.length
-          ? renderSessionMonitoringGraph(graph, projectName)
+          ? renderSessionMonitoringGraph(graph, projectName, preserveProjectName)
           : `<section class="session-monitoring-empty"><strong>这个项目还没有受监控会话</strong><p>从左栏选择一个会话，在检查栏中启用监控。</p></section>`}
     </section>`;
 }
 
-function renderSessionMonitoringGraph(graph, projectName) {
+function renderSessionMonitoringGraph(graph, projectName, preserveProjectName) {
   const monitoredSessions = currentMonitoringProjectSessions().filter(
     (session) => session.monitoringEnabled,
   );
   return `
     <section class="session-monitoring-graph" data-session-monitoring-graph>
       <header class="session-monitoring-graph-heading">
-        <div><p class="overline">工作图</p><h2 data-i18n-preserve>${escapeHtml(projectName)} · 关键进展</h2></div>
+        <div><p class="overline">工作图</p><h2><span ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</span> · ${translateFixedText(state.locale, "关键进展")}</h2></div>
         <div class="monitoring-graph-actions">
-          ${graph.overallProgress ? `<div class="monitoring-overall-progress"><span>整体进度</span><strong>${graph.overallProgress.percent}%</strong><small>${graph.overallProgress.completed}/${graph.overallProgress.total} 项</small></div>` : ""}
+          ${graph.overallProgress ? `<div class="monitoring-overall-progress"><span>整体进度</span><strong>${graph.overallProgress.percent}%</strong><small>${graph.overallProgress.completed}/${graph.overallProgress.total} ${state.locale === "zh-CN" ? "项" : "items"}</small></div>` : ""}
           <button class="secondary-button" id="open-monitoring-goal" type="button" ${monitoredSessions.length ? "" : "disabled"}>从当前进展创建目标</button>
         </div>
       </header>
@@ -1044,7 +1099,7 @@ function renderSessionMonitoringLane(lane) {
 function renderMonitoringNode(node, hasPrevious) {
   const kindLabel = node.status === "current" ? "当前" : node.status === "future" ? "后续 · 来源明确" : "历史";
   const progress = node.status === "current" && node.estimatedProgress !== null
-    ? `<span class="monitoring-node-progress">${node.estimatedProgress}% · 估算</span>`
+    ? `<span class="monitoring-node-progress">${node.estimatedProgress}% · ${translateFixedText(state.locale, "估算")}</span>`
     : "";
   return `
     <div class="monitoring-node-wrap">
@@ -1119,11 +1174,10 @@ function openMonitoringGoalDialog() {
   const projectName = activeMonitoringProjectId()
     ? projectEntry?.name ?? "当前项目"
     : "";
-  const goalName = projectName ? `从${projectName}当前进展继续` : "从当前进展继续";
-  document.querySelector("#monitoring-goal-name").value = translateFixedText(
-    state.locale,
-    goalName,
-  );
+  const goalName = state.locale === "zh-CN"
+    ? projectName ? `从${projectName}当前进展继续` : "从当前进展继续"
+    : projectName ? `Continue from current ${projectName} progress` : "Continue from current progress";
+  document.querySelector("#monitoring-goal-name").value = goalName;
   document.querySelector("#monitoring-goal-description").value = "";
   document.querySelector("#monitoring-goal-acceptance").value = "";
   monitoringGoalError.textContent = "";
@@ -1132,7 +1186,7 @@ function openMonitoringGoalDialog() {
       <input type="checkbox" name="sourceSessionKey" value="${escapeHtml(session.key)}" ${selectedKey ? session.key === selectedKey ? "checked" : "" : "checked"} />
       <span>
         <strong data-i18n-preserve>${escapeHtml(session.title)}</strong>
-        <small>${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)} · 最近活动 ${formatDate(session.lastActiveAt)}</small>
+        <small>${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)} · ${translateFixedText(state.locale, "最近活动")} ${formatDate(session.lastActiveAt)}</small>
       </span>
       <em>监控中</em>
     </label>`).join("");
@@ -1287,7 +1341,10 @@ function renderMonitoringSessionContext(session) {
     '<option value="">未归类</option>',
     ...state.projects.map((project) => `<option value="${escapeHtml(project.id)}" ${session.projectId === project.id ? "selected" : ""} data-i18n-preserve>${escapeHtml(project.name)}</option>`),
   ].join("");
-  const sourceAvailability = session.sourceAvailable === false ? "不可用" : "可打开";
+  const sourceAvailability = translateFixedText(
+    state.locale,
+    session.sourceAvailable === false ? "不可用" : "可打开",
+  );
   return `
     <section class="context-content monitoring-context">
       <div class="context-heading">
@@ -1322,10 +1379,10 @@ function renderMonitoringNodeContext(node) {
   return `
     <section class="context-content monitoring-context">
       <div class="context-heading">
-        <div><p class="overline">工作图节点 · ${statusLabel}</p><h2 data-i18n-preserve>${escapeHtml(node.outcome)}</h2></div>
+        <div><p class="overline">${translateFixedText(state.locale, "工作图节点")} · ${translateFixedText(state.locale, statusLabel)}</p><h2 data-i18n-preserve>${escapeHtml(node.outcome)}</h2></div>
         ${renderContextCloseButton()}
       </div>
-      ${node.status === "current" && node.estimatedProgress !== null ? `<span class="monitoring-node-progress">${node.estimatedProgress}% · 估算</span>` : ""}
+      ${node.status === "current" && node.estimatedProgress !== null ? `<span class="monitoring-node-progress">${node.estimatedProgress}% · ${translateFixedText(state.locale, "估算")}</span>` : ""}
       ${node.status === "future" ? '<p class="context-summary">来源会话明确提出的后续步骤。</p>' : ""}
       ${node.summary ? `<p class="context-summary" data-i18n-preserve>${escapeHtml(node.summary)}</p>` : ""}
       <dl class="context-list">
@@ -1372,12 +1429,12 @@ function renderMonitoringActivityList(items) {
 }
 
 function sessionOrganizationStatusLabel(status) {
-  return {
+  return translateFixedText(state.locale, {
     not_started: "尚未整理",
     pending: "整理中",
     ready: "已整理",
     failed: "整理失败",
-  }[status] ?? status;
+  }[status] ?? status);
 }
 
 function renderHomeGoalRow(workOrder) {
@@ -1970,6 +2027,7 @@ function renderResourceSummary() {
           : `<strong>${resourceStatusLabel(shownQuota.status)}</strong>`}
       </summary>
       <div class="topbar-quota-popover">
+        <button class="icon-button floating-disclosure-close" type="button" data-close-floating-disclosure aria-label="关闭">×</button>
         ${accounts.length
           ? accounts.map(renderTopbarAccountQuota).join("")
           : `<article><strong>Codex</strong><span>${resourceStatusLabel(codex.status)}</span></article>`}
@@ -2081,6 +2139,7 @@ function renderCodexAccountQuota(accounts) {
           <details class="identity-add-disclosure">
             <summary>添加账号</summary>
             <form id="add-identity-form">
+              <button class="icon-button floating-disclosure-close" type="button" data-close-floating-disclosure aria-label="关闭">×</button>
               <label><span>账号名称</span><input name="label" required maxlength="40" placeholder="例如：备用" autocomplete="off" /></label>
               <button class="primary-button" type="submit">添加并登录</button>
               <p class="inline-feedback" id="identity-create-feedback" role="status"></p>
@@ -4231,7 +4290,7 @@ async function createWorkOrder(event) {
         materials: readMaterials(),
       }),
     });
-    closeCreateDialog();
+    closeCreateDialog(true);
     history.pushState({}, "", `/goals/${encodeURIComponent(workOrder.id)}`);
     state.selected = workOrder;
     state.selectedStageIndex = 0;
@@ -4274,7 +4333,8 @@ async function loadSessionDiscovery() {
   }
 }
 
-function closeSessionImport() {
+function closeSessionImport(force = false) {
+  if (!force && document.querySelector("#submit-session-import").dataset.busy === "true") return;
   sessionImportDialog.close();
   sessionImportForm.reset();
   sessionImportError.textContent = "";
@@ -4360,7 +4420,7 @@ async function importSelectedSessions(event) {
       }),
     });
     const workOrder = result.workOrder;
-    closeSessionImport();
+    closeSessionImport(true);
     if (workOrder) {
       history.pushState({}, "", `/goals/${encodeURIComponent(workOrder.id)}`);
       state.selected = workOrder;
@@ -4420,7 +4480,8 @@ function openAllGoals() {
   refreshConsole();
 }
 
-function closeCreateDialog() {
+function closeCreateDialog(force = false) {
+  if (!force && createButton.dataset.busy === "true") return;
   createDialog.close();
   createForm.reset();
   document.querySelector("#material-list").innerHTML = "";
@@ -4742,7 +4803,10 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   document.querySelector("#theme-toggle")?.setAttribute(
     "aria-label",
-    theme === "dark" ? "切换到亮色主题" : "切换到深色主题",
+    translateFixedText(
+      state.locale,
+      theme === "dark" ? "切换到亮色主题" : "切换到深色主题",
+    ),
   );
 }
 

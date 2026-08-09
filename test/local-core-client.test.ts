@@ -6,6 +6,15 @@ const electronMainSource = readFileSync(
   new URL("../src/electron/main.mjs", import.meta.url),
   "utf8",
 );
+const packageJson = JSON.parse(readFileSync(
+  new URL("../package.json", import.meta.url),
+  "utf8",
+));
+
+test("source installs the Electron binary before starting the desktop shell", () => {
+  expect(packageJson.scripts.postinstall).toBe("node node_modules/electron/install.js");
+  expect(packageJson.trustedDependencies).toContain("electron");
+});
 
 test("Local Core data directory is independent from the client window", () => {
   expect(resolveLocalCoreDataDirectory({}, "/Users/example/teamline"))

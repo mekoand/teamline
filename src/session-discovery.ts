@@ -1,6 +1,6 @@
 import { open } from "node:fs/promises";
 
-const MAX_SESSION_SOURCE_READ_BYTES = 32 * 1024 * 1024;
+const MAX_SESSION_SOURCE_READ_BYTES = 512 * 1024;
 
 export type DiscoveredSession = {
   id: string;
@@ -24,6 +24,7 @@ export type SessionDiscoveryResult = {
 export type SessionSourceRead = {
   content: string;
   nextPosition: number;
+  truncated?: true;
 };
 
 export interface SessionProvider {
@@ -50,10 +51,11 @@ export async function readSessionSource(
   try {
     if (signal?.aborted) throw new Error("来源读取已停止");
     const details = await descriptor.stat();
-    const start = fromPosition <= details.size ? fromPosition : 0;
-    if (details.size - start > MAX_SESSION_SOURCE_READ_BYTES) {
-      throw new Error("来源会话增量过大，请缩小来源后重试");
-    }
+    const requestedStart = fromPosition <= details.size ? fromPosition : 0;
+    const truncated = details.size - requestedStart > MAX_SESSION_SOURCE_READ_BYTES;
+    const start = truncated
+      ? Math.max(requestedStart, details.size - MAX_SESSION_SOURCE_READ_BYTES)
+      : requestedStart;
     const buffer = Buffer.alloc(details.size - start);
     let bytesRead = 0;
     while (bytesRead < buffer.length) {
@@ -68,14 +70,27 @@ export async function readSessionSource(
       bytesRead += result.bytesRead;
     }
     const readable = buffer.subarray(0, bytesRead);
+    let firstCompleteByte = 0;
+    if (truncated && start > requestedStart) {
+      const previousByte = Buffer.alloc(1);
+      await descriptor.read(previousByte, 0, 1, start - 1);
+      if (previousByte[0] !== 0x0a) {
+        const firstNewline = readable.indexOf(0x0a);
+        firstCompleteByte = firstNewline < 0 ? -1 : firstNewline + 1;
+      }
+    }
     const lastNewline = readable.lastIndexOf(0x0a);
+    if (truncated && (firstCompleteByte < 0 || firstCompleteByte > lastNewline)) {
+      return { content: "", nextPosition: details.size, truncated: true };
+    }
     if (lastNewline < 0) {
       return { content: "", nextPosition: start };
     }
     const completeBytes = lastNewline + 1;
     return {
-      content: readable.subarray(0, completeBytes).toString("utf8"),
+      content: readable.subarray(firstCompleteByte, completeBytes).toString("utf8"),
       nextPosition: start + completeBytes,
+      ...(truncated ? { truncated: true as const } : {}),
     };
   } finally {
     await descriptor.close();

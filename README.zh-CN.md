@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="README.md">English</a> ·
-  v2.1 ·
+  v3.0 ·
   Early access · Apple Silicon macOS
 </p>
 
@@ -56,7 +56,7 @@ Teamline 的控制服务和界面运行在 Mac 本机，不需要注册账号。
 
 ## 当前状态
 
-Teamline 目前处于 Early access，当前产品版本为 `v2.1`。
+Teamline 目前处于 Early access，当前产品版本为 `v3.0`。
 
 当前支持：
 
@@ -68,7 +68,7 @@ Teamline 目前处于 Early access，当前产品版本为 `v2.1`。
 
 目前还没有正式安装包，也暂不支持 Windows、Linux、云端账号以及 Codex 之外工具的完整执行能力。
 
-本票只交付从源码运行的 Electron 桌面壳；正式打包与分发另行处理。
+Electron 客户端目前从源码运行；正式打包与分发另行处理。
 
 ## 从源码运行
 
@@ -87,6 +87,12 @@ bun run dev
 ```bash
 bun install
 bun run desktop
+```
+
+Electron 会在安装时下载当前平台的桌面二进制。如果网络需要 HTTP 代理，请为这次安装开启 Electron 的代理支持，例如：
+
+```bash
+ELECTRON_GET_USE_PROXY=1 https_proxy=http://127.0.0.1:7890 bun install
 ```
 
 关闭 Electron 窗口只会隐藏客户端，不会停止由 Local Core 持有的目标执行；重新打开窗口后会连接到同一份本地数据。

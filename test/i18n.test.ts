@@ -88,6 +88,12 @@ describe("local language contract", () => {
     expect(translateFixedText("en", "将恢复 3 个目标")).toBe("Restore 3 goals");
     expect(translateFixedText("en", "依赖：节点 1")).toBe("Dependencies: Node 1");
     expect(translateFixedText("en", "会话监控")).toBe("Session monitoring");
+    expect(translateFixedText("en", "当前状态")).toBe("Current status");
+    expect(translateFixedText("en", "最近目标")).toBe("Recent goals");
+    expect(translateFixedText("en", "选择项目")).toBe("Select project");
+    expect(translateFixedText("en", "暂无可确认的关键进展")).toBe(
+      "No confirmed key progress yet",
+    );
     expect(translateFixedText("en", "已读取 2 个本机会话，排除 1 个 Teamline 执行会话")).toBe(
       "Read 2 local sessions; excluded 1 Teamline execution sessions",
     );
@@ -125,9 +131,10 @@ describe("local language contract", () => {
     expect(page).toContain('id="monitoring-goal-dialog"');
     expect(page).toContain("保存当前进展并创建目标；原会话继续监控。");
     expect(script).toContain('id="open-monitoring-goal"');
-    expect(script).toContain('const goalName = projectName ? `从${projectName}当前进展继续` : "从当前进展继续";');
-    expect(script).toContain("monitoringGoalDialog.addEventListener(\"click\"");
-    expect(script).toContain("monitoringGoalDialog.addEventListener(\"cancel\"");
+    expect(script).toContain('projectName ? `Continue from current ${projectName} progress` : "Continue from current progress"');
+    expect(script).toContain("bindDismissibleDialog(monitoringGoalDialog");
+    expect(script).toContain("applyTheme(state.theme)");
+    expect(script).toContain("translateFixedText(\n      state.locale");
   });
 
   test("renders stable semantic messages with parameters", () => {

@@ -35,12 +35,12 @@
           <span class="local-status"><i></i> 本地运行</span>
           <label class="language-control">
             <span data-i18n="language.label">Language</span>
-            <select id="language-select" aria-label="Language">
+            <select id="language-select" aria-label="Language" data-i18n-aria-label="language.label">
               <option value="en" data-i18n="language.en">English</option>
               <option value="zh-CN" data-i18n="language.zh-CN">简体中文</option>
             </select>
           </label>
-          <button class="notification-button" id="open-notifications" type="button" aria-label="Open notifications">
+          <button class="notification-button" id="open-notifications" type="button" aria-label="Notifications" data-i18n-aria-label="nav.notifications">
             <span data-i18n="nav.notifications">Notifications</span>
             <strong id="notification-count" hidden>0</strong>
           </button>
@@ -52,26 +52,26 @@
 
       <aside class="order-sidebar" aria-label="全局导航与最近目标">
         <div class="sidebar-heading">
-          <h1 data-i18n="shell.goals">Goals</h1>
+          <h1 data-i18n="shell.goals">目标</h1>
           <span id="work-order-count" class="count">0</span>
         </div>
         <button class="sidebar-nav" id="open-all-goals" type="button">
-          <span data-i18n="nav.goals">Goals</span><small>Current status</small>
+          <span data-i18n="nav.goals">目标</span><small>当前状态</small>
         </button>
         <button class="sidebar-nav" id="open-projects" type="button">
-          <span data-i18n="nav.projects">Projects</span><small>Organize goals</small>
+          <span data-i18n="nav.projects">项目</span><small>整理目标</small>
         </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ <span data-i18n="action.create_goal">Create goal</span></button>
         <div class="recent-goals-heading">
-          <span>Recent goals</span>
+          <span>最近目标</span>
         </div>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
         <div class="sidebar-bottom">
           <button class="sidebar-nav" id="open-resources" type="button">
-            <span data-i18n="nav.resources">Resources</span><small>Quota and scheduling</small>
+            <span data-i18n="nav.resources">资源</span><small>额度与安排</small>
           </button>
           <button class="sidebar-nav" id="open-local-state" type="button">
-            <span>Local data</span><small data-i18n="nav.local_state">Export and restore</small>
+            <span>本地数据</span><small data-i18n="nav.local_state">导出与恢复</small>
           </button>
         </div>
       </aside>

@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="README.zh-CN.md">简体中文</a> ·
-  v2.1 ·
+  v3.0 ·
   Early access · Apple Silicon macOS
 </p>
 
@@ -56,7 +56,7 @@ The resource view shows the currently available Codex signal and the run prefere
 
 ## Current status
 
-Teamline is in early access. The current product version is `v2.1`.
+Teamline is in early access. The current product version is `v3.0`.
 
 The supported setup is:
 
@@ -68,7 +68,7 @@ The supported setup is:
 
 There is no packaged installer yet. Windows, Linux, hosted accounts, and full execution support for tools other than Codex are not currently available.
 
-This issue delivers a source-run Electron shell only; packaging and distribution are separate work.
+The Electron client currently runs from source; packaging and distribution are separate work.
 
 ## Run from source
 
@@ -87,6 +87,13 @@ To start the source-run desktop shell, install dependencies and run:
 ```bash
 bun install
 bun run desktop
+```
+
+Electron downloads a platform binary during installation. If your network uses an HTTP proxy,
+enable Electron's proxy support for the install command, for example:
+
+```bash
+ELECTRON_GET_USE_PROXY=1 https_proxy=http://127.0.0.1:7890 bun install
 ```
 
 Closing the Electron window hides the client and leaves Local Core-owned execution running. Reopening the window reconnects to the same local data.
