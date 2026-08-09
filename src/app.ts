@@ -64,6 +64,11 @@ import type {
 import type { DiscoveredSession, SessionProvider } from "./session-discovery";
 import type { SessionOrganizer } from "./session-organizer";
 import {
+  sessionMonitoringKey,
+  type SessionMonitoringRecord,
+  type SessionMonitoringUpdate,
+} from "./session-monitoring";
+import {
   assertStateBundleSize,
   InvalidStateBundleError,
   LocalStateTransfer,
@@ -204,6 +209,234 @@ export function createApp({
     kind === "claude_code_session"
       ? claudeCodeSessionProvider
       : codexDiscoverySource(executionIdentityId).provider;
+
+  const visibleSessionMonitoring = (workOrders = store.list()) =>
+    store
+      .listSessionMonitoring()
+      .filter(
+        (session) =>
+          !isTeamlineExecutionSession(
+            workOrders,
+            session.executionIdentityId,
+            session.id,
+          ),
+      );
+
+  const discoverSessionMonitoring = async () => {
+    const discoveredAt = new Date().toISOString();
+    const identities = store
+      .listExecutionIdentities()
+      .filter((identity) => identity.tool === "codex" && identity.status !== "removed");
+    const codexResults = await Promise.all(
+      identities.map(async (identity) => {
+        const provider = codexSessionProviderForIdentity?.(identity) ??
+          (identity.homeKind === "system" ? codexSessionProvider : undefined);
+        if (!provider) {
+          return {
+            sourceKind: "codex_session" as const,
+            executionIdentityId: identity.id,
+            executionIdentityLabel: identity.label,
+            status: "unavailable" as const,
+            message: "这个 Codex 账号的会话发现服务尚未配置",
+            sessions: [] as DiscoveredSession[],
+          };
+        }
+        try {
+          const result = await provider.discover();
+          return {
+            sourceKind: "codex_session" as const,
+            executionIdentityId: identity.id,
+            executionIdentityLabel: identity.label,
+            ...result,
+          };
+        } catch {
+          return {
+            sourceKind: "codex_session" as const,
+            executionIdentityId: identity.id,
+            executionIdentityLabel: identity.label,
+            status: "unavailable" as const,
+            message: "暂时无法读取这个 Codex 账号的本机会话",
+            sessions: [] as DiscoveredSession[],
+          };
+        }
+      }),
+    );
+    const claudeResult = claudeCodeSessionProvider
+      ? await discoverSessionProvider(claudeCodeSessionProvider, "Claude Code")
+      : {
+          status: "unavailable" as const,
+          message: "Claude Code 会话发现服务尚未配置",
+          sessions: [] as DiscoveredSession[],
+        };
+    const sourceResults = [
+      ...codexResults,
+      {
+        sourceKind: "claude_code_session" as const,
+        executionIdentityId: null,
+        executionIdentityLabel: null,
+        ...claudeResult,
+      },
+    ];
+    const workOrders = store.list();
+    let excludedCount = 0;
+    for (const result of sourceResults) {
+      for (const session of result.sessions) {
+        if (
+          result.sourceKind === "codex_session" &&
+          isTeamlineExecutionSession(workOrders, result.executionIdentityId, session.id)
+        ) {
+          excludedCount += 1;
+          continue;
+        }
+        store.upsertDiscoveredSession({
+          key: sessionMonitoringKey(
+            result.sourceKind,
+            result.executionIdentityId,
+            session.id,
+          ),
+          sourceKind: result.sourceKind,
+          executionIdentityId: result.executionIdentityId,
+          executionIdentityLabel: result.executionIdentityLabel,
+          id: session.id,
+          title: session.title,
+          workspacePath: session.workspacePath,
+          projectLabel: session.projectLabel,
+          lastActiveAt: session.lastActiveAt,
+          sourcePath: session.sourcePath,
+          availability: session.availability,
+          message: session.message,
+          lastDiscoveredAt: discoveredAt,
+        });
+      }
+    }
+    store.saveSessionMonitoringDiscoveryAt(discoveredAt);
+    const sessions = visibleSessionMonitoring();
+    const groups = groupSessionMonitoring(sessions);
+    const statuses = sourceResults.map((result) => result.status);
+    const status = statuses.every((value) => value === "unavailable")
+      ? "unavailable"
+      : statuses.some((value) => value !== "available")
+        ? "partial"
+        : "available";
+    return {
+      status,
+      message: `已读取 ${sessions.length} 个本机会话${excludedCount ? `，排除 ${excludedCount} 个 Teamline 执行会话` : ""}`,
+      lastScannedAt: discoveredAt,
+      excludedCount,
+      projects: store.listProjects(),
+      sessions: sessions.map(presentSessionMonitoring),
+      groups,
+    };
+  };
+
+  const sessionMonitoringState = () => {
+    const sessions = visibleSessionMonitoring();
+    return {
+      status: sessions.length ? "available" : "unavailable",
+      message: sessions.length ? "本机会话目录已保存" : "还没有扫描本机会话",
+      lastScannedAt: store.getLastSessionMonitoringDiscoveryAt(),
+      projects: store.listProjects(),
+      sessions: sessions.map(presentSessionMonitoring),
+      groups: groupSessionMonitoring(sessions),
+    };
+  };
+
+  const updateSessionMonitoringSelections = (body: unknown) => {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("会话选择格式无效");
+    }
+    const rawSelections = (body as { sessions?: unknown; selections?: unknown }).sessions ??
+      (body as { selections?: unknown }).selections;
+    if (!Array.isArray(rawSelections) || rawSelections.length > 200) {
+      throw new Error("会话选择格式无效");
+    }
+    const sessions = rawSelections.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("会话选择格式无效");
+      }
+      const selection = value as {
+        key?: unknown;
+        sourceKind?: unknown;
+        executionIdentityId?: unknown;
+        id?: unknown;
+        projectId?: unknown;
+        monitoringEnabled?: unknown;
+        lastReadPosition?: unknown;
+        lastReadAt?: unknown;
+        organizationStatus?: unknown;
+        workGraphSnapshot?: unknown;
+      };
+      if (
+        selection.sourceKind !== undefined &&
+        selection.sourceKind !== "codex_session" &&
+        selection.sourceKind !== "claude_code_session"
+      ) {
+        throw new Error("会话来源工具格式无效");
+      }
+      const key = typeof selection.key === "string" && selection.key.trim()
+        ? selection.key.trim()
+        : typeof selection.sourceKind === "string" &&
+            (selection.executionIdentityId === null || typeof selection.executionIdentityId === "string") &&
+            typeof selection.id === "string"
+          ? sessionMonitoringKey(
+              selection.sourceKind as SessionMonitoringRecord["sourceKind"],
+              selection.executionIdentityId,
+              selection.id,
+            )
+          : "";
+      if (!key) throw new Error("会话选择格式无效");
+      const update: SessionMonitoringUpdate = {};
+      if (selection.projectId !== undefined) {
+        if (selection.projectId !== null && typeof selection.projectId !== "string") {
+          throw new Error("项目选择格式无效");
+        }
+        update.projectId = typeof selection.projectId === "string"
+          ? selection.projectId.trim() || null
+          : null;
+      }
+      if (selection.monitoringEnabled !== undefined) {
+        if (typeof selection.monitoringEnabled !== "boolean") {
+          throw new Error("监控开关格式无效");
+        }
+        update.monitoringEnabled = selection.monitoringEnabled;
+      }
+      if (selection.lastReadPosition !== undefined) {
+        if (
+          selection.lastReadPosition !== null &&
+          typeof selection.lastReadPosition !== "number"
+        ) {
+          throw new Error("会话读取位置无效");
+        }
+        update.lastReadPosition = selection.lastReadPosition;
+      }
+      if (selection.lastReadAt !== undefined) {
+        if (selection.lastReadAt !== null && typeof selection.lastReadAt !== "string") {
+          throw new Error("会话读取时间无效");
+        }
+        update.lastReadAt = selection.lastReadAt;
+      }
+      if (selection.organizationStatus !== undefined) {
+        if (
+          !["not_started", "pending", "ready", "failed"].includes(
+            String(selection.organizationStatus),
+          )
+        ) {
+          throw new Error("会话整理状态无效");
+        }
+        update.organizationStatus = selection.organizationStatus as SessionMonitoringUpdate["organizationStatus"];
+      }
+      if (selection.workGraphSnapshot !== undefined) {
+        update.workGraphSnapshot = selection.workGraphSnapshot;
+      }
+      return store.updateSessionMonitoring(key, update);
+    });
+    const visibleSessions = visibleSessionMonitoring();
+    return {
+      sessions: visibleSessions.map(presentSessionMonitoring),
+      projects: store.listProjects(),
+      groups: groupSessionMonitoring(visibleSessions),
+    };
+  };
   let autoRunCheckInFlight:
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
@@ -1687,6 +1920,112 @@ export function createApp({
         } catch (error) {
           return Response.json(
             { error: error instanceof Error ? error.message : "无法上传文件" },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/session-monitoring") {
+        return url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true"
+          ? Response.json(await discoverSessionMonitoring())
+          : Response.json(sessionMonitoringState());
+      }
+
+      if (
+        request.method === "POST" &&
+        ["/api/session-monitoring", "/api/session-monitoring/discover", "/api/session-monitoring/refresh"].includes(url.pathname)
+      ) {
+        if (url.pathname === "/api/session-monitoring") {
+          let body: unknown = null;
+          try {
+            body = await request.json();
+          } catch {
+            // An empty POST starts a discovery scan.
+          }
+          if (
+            body &&
+            typeof body === "object" &&
+            !Array.isArray(body) &&
+            ("sessions" in body || "selections" in body)
+          ) {
+            try {
+              return Response.json(updateSessionMonitoringSelections(body));
+            } catch (error) {
+              return Response.json(
+                {
+                  code: "INVALID_SESSION_MONITORING_SELECTION",
+                  error: error instanceof Error ? error.message : "无法保存会话选择",
+                },
+                { status: 400 },
+              );
+            }
+          }
+        }
+        return Response.json(await discoverSessionMonitoring());
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/session-monitoring/selections"
+      ) {
+        try {
+          return Response.json(
+            updateSessionMonitoringSelections(await request.json()),
+          );
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_SESSION_MONITORING_SELECTION",
+              error: error instanceof Error ? error.message : "无法保存会话选择",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      const sessionMonitoringMatch = url.pathname.match(
+        /^\/api\/session-monitoring\/([^/]+)$/,
+      );
+      if (
+        (request.method === "PATCH" || request.method === "PUT") &&
+        sessionMonitoringMatch
+      ) {
+        try {
+          const key = decodeURIComponent(sessionMonitoringMatch[1]);
+          const body = (await request.json()) as {
+            projectId?: string | null;
+            monitoringEnabled?: boolean;
+            enabled?: boolean;
+            lastReadPosition?: number | null;
+            lastReadAt?: string | null;
+            organizationStatus?: "not_started" | "pending" | "ready" | "failed";
+            workGraphSnapshot?: unknown | null;
+          };
+          const update = {
+            ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
+            ...(body.monitoringEnabled !== undefined || body.enabled !== undefined
+              ? { monitoringEnabled: body.monitoringEnabled ?? body.enabled }
+              : {}),
+            ...(body.lastReadPosition !== undefined
+              ? { lastReadPosition: body.lastReadPosition }
+              : {}),
+            ...(body.lastReadAt !== undefined ? { lastReadAt: body.lastReadAt } : {}),
+            ...(body.organizationStatus !== undefined
+              ? { organizationStatus: body.organizationStatus }
+              : {}),
+            ...(body.workGraphSnapshot !== undefined
+              ? { workGraphSnapshot: body.workGraphSnapshot }
+              : {}),
+          };
+          return Response.json({
+            session: presentSessionMonitoring(store.updateSessionMonitoring(key, update)),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_SESSION_MONITORING_UPDATE",
+              error: error instanceof Error ? error.message : "无法更新会话监控设置",
+            },
             { status: 400 },
           );
         }
@@ -3719,6 +4058,7 @@ export function createApp({
       if (
         request.method === "GET" &&
         (url.pathname === "/resources" ||
+          url.pathname === "/session-monitoring" ||
           url.pathname === "/projects" ||
           /^\/(?:goals|work-orders)\/[^/]+$/.test(url.pathname) ||
           /^\/projects\/[^/]+$/.test(url.pathname))
@@ -4401,6 +4741,68 @@ function presentSession(
         ? { workOrderId: suggested.id, title: suggested.title }
         : null,
   };
+}
+
+async function discoverSessionProvider(
+  provider: SessionProvider,
+  sourceLabel: string,
+): Promise<{
+  status: "available" | "partial" | "unavailable";
+  message: string;
+  sessions: DiscoveredSession[];
+}> {
+  try {
+    return await provider.discover();
+  } catch {
+    return {
+      status: "unavailable",
+      message: `暂时无法读取 ${sourceLabel} 本机会话`,
+      sessions: [],
+    };
+  }
+}
+
+type PresentedSessionMonitoring = Omit<SessionMonitoringRecord, "sourcePath">;
+
+function groupSessionMonitoring(sessions: SessionMonitoringRecord[]) {
+  const publicSessions = sessions.map(presentSessionMonitoring);
+  const grouped = new Map<string, PresentedSessionMonitoring[]>();
+  for (const session of publicSessions) {
+    const groupKey = `${session.sourceKind}:${session.executionIdentityId ?? "none"}`;
+    const group = grouped.get(groupKey) ?? [];
+    group.push(session);
+    grouped.set(groupKey, group);
+  }
+  return [...grouped.entries()].map(([key, group]) => {
+    const first = group[0]!;
+    return {
+      key,
+      sourceKind: first.sourceKind,
+      sourceLabel: sourceKindLabel(first.sourceKind),
+      executionIdentityId: first.executionIdentityId,
+      executionIdentityLabel: first.executionIdentityLabel,
+      sessions: group,
+    };
+  });
+}
+
+function presentSessionMonitoring(
+  session: SessionMonitoringRecord,
+): PresentedSessionMonitoring {
+  const { sourcePath: _sourcePath, ...publicSession } = session;
+  return publicSession;
+}
+
+function isTeamlineExecutionSession(
+  workOrders: WorkOrder[],
+  executionIdentityId: string | null,
+  sessionId: string,
+): boolean {
+  return workOrders.some((workOrder) => {
+    if (workOrder.sessionId !== sessionId) return false;
+    const identityId = workOrder.sessionIdentityId ?? workOrder.executionIdentityId;
+    return Boolean(identityId && identityId === executionIdentityId);
+  });
 }
 
 function findImportedSession(

@@ -49,23 +49,29 @@
           <h1 data-i18n="shell.goals">Goals</h1>
           <span id="work-order-count" class="count">0</span>
         </div>
+        <div class="sidebar-mode-switch" role="tablist" aria-label="工作模式">
+          <button class="sidebar-mode-button selected" id="open-execution-mode" type="button">目标执行</button>
+          <button class="sidebar-mode-button" id="open-monitoring-mode" type="button">会话监控</button>
+        </div>
         <button class="sidebar-nav" id="open-all-goals" type="button">
           <span data-i18n="nav.goals">Goals</span><small>Current status</small>
         </button>
         <button class="sidebar-nav" id="open-projects" type="button">
           <span data-i18n="nav.projects">Projects</span><small>Organize goals</small>
         </button>
-        <button class="sidebar-nav" id="open-resources" type="button">
-          <span data-i18n="nav.resources">Resources</span><small>Quota and scheduling</small>
-        </button>
-        <button class="sidebar-nav" id="open-local-state" type="button">
-          <span>Local data</span><small data-i18n="nav.local_state">Export and restore</small>
-        </button>
         <button class="primary-button full-button" id="open-create" type="button">＋ <span data-i18n="action.create_goal">Create goal</span></button>
         <div class="recent-goals-heading">
           <span>Recent goals</span>
         </div>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
+        <div class="sidebar-bottom">
+          <button class="sidebar-nav" id="open-resources" type="button">
+            <span data-i18n="nav.resources">Resources</span><small>Quota and scheduling</small>
+          </button>
+          <button class="sidebar-nav" id="open-local-state" type="button">
+            <span>Local data</span><small data-i18n="nav.local_state">Export and restore</small>
+          </button>
+        </div>
       </aside>
 
       <main id="work-order-workspace" class="work-order-workspace" aria-live="polite">

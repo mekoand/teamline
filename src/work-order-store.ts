@@ -47,6 +47,11 @@ import {
   workOrderPriorities,
   workOrderMaterialKinds,
 } from "./work-order";
+import {
+  type SessionMonitoringOrganizationStatus,
+  type SessionMonitoringRecord,
+  type SessionMonitoringUpdate,
+} from "./session-monitoring";
 
 export type PaidApiAttributionState = {
   pending: {
@@ -115,6 +120,30 @@ type ProjectMaterialRow = {
   label: string;
   value: string;
   source_goal_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SessionMonitoringRow = {
+  session_key: string;
+  source_kind: SessionMonitoringRecord["sourceKind"];
+  execution_identity_id: string | null;
+  execution_identity_label: string | null;
+  session_id: string;
+  title: string;
+  workspace_path: string | null;
+  project_label: string;
+  last_active_at: string;
+  source_path: string | null;
+  availability: SessionMonitoringRecord["availability"];
+  message: string | null;
+  project_id: string | null;
+  monitoring_enabled: number;
+  last_discovered_at: string;
+  last_read_position: number | null;
+  last_read_at: string | null;
+  organization_status: SessionMonitoringOrganizationStatus;
+  work_graph_snapshot_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -256,6 +285,36 @@ export class WorkOrderStore {
       ON project_materials(project_id, created_at DESC);
     `);
     this.database.exec(`
+      CREATE TABLE IF NOT EXISTS session_monitoring_catalog (
+        session_key TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        execution_identity_id TEXT,
+        execution_identity_label TEXT,
+        session_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        workspace_path TEXT,
+        project_label TEXT NOT NULL,
+        last_active_at TEXT NOT NULL,
+        source_path TEXT,
+        availability TEXT NOT NULL,
+        message TEXT,
+        project_id TEXT,
+        monitoring_enabled INTEGER NOT NULL DEFAULT 0,
+        last_discovered_at TEXT NOT NULL,
+        last_read_position INTEGER,
+        last_read_at TEXT,
+        organization_status TEXT NOT NULL DEFAULT 'not_started',
+        work_graph_snapshot_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS session_monitoring_project_lookup
+      ON session_monitoring_catalog(project_id, monitoring_enabled, last_active_at DESC);
+      CREATE INDEX IF NOT EXISTS session_monitoring_source_lookup
+      ON session_monitoring_catalog(source_kind, execution_identity_id, session_id);
+    `);
+    this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_orders (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -391,6 +450,169 @@ export class WorkOrderStore {
       `)
       .run(project.id, project.name, project.createdAt, project.updatedAt);
     return project;
+  }
+
+  listSessionMonitoring(): SessionMonitoringRecord[] {
+    return this.database
+      .query<SessionMonitoringRow, []>(`
+        SELECT * FROM session_monitoring_catalog
+        ORDER BY CASE WHEN project_id IS NULL THEN 1 ELSE 0 END,
+                 project_id, last_active_at DESC, session_key ASC
+      `)
+      .all()
+      .map(mapSessionMonitoringRow);
+  }
+
+  getSessionMonitoring(key: string): SessionMonitoringRecord | null {
+    const row = this.database
+      .query<SessionMonitoringRow, [string]>(`
+        SELECT * FROM session_monitoring_catalog WHERE session_key = ?
+      `)
+      .get(key);
+    return row ? mapSessionMonitoringRow(row) : null;
+  }
+
+  upsertDiscoveredSession(input: {
+    key: string;
+    sourceKind: SessionMonitoringRecord["sourceKind"];
+    executionIdentityId: string | null;
+    executionIdentityLabel: string | null;
+    id: string;
+    title: string;
+    workspacePath: string | null;
+    projectLabel: string;
+    lastActiveAt: string;
+    sourcePath: string | null;
+    availability: SessionMonitoringRecord["availability"];
+    message: string | null;
+    lastDiscoveredAt: string;
+  }): SessionMonitoringRecord {
+    const existing = this.getSessionMonitoring(input.key);
+    const createdAt = existing?.createdAt ?? input.lastDiscoveredAt;
+    this.database
+      .query(`
+        INSERT INTO session_monitoring_catalog (
+          session_key, source_kind, execution_identity_id, execution_identity_label,
+          session_id, title, workspace_path, project_label, last_active_at, source_path,
+          availability, message, project_id, monitoring_enabled, last_discovered_at,
+          last_read_position, last_read_at, organization_status, work_graph_snapshot_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, NULL, NULL,
+                  'not_started', NULL, ?, ?)
+        ON CONFLICT(session_key) DO UPDATE SET
+          source_kind = excluded.source_kind,
+          execution_identity_id = excluded.execution_identity_id,
+          execution_identity_label = excluded.execution_identity_label,
+          session_id = excluded.session_id,
+          title = excluded.title,
+          workspace_path = excluded.workspace_path,
+          project_label = excluded.project_label,
+          last_active_at = excluded.last_active_at,
+          source_path = excluded.source_path,
+          availability = excluded.availability,
+          message = excluded.message,
+          last_discovered_at = excluded.last_discovered_at,
+          updated_at = excluded.updated_at
+      `)
+      .run(
+        input.key,
+        input.sourceKind,
+        input.executionIdentityId,
+        input.executionIdentityLabel,
+        input.id,
+        input.title,
+        input.workspacePath,
+        input.projectLabel,
+        input.lastActiveAt,
+        input.sourcePath,
+        input.availability,
+        input.message,
+        input.lastDiscoveredAt,
+        createdAt,
+        input.lastDiscoveredAt,
+      );
+    return this.getSessionMonitoring(input.key)!;
+  }
+
+  updateSessionMonitoring(
+    key: string,
+    input: SessionMonitoringUpdate,
+  ): SessionMonitoringRecord {
+    const current = this.getSessionMonitoring(key);
+    if (!current) throw new Error("找不到这个本机会话");
+    const normalizedProjectId = input.projectId?.trim() || null;
+    if (normalizedProjectId && !this.getProject(normalizedProjectId)) {
+      throw new Error("找不到所选项目");
+    }
+    if (
+      input.lastReadPosition !== undefined &&
+      input.lastReadPosition !== null &&
+      (!Number.isInteger(input.lastReadPosition) || input.lastReadPosition < 0)
+    ) {
+      throw new Error("会话读取位置无效");
+    }
+    if (
+      input.organizationStatus !== undefined &&
+      !["not_started", "pending", "ready", "failed"].includes(input.organizationStatus)
+    ) {
+      throw new Error("会话整理状态无效");
+    }
+    const next = {
+      ...current,
+      projectId: input.projectId !== undefined ? normalizedProjectId : current.projectId,
+      monitoringEnabled:
+        input.monitoringEnabled !== undefined
+          ? Boolean(input.monitoringEnabled)
+          : current.monitoringEnabled,
+      lastReadPosition:
+        input.lastReadPosition !== undefined
+          ? input.lastReadPosition
+          : current.lastReadPosition,
+      lastReadAt:
+        input.lastReadAt !== undefined ? input.lastReadAt : current.lastReadAt,
+      organizationStatus: input.organizationStatus ?? current.organizationStatus,
+      workGraphSnapshot:
+        input.workGraphSnapshot !== undefined
+          ? input.workGraphSnapshot
+          : current.workGraphSnapshot,
+      updatedAt: new Date().toISOString(),
+    };
+    this.database
+      .query(`
+        UPDATE session_monitoring_catalog
+        SET project_id = ?, monitoring_enabled = ?, last_read_position = ?, last_read_at = ?,
+            organization_status = ?, work_graph_snapshot_json = ?, updated_at = ?
+        WHERE session_key = ?
+      `)
+      .run(
+        next.projectId,
+        next.monitoringEnabled ? 1 : 0,
+        next.lastReadPosition,
+        next.lastReadAt,
+        next.organizationStatus,
+        next.workGraphSnapshot === null ? null : JSON.stringify(next.workGraphSnapshot),
+        next.updatedAt,
+        key,
+      );
+    return this.getSessionMonitoring(key)!;
+  }
+
+  getLastSessionMonitoringDiscoveryAt(): string | null {
+    return this.database
+      .query<{ value: string }, []>(`
+        SELECT value FROM local_preferences WHERE key = 'session-monitoring-last-discovery'
+      `)
+      .get()?.value ?? null;
+  }
+
+  saveSessionMonitoringDiscoveryAt(value: string): void {
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('session-monitoring-last-discovery', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(value, value);
   }
 
   listProjectMaterials(projectId: string): ProjectMaterial[] {
@@ -3732,6 +3954,40 @@ function mapRow(
     runtimeMs: currentRuntime(row),
     maxRunMinutes: row.max_run_minutes ?? 60,
     lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapSessionMonitoringRow(row: SessionMonitoringRow): SessionMonitoringRecord {
+  let workGraphSnapshot: unknown | null = null;
+  if (row.work_graph_snapshot_json) {
+    try {
+      workGraphSnapshot = JSON.parse(row.work_graph_snapshot_json);
+    } catch {
+      workGraphSnapshot = null;
+    }
+  }
+  return {
+    key: row.session_key,
+    sourceKind: row.source_kind,
+    executionIdentityId: row.execution_identity_id,
+    executionIdentityLabel: row.execution_identity_label,
+    id: row.session_id,
+    title: row.title,
+    workspacePath: row.workspace_path,
+    projectLabel: row.project_label,
+    lastActiveAt: row.last_active_at,
+    sourcePath: row.source_path,
+    availability: row.availability,
+    message: row.message,
+    projectId: row.project_id,
+    monitoringEnabled: row.monitoring_enabled === 1,
+    lastDiscoveredAt: row.last_discovered_at,
+    lastReadPosition: row.last_read_position,
+    lastReadAt: row.last_read_at,
+    organizationStatus: row.organization_status,
+    workGraphSnapshot,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
