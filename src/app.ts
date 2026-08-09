@@ -450,7 +450,6 @@ export function createApp({
     store.saveSessionMonitoringDiscoveryAt(discoveredAt);
     queueSessionMonitoringUpdates(previousRecords, sourceResults);
     const sessions = visibleSessionMonitoring();
-    const groups = groupSessionMonitoring(sessions);
     const statuses = sourceResults.map((result) => result.status);
     const status = statuses.every((value) => value === "unavailable")
       ? "unavailable"
@@ -464,7 +463,6 @@ export function createApp({
       excludedCount,
       projects: store.listProjects(),
       sessions: sessions.map(presentSessionMonitoring),
-      groups,
     };
   };
 
@@ -492,7 +490,6 @@ export function createApp({
       lastScannedAt: store.getLastSessionMonitoringDiscoveryAt(),
       projects: store.listProjects(),
       sessions: sessions.map(presentSessionMonitoring),
-      groups: groupSessionMonitoring(sessions),
     };
   };
 
@@ -594,7 +591,6 @@ export function createApp({
     return {
       sessions: visibleSessions.map(presentSessionMonitoring),
       projects: store.listProjects(),
-      groups: groupSessionMonitoring(visibleSessions),
     };
   };
 
@@ -5615,28 +5611,6 @@ async function discoverSessionProvider(
 type PresentedSessionMonitoring = Omit<SessionMonitoringRecord, "sourcePath"> & {
   sourceAvailable: boolean;
 };
-
-function groupSessionMonitoring(sessions: SessionMonitoringRecord[]) {
-  const publicSessions = sessions.map(presentSessionMonitoring);
-  const grouped = new Map<string, PresentedSessionMonitoring[]>();
-  for (const session of publicSessions) {
-    const groupKey = `${session.sourceKind}:${session.executionIdentityId ?? "none"}`;
-    const group = grouped.get(groupKey) ?? [];
-    group.push(session);
-    grouped.set(groupKey, group);
-  }
-  return [...grouped.entries()].map(([key, group]) => {
-    const first = group[0]!;
-    return {
-      key,
-      sourceKind: first.sourceKind,
-      sourceLabel: sourceKindLabel(first.sourceKind),
-      executionIdentityId: first.executionIdentityId,
-      executionIdentityLabel: first.executionIdentityLabel,
-      sessions: group,
-    };
-  });
-}
 
 function presentSessionMonitoring(
   session: SessionMonitoringRecord,

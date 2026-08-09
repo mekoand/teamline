@@ -26,6 +26,7 @@ import {
 import {
   buildMonitoringProjectGraph,
   monitoringProjectEntries,
+  monitoringProjectEntriesForSelection,
   normalizeSessionMonitoringGraph,
 } from "./session-monitoring-graph.js";
 
@@ -70,7 +71,6 @@ const state = {
     lastScannedAt: null,
     projects: [],
     sessions: [],
-    groups: [],
   },
   sessionMonitoringError: "",
   sessionMonitoringRefreshInFlight: false,
@@ -775,8 +775,12 @@ function renderConsole(feedback = "") {
   document.querySelector("#open-all-goals")?.classList.toggle("selected", isAllGoalsView());
   document.querySelector("#open-projects")?.classList.toggle("selected", isProjectsView());
   document.querySelector("#open-resources")?.classList.toggle("selected", isResourceView());
-  document.querySelector("#open-execution-mode")?.classList.toggle("selected", !isSessionMonitoringView());
-  document.querySelector("#open-monitoring-mode")?.classList.toggle("selected", isSessionMonitoringView());
+  const executionModeButton = document.querySelector("#open-execution-mode");
+  const monitoringModeButton = document.querySelector("#open-monitoring-mode");
+  executionModeButton?.classList.toggle("selected", !isSessionMonitoringView());
+  monitoringModeButton?.classList.toggle("selected", isSessionMonitoringView());
+  executionModeButton?.setAttribute("aria-selected", String(!isSessionMonitoringView()));
+  monitoringModeButton?.setAttribute("aria-selected", String(isSessionMonitoringView()));
   document.querySelector("#open-create")?.toggleAttribute("hidden", isSessionMonitoringView());
   document.querySelector(".recent-goals-heading span")?.replaceChildren(
     document.createTextNode(isSessionMonitoringView() ? "本机会话" : "Recent goals"),
@@ -889,7 +893,11 @@ function renderSidebarObjectGroups(items, projectIdFor, renderRow) {
 }
 
 function renderMonitoringSidebar(sessions) {
-  return monitoringProjectEntries(sessions, state.projects)
+  return monitoringProjectEntriesForSelection(
+    sessions,
+    state.projects,
+    selectedMonitoringProjectId(),
+  )
     .map((entry) => `
       <section class="sidebar-object-group" data-sidebar-group="${escapeHtml(entry.key)}">
         <button class="sidebar-project-row ${activeMonitoringProjectKey(sessions) === entry.key ? "selected" : ""}" data-monitoring-project="${escapeHtml(entry.key)}" type="button">
@@ -962,7 +970,11 @@ function renderSessionMonitoringWorkspace() {
   const monitoring = state.sessionMonitoring;
   const allSessions = monitoring.sessions ?? [];
   const projectKey = activeMonitoringProjectKey(allSessions);
-  const projectEntries = monitoringProjectEntries(allSessions, state.projects);
+  const projectEntries = monitoringProjectEntriesForSelection(
+    allSessions,
+    state.projects,
+    selectedMonitoringProjectId(),
+  );
   const currentProject = projectEntries.find((entry) => entry.key === projectKey);
   const sessions = currentProject?.sessions ?? [];
   const graph = buildMonitoringProjectGraph(sessions);
@@ -1067,15 +1079,19 @@ function relationNodeLabel(key) {
 }
 
 function activeMonitoringProjectKey(sessions = state.sessionMonitoring.sessions ?? []) {
-  const entries = monitoringProjectEntries(sessions, state.projects);
   const requested = selectedMonitoringProjectId();
+  const entries = monitoringProjectEntriesForSelection(sessions, state.projects, requested);
   return entries.some((entry) => entry.key === requested)
     ? requested
     : entries[0]?.key ?? "";
 }
 
 function currentMonitoringProjectSessions() {
-  const entries = monitoringProjectEntries(state.sessionMonitoring.sessions ?? [], state.projects);
+  const entries = monitoringProjectEntriesForSelection(
+    state.sessionMonitoring.sessions ?? [],
+    state.projects,
+    selectedMonitoringProjectId(),
+  );
   return entries.find((entry) => entry.key === activeMonitoringProjectKey())?.sessions ?? [];
 }
 
@@ -1205,7 +1221,11 @@ function setMonitoringProjectInUrl(projectKey) {
 }
 
 function selectMonitoringProject(projectKey) {
-  const entries = monitoringProjectEntries(state.sessionMonitoring.sessions ?? [], state.projects);
+  const entries = monitoringProjectEntriesForSelection(
+    state.sessionMonitoring.sessions ?? [],
+    state.projects,
+    projectKey,
+  );
   if (!entries.some((entry) => entry.key === projectKey)) return;
   setMonitoringProjectInUrl(projectKey);
   const selectedSession = findMonitoringSession(state.monitoringSelectedKey);
@@ -1572,7 +1592,12 @@ function selectedMonitoringProjectId() {
 }
 
 function currentProjectIdForModeSwitch() {
-  if (isSessionMonitoringView()) return selectedMonitoringProjectId();
+  if (isSessionMonitoringView()) {
+    const activeProjectId = activeMonitoringProjectId();
+    if (activeProjectId) return activeProjectId;
+    const requestedProjectId = selectedMonitoringProjectId();
+    return requestedProjectId === "unclassified" ? "" : requestedProjectId;
+  }
   if (isProjectsView()) return selectedProjectIdFromPath() ?? "";
   return state.selected?.projectId ?? "";
 }
