@@ -29,6 +29,13 @@ import {
   monitoringProjectEntriesForSelection,
   normalizeSessionMonitoringGraph,
 } from "./session-monitoring-graph.js";
+import {
+  chooseInitialNavigation,
+  defaultNavigationState,
+  navigationStorageKey,
+  normalizeNavigationState,
+  routeForNavigation,
+} from "./navigation-state.js";
 
 let visibleStatusLabels = {};
 let allGoalStatusGroups = [];
@@ -82,6 +89,10 @@ const state = {
   notificationSettings: { autoRunStarted: true, autoRunStopped: true },
   nativeNotificationCheckInFlight: false,
   restorePreview: null,
+  navigation: readStoredNavigation(),
+  navigationInitialized: false,
+  quickNavigatorIndex: 0,
+  quickNavigatorQuery: "",
   refreshTimer: null,
   theme: readTheme(),
   locale: resolveLocale({
@@ -99,6 +110,10 @@ const createDialog = document.querySelector("#create-dialog");
 const createForm = document.querySelector("#create-form");
 const formError = document.querySelector("#form-error");
 const createButton = document.querySelector("#submit-create");
+const projectListElement = document.querySelector("#project-list");
+const quickNavigatorDialog = document.querySelector("#quick-navigator");
+const quickNavigatorSearch = document.querySelector("#quick-navigator-search");
+const quickNavigatorResults = document.querySelector("#quick-navigator-results");
 const resourceSummaryElement = document.querySelector("#resource-summary");
 const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
@@ -154,41 +169,47 @@ function bindShellEvents() {
     .querySelector("#auto-run-stopped-notifications")
     .addEventListener("change", saveNotificationSettings);
 
-  document.querySelector("#open-create").addEventListener("click", openCreateDialog);
-  document.querySelector("#open-execution-mode").addEventListener("click", openExecutionMode);
-  document.querySelector("#open-monitoring-mode").addEventListener("click", openSessionMonitoring);
-  document.querySelector("#open-all-goals").addEventListener("click", () => {
+  document.querySelector("#open-create")?.addEventListener("click", () => {
+    if (isSessionMonitoringView()) {
+      void refreshSessionMonitoring();
+      return;
+    }
+    openCreateDialog();
+  });
+  document.querySelector("#open-execution-mode")?.addEventListener("click", openExecutionMode);
+  document.querySelector("#open-monitoring-mode")?.addEventListener("click", openSessionMonitoring);
+  document.querySelector("#open-all-goals")?.addEventListener("click", () => {
     history.pushState({}, "", "/");
     resetGoalSelection();
     refreshConsole();
   });
-  document.querySelector("#open-projects").addEventListener("click", () => {
+  document.querySelector("#open-projects")?.addEventListener("click", () => {
     history.pushState({}, "", "/projects");
     resetGoalSelection();
     refreshConsole();
   });
-  document.querySelector("#open-resources").addEventListener("click", () => {
+  document.querySelector("#open-resources")?.addEventListener("click", () => {
     history.pushState({}, "", "/resources");
     resetGoalSelection();
     refreshConsole();
   });
-  document.querySelector("#open-local-state").addEventListener("click", () => {
+  document.querySelector("#open-local-state")?.addEventListener("click", () => {
     resetRestorePreview();
     localStateDialog.showModal();
   });
-  document.querySelector("#close-local-state").addEventListener("click", () => closeLocalState());
-  document.querySelector("#cancel-local-state").addEventListener("click", () => closeLocalState());
-  document.querySelector("#export-local-state").addEventListener("click", exportLocalState);
-  document.querySelector("#restore-state-file").addEventListener("change", previewStateRestore);
-  document.querySelector("#confirm-state-restore").addEventListener("click", confirmStateRestore);
-  document.querySelector("#open-session-import").addEventListener("click", () => {
+  document.querySelector("#close-local-state")?.addEventListener("click", () => closeLocalState());
+  document.querySelector("#cancel-local-state")?.addEventListener("click", () => closeLocalState());
+  document.querySelector("#export-local-state")?.addEventListener("click", exportLocalState);
+  document.querySelector("#restore-state-file")?.addEventListener("change", previewStateRestore);
+  document.querySelector("#confirm-state-restore")?.addEventListener("click", confirmStateRestore);
+  document.querySelector("#open-session-import")?.addEventListener("click", () => {
     closeCreateDialog(true);
     openSessionImport();
   });
-  document.querySelector("#close-session-import").addEventListener("click", () => closeSessionImport());
-  document.querySelector("#cancel-session-import").addEventListener("click", () => closeSessionImport());
-  document.querySelector("#close-monitoring-goal").addEventListener("click", () => closeMonitoringGoal());
-  document.querySelector("#cancel-monitoring-goal").addEventListener("click", () => closeMonitoringGoal());
+  document.querySelector("#close-session-import")?.addEventListener("click", () => closeSessionImport());
+  document.querySelector("#cancel-session-import")?.addEventListener("click", () => closeSessionImport());
+  document.querySelector("#close-monitoring-goal")?.addEventListener("click", () => closeMonitoringGoal());
+  document.querySelector("#cancel-monitoring-goal")?.addEventListener("click", () => closeMonitoringGoal());
   monitoringGoalForm.addEventListener("submit", createGoalFromMonitoring);
   bindDismissibleDialog(notificationDialog, () => notificationDialog.close());
   bindDismissibleDialog(localStateDialog, closeLocalState, localStateDialogBusy);
@@ -225,6 +246,11 @@ function bindShellEvents() {
   contextBackdrop.addEventListener("click", () => dismissContextInspector());
   document.addEventListener("click", handleFloatingDisclosureClick);
   document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openQuickNavigator();
+      return;
+    }
     if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
     if (closeOpenFloatingDisclosures()) {
       event.preventDefault();
@@ -232,6 +258,15 @@ function bindShellEvents() {
     }
     dismissContextInspector();
   });
+  document.querySelector("#toggle-left-sidebar")?.addEventListener("click", toggleLeftSidebar);
+  document.querySelector("#toggle-right-sidebar")?.addEventListener("click", toggleRightSidebar);
+  quickNavigatorSearch?.addEventListener("input", (event) => {
+    state.quickNavigatorQuery = event.currentTarget.value;
+    state.quickNavigatorIndex = 0;
+    renderQuickNavigator();
+  });
+  quickNavigatorSearch?.addEventListener("keydown", handleQuickNavigatorKeydown);
+  bindDismissibleDialog(quickNavigatorDialog, () => quickNavigatorDialog.close());
   window.addEventListener("popstate", () => {
     resetGoalSelection();
     refreshConsole();
@@ -321,6 +356,242 @@ function applyLanguage(locale) {
   applyTheme(state.theme);
 }
 
+function readStoredNavigation() {
+  try {
+    const raw = localStorage.getItem(navigationStorageKey);
+    return raw ? normalizeNavigationState(JSON.parse(raw)) : defaultNavigationState();
+  } catch {
+    return defaultNavigationState();
+  }
+}
+
+function rememberNavigation() {
+  const projectId = currentShellProjectId();
+  const mode = isSessionMonitoringView()
+    ? "monitoring"
+    : isAllGoalsView()
+      ? state.navigation.mode
+      : "execution";
+  const selectedWorkObject = isSessionMonitoringView()
+    ? state.monitoringSelectedKey
+      ? { kind: "session", id: state.monitoringSelectedKey }
+      : state.navigation.workObject?.kind === "session"
+        ? state.navigation.workObject
+        : null
+    : state.selected
+      ? { kind: "goal", id: state.selected.id }
+      : state.navigation.workObject?.kind === "goal"
+        ? state.navigation.workObject
+        : null;
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    mode,
+    projectId,
+    workObject: selectedWorkObject,
+  });
+  localStorage.setItem(navigationStorageKey, JSON.stringify(state.navigation));
+  document.querySelector("#toggle-left-sidebar")?.setAttribute(
+    "aria-pressed",
+    String(state.navigation.leftSidebarCollapsed),
+  );
+  document.querySelector("#toggle-right-sidebar")?.setAttribute(
+    "aria-pressed",
+    String(!state.navigation.rightSidebarCollapsed),
+  );
+  const leftToggle = document.querySelector("#toggle-left-sidebar");
+  leftToggle?.setAttribute(
+    "aria-label",
+    state.navigation.leftSidebarCollapsed ? "展开项目栏" : "收起项目栏",
+  );
+  if (leftToggle) leftToggle.textContent = state.navigation.leftSidebarCollapsed ? "›" : "‹";
+  const rightToggle = document.querySelector("#toggle-right-sidebar");
+  rightToggle?.setAttribute(
+    "aria-label",
+    state.navigation.rightSidebarCollapsed ? "打开检查栏" : "关闭检查栏",
+  );
+  if (rightToggle) rightToggle.textContent = state.navigation.rightSidebarCollapsed ? "‹" : "›";
+}
+
+function currentShellProjectId() {
+  if (isSessionMonitoringView()) {
+    return activeMonitoringProjectId() || selectedMonitoringProjectId() || state.navigation.projectId;
+  }
+  const projectId = selectedProjectIdFromPath();
+  if (projectId) return projectId;
+  if (state.selected) return state.selected.projectId || "unclassified";
+  return state.navigation.projectId;
+}
+
+function projectHasUnclassifiedData() {
+  const projectIds = new Set(state.projects.map((project) => project.id));
+  return state.workOrders.some((workOrder) =>
+    !workOrder.projectId || !projectIds.has(workOrder.projectId),
+  ) || (state.sessionMonitoring.sessions ?? []).some((session) =>
+    !session.projectId || !projectIds.has(session.projectId),
+  );
+}
+
+function renderProjectNavigation() {
+  if (!projectListElement) return;
+  const activeProjectId = currentShellProjectId();
+  const projects = state.projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    count: isSessionMonitoringView()
+      ? (state.sessionMonitoring.sessions ?? []).filter((session) => session.projectId === project.id).length
+      : state.workOrders.filter((workOrder) => workOrder.projectId === project.id).length,
+  }));
+  if (projectHasUnclassifiedData()) {
+    projects.push({
+      id: "unclassified",
+      name: "未归类",
+      count: isSessionMonitoringView()
+        ? (state.sessionMonitoring.sessions ?? []).filter((session) => !session.projectId).length
+        : state.workOrders.filter((workOrder) => !workOrder.projectId).length,
+    });
+  }
+  projectListElement.innerHTML = projects.length
+    ? projects.map((project) => `
+      <button class="project-nav-row ${project.id === activeProjectId ? "selected" : ""}" data-shell-project-id="${escapeHtml(project.id)}" type="button">
+        <span class="project-nav-mark" aria-hidden="true"></span>
+        <span class="project-nav-copy"><strong ${project.id === "unclassified" ? "" : "data-i18n-preserve"}>${escapeHtml(project.name)}</strong><small>${project.count} 项</small></span>
+      </button>`).join("")
+    : '<p class="sidebar-empty project-list-empty">还没有项目</p>';
+  projectListElement.querySelectorAll("[data-shell-project-id]").forEach((button) => {
+    button.addEventListener("click", () => selectShellProject(button.dataset.shellProjectId));
+  });
+}
+
+function selectShellProject(projectId) {
+  if (!projectId) return;
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    projectId,
+    workObject: null,
+  });
+  state.selected = null;
+  state.monitoringSelectedKey = null;
+  state.inspector = clearContextInspector();
+  const path = routeForNavigation({ ...state.navigation, mode: isSessionMonitoringView() ? "monitoring" : "execution" });
+  history.pushState({}, "", path);
+  void refreshConsole();
+}
+
+function toggleLeftSidebar() {
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    leftSidebarCollapsed: !state.navigation.leftSidebarCollapsed,
+  });
+  rememberNavigation();
+  renderConsole();
+}
+
+function toggleRightSidebar() {
+  if (state.inspector.open) {
+    dismissContextInspector();
+    return;
+  }
+  if (state.selected) {
+    openContextInspector({ type: "goal", id: state.selected.id });
+  } else if (state.monitoringSelectedKey) {
+    selectMonitoringSession(state.monitoringSelectedKey);
+    return;
+  }
+  renderConsole();
+}
+
+function openQuickNavigator() {
+  if (!quickNavigatorDialog) return;
+  state.quickNavigatorQuery = "";
+  state.quickNavigatorIndex = 0;
+  quickNavigatorSearch.value = "";
+  renderQuickNavigator();
+  quickNavigatorDialog.showModal();
+  quickNavigatorSearch.focus();
+}
+
+function getQuickNavigatorItems() {
+  const items = state.projects.map((project) => ({
+    kind: "project",
+    id: project.id,
+    label: project.name,
+    detail: "项目",
+  }));
+  if (projectHasUnclassifiedData()) {
+    items.push({ kind: "project", id: "unclassified", label: "未归类", detail: "项目" });
+  }
+  items.push(...state.workOrders.map((workOrder) => ({
+    kind: "goal",
+    id: workOrder.id,
+    label: workOrder.name,
+    detail: "目标",
+    projectId: workOrder.projectId || "unclassified",
+  })));
+  items.push(...(state.sessionMonitoring.sessions ?? []).map((session) => ({
+    kind: "session",
+    id: session.key,
+    label: session.title,
+    detail: "来源会话",
+    projectId: session.projectId || "unclassified",
+  })));
+  const query = state.quickNavigatorQuery.trim().toLocaleLowerCase();
+  return query
+    ? items.filter((item) => `${item.label} ${item.detail}`.toLocaleLowerCase().includes(query))
+    : items;
+}
+
+function renderQuickNavigator() {
+  if (!quickNavigatorResults) return;
+  const items = getQuickNavigatorItems();
+  if (!items.length) {
+    quickNavigatorResults.innerHTML = '<p class="muted">没有匹配的项目或工作对象。</p>';
+    return;
+  }
+  state.quickNavigatorIndex = Math.min(state.quickNavigatorIndex, items.length - 1);
+  quickNavigatorResults.innerHTML = items.map((item, index) => `
+    <button class="quick-navigator-row ${index === state.quickNavigatorIndex ? "selected" : ""}" data-quick-index="${index}" type="button" role="option" aria-selected="${index === state.quickNavigatorIndex}">
+      <span><strong data-i18n-preserve>${escapeHtml(item.label)}</strong><small>${item.detail}</small></span>
+      <kbd>${item.kind === "project" ? "项目" : item.kind === "goal" ? "目标" : "会话"}</kbd>
+    </button>`).join("");
+  quickNavigatorResults.querySelectorAll("[data-quick-index]").forEach((button) => {
+    button.addEventListener("click", () => openQuickNavigatorItem(items[Number(button.dataset.quickIndex)]));
+  });
+}
+
+function handleQuickNavigatorKeydown(event) {
+  const items = getQuickNavigatorItems();
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (items.length) {
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      state.quickNavigatorIndex = (state.quickNavigatorIndex + direction + items.length) % items.length;
+      renderQuickNavigator();
+    }
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (items[state.quickNavigatorIndex]) openQuickNavigatorItem(items[state.quickNavigatorIndex]);
+  }
+}
+
+function openQuickNavigatorItem(item) {
+  if (!item) return;
+  quickNavigatorDialog?.close();
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    mode: item.kind === "session" ? "monitoring" : item.kind === "goal" ? "execution" : state.navigation.mode,
+    projectId: item.projectId ?? item.id,
+    workObject: item.kind === "project" ? null : { kind: item.kind, id: item.id },
+    rightSidebarCollapsed: false,
+  });
+  state.monitoringSelectedKey = item.kind === "session" ? item.id : null;
+  state.selected = null;
+  state.inspector = clearContextInspector();
+  history.pushState({}, "", routeForNavigation(state.navigation));
+  void refreshConsole();
+}
+
 function openCreateDialog() {
   populateProjectSelect(document.querySelector("#create-project-select"));
   state.createProjectMaterials = null;
@@ -339,11 +610,19 @@ function resetGoalSelection() {
 }
 
 function openContextInspector(selection) {
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    rightSidebarCollapsed: false,
+  });
   state.inspector = selectContextInspector(state.inspector, selection);
 }
 
 function dismissContextInspector() {
   if (!state.inspector.open || state.inspector.busy) return;
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    rightSidebarCollapsed: true,
+  });
   state.inspector = closeContextInspector(state.inspector);
   renderConsole();
 }
@@ -515,6 +794,9 @@ async function refreshConsole({
     void showPendingNativeNotifications();
     void refreshResources({ checkAutoRun });
     state.autoRunCheckRequested = false;
+    if (initializeNavigationFromData()) {
+      return refreshConsole({ polling: false, checkAutoRun: false });
+    }
     if (isSessionMonitoringView()) {
       if (!monitoringState.lastScannedAt && !state.sessionMonitoringRefreshInFlight) {
         state.sessionMonitoringRefreshInFlight = true;
@@ -527,6 +809,12 @@ async function refreshConsole({
         } finally {
           state.sessionMonitoringRefreshInFlight = false;
         }
+      }
+      const savedSessionId = state.navigation.workObject?.kind === "session"
+        ? state.navigation.workObject.id
+        : null;
+      if (!state.monitoringSelectedKey && savedSessionId && findMonitoringSession(savedSessionId)) {
+        state.monitoringSelectedKey = savedSessionId;
       }
       state.selected = null;
       state.sourceStatus = null;
@@ -541,9 +829,11 @@ async function refreshConsole({
       state.sourceStatus = null;
       state.events = [];
       const projectId = selectedProjectIdFromPath();
-      state.projectDetail = projectId
-        ? await requestJson(`/api/projects/${encodeURIComponent(projectId)}`)
-        : null;
+      state.projectDetail = projectId === "unclassified"
+        ? unclassifiedProjectDetail()
+        : projectId
+          ? await requestJson(`/api/projects/${encodeURIComponent(projectId)}`)
+          : null;
       renderConsole();
       scheduleRefresh();
       return;
@@ -615,6 +905,31 @@ async function refreshConsole({
     contextElement.innerHTML = '<div class="loading-state">本地状态暂时不可用</div>';
     document.querySelector("#retry-load")?.addEventListener("click", () => refreshConsole());
   }
+}
+
+function initializeNavigationFromData() {
+  if (state.navigationInitialized) return false;
+  if (!isAllGoalsView()) {
+    state.navigationInitialized = true;
+    return false;
+  }
+  const next = chooseInitialNavigation({
+    saved: state.navigation,
+    projects: state.projects,
+    workOrders: state.workOrders,
+    monitoringSessions: state.sessionMonitoring.sessions ?? [],
+  });
+  state.navigation = next;
+  state.navigationInitialized = true;
+  const hasData = state.projects.length > 0 || state.workOrders.length > 0 ||
+    (state.sessionMonitoring.sessions ?? []).length > 0;
+  if (!hasData) return false;
+  const nextRoute = routeForNavigation(next);
+  const currentRoute = `${window.location.pathname}${window.location.search}`;
+  if (nextRoute === currentRoute) return false;
+  history.replaceState({}, "", nextRoute);
+  resetGoalSelection();
+  return true;
 }
 
 function renderNotificationShell() {
@@ -811,6 +1126,7 @@ async function refreshResources({ checkAutoRun = false } = {}) {
 
 function renderConsole(feedback = "") {
   renderWorkOrderList();
+  renderProjectNavigation();
   const shell = document.querySelector(".console-shell");
   shell.className = [
     "console-shell",
@@ -820,6 +1136,8 @@ function renderConsole(feedback = "") {
     isSessionMonitoringView() ? "view-session-monitoring" : "",
     state.selected ? "view-goal" : "",
     state.inspector.open ? "context-open" : "",
+    state.navigation.leftSidebarCollapsed ? "left-collapsed" : "",
+    state.navigation.rightSidebarCollapsed ? "right-collapsed" : "",
   ].filter(Boolean).join(" ");
   contextElement.setAttribute("aria-hidden", String(!state.inspector.open));
   contextElement.setAttribute("aria-busy", String(state.inspector.busy));
@@ -833,17 +1151,31 @@ function renderConsole(feedback = "") {
   monitoringModeButton?.classList.toggle("selected", isSessionMonitoringView());
   executionModeButton?.setAttribute("aria-selected", String(!isSessionMonitoringView()));
   monitoringModeButton?.setAttribute("aria-selected", String(isSessionMonitoringView()));
-  document.querySelector("#open-create")?.toggleAttribute("hidden", isSessionMonitoringView());
+  const shellAction = document.querySelector("#open-create");
+  shellAction?.toggleAttribute("hidden", isResourceView());
+  if (shellAction) {
+    shellAction.querySelector("span")?.replaceChildren(
+      document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "刷新会话" : "新建目标")),
+    );
+  }
   document.querySelector(".recent-goals-heading span")?.replaceChildren(
     document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "本机会话" : "最近目标")),
   );
-  document.querySelector(".sidebar-heading h1")?.replaceChildren(
+  document.querySelector("#sidebar-mode-label")?.replaceChildren(
     document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "会话监控" : "目标")),
   );
+  rememberNavigation();
   if (isAllGoalsView()) {
-    workspaceElement.innerHTML = renderAllGoalsWorkspace();
+    workspaceElement.innerHTML = hasAnyClientData()
+      ? renderAllGoalsWorkspace()
+      : renderFirstDiscoveryWorkspace();
     contextElement.innerHTML = "";
     bindOverviewEvents();
+    document.querySelector("#first-discovery")?.addEventListener("click", () => {
+      history.pushState({}, "", "/session-monitoring");
+      resetGoalSelection();
+      void refreshConsole();
+    });
     return;
   }
   if (isSessionMonitoringView()) {
@@ -890,9 +1222,26 @@ function renderConsole(feedback = "") {
   bindRenderedEvents();
 }
 
+function hasAnyClientData() {
+  return state.projects.length > 0 || state.workOrders.length > 0 ||
+    (state.sessionMonitoring.sessions ?? []).length > 0;
+}
+
+function renderFirstDiscoveryWorkspace() {
+  return `
+    <section class="workspace-content first-discovery-workspace">
+      <div class="first-discovery-copy">
+        <p class="overline">Teamline</p>
+        <h1>先发现本机工作</h1>
+        <p>读取本机已有的 Codex 和 Claude Code 会话，确认后再决定是否加入监控。</p>
+        <button class="primary-button" id="first-discovery" type="button">开始发现</button>
+      </div>
+    </section>`;
+}
+
 function renderWorkOrderList() {
   if (isSessionMonitoringView()) {
-    const sessions = state.sessionMonitoring.sessions ?? [];
+    const sessions = sessionsForCurrentProject();
     countElement.textContent = String(sessions.length);
     listElement.innerHTML = sessions.length
       ? renderMonitoringSidebar(sessions)
@@ -906,14 +1255,15 @@ function renderWorkOrderList() {
     return;
   }
 
-  countElement.textContent = String(state.workOrders.length);
-  if (state.workOrders.length === 0) {
+  const workOrders = workOrdersForCurrentProject();
+  countElement.textContent = String(workOrders.length);
+  if (workOrders.length === 0) {
     listElement.innerHTML = '<p class="sidebar-empty">暂无目标</p>';
     return;
   }
 
   listElement.innerHTML = renderSidebarObjectGroups(
-    state.workOrders.slice(0, 8),
+    workOrders.slice(0, 8),
     (workOrder) => workOrder.projectId,
     renderOrderRow,
   );
@@ -923,12 +1273,33 @@ function renderWorkOrderList() {
   });
 }
 
+function workOrdersForCurrentProject() {
+  const projectId = currentShellProjectId();
+  if (!projectId) return state.workOrders;
+  if (projectId === "unclassified") {
+    return state.workOrders.filter((workOrder) => !workOrder.projectId);
+  }
+  return state.workOrders.filter((workOrder) => workOrder.projectId === projectId);
+}
+
+function sessionsForCurrentProject() {
+  const projectId = currentShellProjectId();
+  const sessions = state.sessionMonitoring.sessions ?? [];
+  if (!projectId) return sessions;
+  if (projectId === "unclassified") {
+    return sessions.filter((session) => !session.projectId);
+  }
+  return sessions.filter((session) => session.projectId === projectId);
+}
+
 function renderSidebarObjectGroups(items, projectIdFor, renderRow) {
-  const projectById = new Map(state.projects.map((project) => [project.id, project]));
+  const projectIds = new Set(state.projects.map((project) => project.id));
   const grouped = new Map();
   for (const item of items) {
     const projectId = projectIdFor(item);
-    const key = projectById.has(projectId) ? projectId : "unclassified";
+    const key = projectIds.has(projectId)
+      ? projectId
+      : "unclassified";
     const group = grouped.get(key) ?? [];
     group.push(item);
     grouped.set(key, group);
@@ -937,27 +1308,16 @@ function renderSidebarObjectGroups(items, projectIdFor, renderRow) {
     ...state.projects.map((project) => project.id).filter((id) => grouped.has(id)),
     ...(grouped.has("unclassified") ? ["unclassified"] : []),
   ];
-  return keys.map((key) => `
-    <section class="sidebar-object-group" data-sidebar-group="${escapeHtml(key)}">
-      <div class="sidebar-object-group-heading"><strong>${key === "unclassified" ? "未归类" : escapeHtml(projectById.get(key).name)}</strong><span>${grouped.get(key).length}</span></div>
-      ${grouped.get(key).map(renderRow).join("")}
-    </section>`).join("");
+  return keys.flatMap((key) => grouped.get(key).map(renderRow)).join("");
 }
 
 function renderMonitoringSidebar(sessions) {
-  return monitoringProjectEntriesForSelection(
+  const entries = monitoringProjectEntriesForSelection(
     sessions,
     state.projects,
     selectedMonitoringProjectId(),
-  )
-    .map((entry) => `
-      <section class="sidebar-object-group" data-sidebar-group="${escapeHtml(entry.key)}">
-        <button class="sidebar-project-row ${activeMonitoringProjectKey(sessions) === entry.key ? "selected" : ""}" data-monitoring-project="${escapeHtml(entry.key)}" type="button">
-          <strong ${entry.key === "unclassified" ? "" : "data-i18n-preserve"}>${entry.key === "unclassified" ? translateFixedText(state.locale, "未归类") : escapeHtml(entry.name)}</strong><span>${entry.sessions.length}</span>
-        </button>
-        <div class="sidebar-project-sessions">${entry.sessions.map(renderSessionMonitoringSidebarRow).join("")}</div>
-      </section>`)
-    .join("");
+  );
+  return entries.flatMap((entry) => entry.sessions.map(renderSessionMonitoringSidebarRow)).join("");
 }
 
 function renderSessionMonitoringSidebarRow(session) {
@@ -1264,6 +1624,10 @@ function selectMonitoringObject(selection) {
   if (state.inspector.closedByUser && monitoringSelectionMatches(state.inspector.selection, selection)) {
     return;
   }
+  state.navigation = normalizeNavigationState({
+    ...state.navigation,
+    rightSidebarCollapsed: false,
+  });
   state.inspector = selectContextInspector(state.inspector, selection);
 }
 
@@ -1582,6 +1946,7 @@ function renderProjectsWorkspace() {
 
 function renderProjectDetailWorkspace(detail) {
   const { project, summary, goals, materials, results } = detail;
+  const virtualProject = project.id === "unclassified";
   const focusGoals = goals.filter((goal) => ["running", "response", "review"].includes(visibleStatus(goal, state.workOrders).status));
   const recentGoals = [...goals].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 6);
   const completedGoals = state.workOrders.filter((goal) => goal.status === "delivered");
@@ -1600,7 +1965,7 @@ function renderProjectDetailWorkspace(detail) {
         <div class="section-heading compact"><div><p class="overline">目标</p><h2>最近更新</h2></div><button class="secondary-button" id="create-goal-in-project" type="button">新建目标</button></div>
         ${recentGoals.length ? `<div class="project-goal-list">${recentGoals.map(renderProjectGoalRow).join("")}</div>` : '<p class="project-empty-copy">这个项目还没有目标。</p>'}
       </section>
-      <section class="project-section project-material-section">
+      ${virtualProject ? `<section class="project-section project-virtual-section"><p class="overline">虚拟项目</p><p class="project-empty-copy">没有所属项目的目标会显示在这里。可以在目标详情中重新归入项目。</p></section>` : `<section class="project-section project-material-section">
         <div class="section-heading compact"><div><p class="overline">项目素材</p><h2>可供目标使用</h2></div><span class="subtle-label">${materials.length} 项</span></div>
         ${materials.length ? `<div class="project-material-grid">${materials.map(renderProjectMaterialCard).join("")}</div>` : '<p class="project-empty-copy">还没有素材，可以新建、引用或上传。</p>'}
         <details class="project-add-disclosure">
@@ -1620,12 +1985,41 @@ function renderProjectDetailWorkspace(detail) {
           </form>
           <p class="inline-feedback" id="project-material-feedback" role="status"></p>
         </details>
-      </section>
+      </section>`}
       <section class="project-section">
         <div class="section-heading compact"><div><p class="overline">成果</p><h2>主要成果</h2></div></div>
         ${results.length ? `<div class="project-result-list">${results.map(renderProjectResultCard).join("")}</div>` : '<p class="project-empty-copy">项目内目标产生成果后，会汇总在这里。</p>'}
       </section>
     </section>`;
+}
+
+function unclassifiedProjectDetail() {
+  const goals = state.workOrders.filter((workOrder) => !workOrder.projectId);
+  const results = goals
+    .filter((workOrder) => workOrder.result || workOrder.plan?.stages.some((stage) => stage.artifacts.length))
+    .map((workOrder) => ({
+      workOrderId: workOrder.id,
+      title: workOrder.name,
+      status: workOrder.status,
+      summary: workOrder.currentSummary,
+      artifacts: workOrder.plan?.stages.flatMap((stage) => stage.artifacts).slice(0, 8) ?? [],
+      gitSummary: workOrder.result?.git.diffStat ?? "",
+    }));
+  return {
+    project: {
+      id: "unclassified",
+      name: "未归类",
+      createdAt: "",
+      updatedAt: "",
+    },
+    summary: {
+      totalGoals: goals.length,
+      completedGoals: goals.filter((workOrder) => workOrder.status === "delivered").length,
+    },
+    goals,
+    materials: [],
+    results,
+  };
 }
 
 function renderProjectGoalRow(goal) {
@@ -1653,7 +2047,7 @@ function currentProjectIdForModeSwitch() {
     const activeProjectId = activeMonitoringProjectId();
     if (activeProjectId) return activeProjectId;
     const requestedProjectId = selectedMonitoringProjectId();
-    return requestedProjectId === "unclassified" ? "" : requestedProjectId;
+    return requestedProjectId;
   }
   if (isProjectsView()) return selectedProjectIdFromPath() ?? "";
   return state.selected?.projectId ?? "";
@@ -1847,7 +2241,8 @@ function bindOverviewEvents() {
   document.querySelector("#back-to-projects")?.addEventListener("click", openProjects);
   document.querySelector("#create-goal-in-project")?.addEventListener("click", () => {
     openCreateDialog();
-    document.querySelector("#create-project-select").value = state.projectDetail.project.id;
+    document.querySelector("#create-project-select").value =
+      state.projectDetail.project.id === "unclassified" ? "" : state.projectDetail.project.id;
     void refreshCreateProjectMaterials();
   });
   document.querySelectorAll(".project-goal-row").forEach((button) => {
@@ -3702,7 +4097,7 @@ function renderContextAction(workOrder) {
     return '<section class="context-action"><p class="overline">下一步</p><button class="primary-button" data-reorganize-sessions type="button">重试整理</button></section>';
   }
   if (!workOrder.plan && !workOrder.runStatus) {
-    return `<section class="context-action"><p class="overline">下一步</p><button class="primary-button" id="generate-plan" type="button">${workOrder.importContext ? "生成后续计划" : "生成执行计划"}</button></section>`;
+    return `<section class="context-action"><button class="primary-button" id="generate-plan" type="button">${workOrder.importContext ? "生成后续计划" : "生成执行计划"}</button></section>`;
   }
   if (
     workOrder.status === "ready" &&

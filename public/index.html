@@ -18,67 +18,73 @@
   </head>
   <body>
     <div class="console-shell">
-      <header class="console-topbar">
-        <div class="topbar-branding">
-          <a class="brand" href="/" aria-label="Teamline home">
-            <img class="brand-logo" src="/teamline-logo.png" alt="Teamline" />
+      <aside class="order-sidebar project-sidebar" aria-label="项目导航">
+        <div class="sidebar-brand-row">
+          <a class="brand" href="/" aria-label="Teamline">
+            <span class="brand-wordmark" aria-hidden="true">Teamline</span>
+            <span class="brand-rule" aria-hidden="true"></span>
           </a>
-          <nav class="mode-switch" role="tablist" aria-label="工作模式">
-            <button class="mode-switch-button selected" id="open-execution-mode" data-mode="execution" role="tab" aria-selected="true" type="button">目标执行</button>
-            <button class="mode-switch-button" id="open-monitoring-mode" data-mode="monitoring" role="tab" aria-selected="false" type="button">会话监控</button>
-          </nav>
+          <button class="icon-button" id="toggle-left-sidebar" type="button" aria-label="收起项目栏" aria-pressed="false">‹</button>
         </div>
-        <div id="resource-summary" class="resource-summary" aria-live="polite">
-          <span>Codex 额度正在读取…</span>
+        <nav class="mode-switch" role="tablist" aria-label="工作模式">
+          <button class="mode-switch-button selected" id="open-execution-mode" data-mode="execution" role="tab" aria-selected="true" type="button">目标执行</button>
+          <button class="mode-switch-button" id="open-monitoring-mode" data-mode="monitoring" role="tab" aria-selected="false" type="button">会话监控</button>
+        </nav>
+        <button class="primary-button full-button shell-primary-action" id="open-create" type="button">＋ <span data-i18n="action.create_goal">新建目标</span></button>
+        <div class="sidebar-heading project-heading">
+          <button class="sidebar-nav" id="open-projects" type="button"><span>项目</span></button>
         </div>
-        <div class="topbar-status" aria-label="本地服务状态">
-          <span class="local-status"><i></i> 本地运行</span>
-          <label class="language-control">
-            <span data-i18n="language.label">Language</span>
-            <select id="language-select" aria-label="Language" data-i18n-aria-label="language.label">
-              <option value="en" data-i18n="language.en">English</option>
-              <option value="zh-CN" data-i18n="language.zh-CN">简体中文</option>
-            </select>
-          </label>
-          <button class="notification-button" id="open-notifications" type="button" aria-label="Notifications" data-i18n-aria-label="nav.notifications">
-            <span data-i18n="nav.notifications">Notifications</span>
-            <strong id="notification-count" hidden>0</strong>
-          </button>
-          <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅色主题">
-            <span aria-hidden="true">◐</span>
-          </button>
-        </div>
-      </header>
-
-      <aside class="order-sidebar" aria-label="全局导航与最近目标">
-        <div class="sidebar-heading">
-          <h1 data-i18n="shell.goals">目标</h1>
+        <nav id="project-list" class="project-list" aria-label="项目列表" aria-live="polite"></nav>
+        <button class="sidebar-nav legacy-nav" id="open-all-goals" type="button" hidden>
+          <span data-i18n="nav.goals">目标</span><small>旧入口</small>
+        </button>
+        <div class="sidebar-object-heading">
+          <div>
+            <h1 id="sidebar-mode-label" data-i18n="shell.goals">目标</h1>
+          </div>
           <span id="work-order-count" class="count">0</span>
-        </div>
-        <button class="sidebar-nav" id="open-all-goals" type="button">
-          <span data-i18n="nav.goals">目标</span><small>当前状态</small>
-        </button>
-        <button class="sidebar-nav" id="open-projects" type="button">
-          <span data-i18n="nav.projects">项目</span><small>整理目标</small>
-        </button>
-        <button class="primary-button full-button" id="open-create" type="button">＋ <span data-i18n="action.create_goal">Create goal</span></button>
-        <div class="recent-goals-heading">
-          <span>最近目标</span>
         </div>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
         <div class="sidebar-bottom">
           <button class="sidebar-nav" id="open-resources" type="button">
-            <span data-i18n="nav.resources">资源</span><small>额度与安排</small>
+            <span data-i18n="nav.resources">资源</span>
           </button>
           <button class="sidebar-nav" id="open-local-state" type="button">
-            <span>本地数据</span><small data-i18n="nav.local_state">导出与恢复</small>
+            <span>本地数据</span>
           </button>
         </div>
       </aside>
 
-      <main id="work-order-workspace" class="work-order-workspace" aria-live="polite">
-        <div class="loading-state" data-i18n="shell.loading_goals">Loading local goals…</div>
-      </main>
+      <section class="main-column">
+        <header class="console-topbar">
+          <div class="window-heading">
+            <span class="local-status"><i></i> 本地运行</span>
+          </div>
+          <div id="resource-summary" class="resource-summary" aria-live="polite">
+            <span>Codex 额度正在读取…</span>
+          </div>
+          <div class="topbar-status" aria-label="本地服务状态">
+            <label class="language-control">
+              <span data-i18n="language.label">Language</span>
+              <select id="language-select" aria-label="Language" data-i18n-aria-label="language.label">
+                <option value="en" data-i18n="language.en">English</option>
+                <option value="zh-CN" data-i18n="language.zh-CN">简体中文</option>
+              </select>
+            </label>
+            <button class="notification-button" id="open-notifications" type="button" aria-label="Notifications" data-i18n-aria-label="nav.notifications">
+              <span data-i18n="nav.notifications">Notifications</span>
+              <strong id="notification-count" hidden>0</strong>
+            </button>
+            <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅色主题">
+              <span aria-hidden="true">◐</span>
+            </button>
+            <button class="icon-button" id="toggle-right-sidebar" type="button" aria-label="打开检查栏" aria-pressed="false">›</button>
+          </div>
+        </header>
+        <main id="work-order-workspace" class="work-order-workspace" aria-live="polite">
+          <div class="loading-state" data-i18n="shell.loading_goals">Loading local goals…</div>
+        </main>
+      </section>
 
       <button
         id="context-backdrop"
@@ -153,6 +159,17 @@
           <button type="button" class="secondary-button" id="cancel-create">取消</button>
           <button type="submit" class="primary-button" id="submit-create">创建目标</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="quick-navigator" class="quick-navigator">
+      <form method="dialog" class="quick-navigator-form">
+        <label class="quick-navigator-input">
+          <span class="sr-only">快速定位</span>
+          <input id="quick-navigator-search" type="search" placeholder="定位项目、监控工作或目标" autocomplete="off" />
+        </label>
+        <div id="quick-navigator-results" class="quick-navigator-results" role="listbox" aria-label="快速定位结果"></div>
+        <p class="quick-navigator-hint">↑↓ 选择 · Enter 打开 · Esc 退出</p>
       </form>
     </dialog>
 
