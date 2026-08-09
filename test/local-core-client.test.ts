@@ -49,6 +49,15 @@ test("Electron exposes only an authorized artifact action bridge", () => {
   expect(electronPreloadSource).not.toContain("readFile");
 });
 
+test("Electron opens Cmd+, settings as a separate window on the same Local Core", () => {
+  expect(electronMainSource).toContain('accelerator: "CmdOrCtrl+,"');
+  expect(electronMainSource).toContain('ipcMain.handle("teamline:open-settings"');
+  expect(electronMainSource).toContain('new URL("/settings", coreConnection.url)');
+  expect(electronMainSource).toContain('titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default"');
+  expect(electronMainSource).not.toContain("data:text/html;charset=utf-8");
+  expect(electronPreloadSource).toContain('ipcRenderer.invoke("teamline:open-settings")');
+});
+
 describe("Electron Local Core connection", () => {
   test("starts a detached Local Core with the shared data directory when none is available", async () => {
     let available = false;

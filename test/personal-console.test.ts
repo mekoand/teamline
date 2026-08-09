@@ -207,15 +207,18 @@ describe("personal console", () => {
     expect(styles).toContain(".context-quota-windows");
   });
 
-  test("clears a goal inspector before opening resources from the quota summary", async () => {
+  test("keeps resource access in the left sidebar mini card", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
-    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
-    const summaryStart = script.indexOf("function renderResourceSummary()");
-    const summaryEnd = script.indexOf("function renderTopbarAccountQuota", summaryStart);
-    const summaryRenderer = script.slice(summaryStart, summaryEnd);
+    const [page, script] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+    ]);
 
-    expect(summaryRenderer.match(/resetGoalSelection\(\)/g)).toHaveLength(2);
-    expect(summaryRenderer).toContain('history.pushState({}, "", "/resources")');
+    expect(page).toContain('class="sidebar-nav resource-mini-card"');
+    expect(page).toContain('id="resource-mini-status"');
+    expect(page).not.toContain('id="resource-summary"');
+    expect(script).toContain('document.querySelector("#open-resources")');
+    expect(script).toContain('history.pushState({}, "", "/resources")');
   });
 
   test("keeps creation goal-first and defers the local workspace choice until start", async () => {
@@ -299,10 +302,11 @@ describe("personal console", () => {
     const script = await scriptResponse.text();
 
     expect(pageResponse.status).toBe(200);
-    expect(page).toContain('id="resource-summary"');
+    expect(page).toContain('class="sidebar-nav resource-mini-card"');
+    expect(page).not.toContain('id="resource-summary"');
     expect(page).toContain('id="open-resources"');
     expect(script).toContain('requestJson("/api/resources")');
-    expect(script).toContain('loading: "正在读取"');
+    expect(script).toContain('loading: "未知"');
     expect(script).toContain('state.resources?.openaiApi.status === "loading"');
     expect(script).toContain("refreshResources");
     expect(script).not.toContain(
@@ -321,7 +325,8 @@ describe("personal console", () => {
     expect(script).not.toContain(
       'const queued = visibleStatus(workOrder, state.workOrders).status === "queued"',
     );
-    expect(script).toContain("Codex 额度</span>");
+    expect(script).toContain("renderResourceMiniCard");
+    expect(script).not.toContain("topbar-quota-control");
     expect(script).not.toContain("${runningCount} 项运行中</span>\n      </button>");
   });
 
@@ -332,8 +337,8 @@ describe("personal console", () => {
       app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
     ]);
 
-    expect(script).toContain('class="topbar-quota-control"');
-    expect(script).toContain('removeAttribute("open")');
+    expect(script).not.toContain('class="topbar-quota-control"');
+    expect(script).not.toContain('removeAttribute("open")');
     expect(script).toContain('renderQuotaWindow("5 小时"');
     expect(script).toContain('renderQuotaWindow("周额度"');
     expect(script).toContain("Array.isArray(resources.codexAccounts)");
@@ -358,7 +363,7 @@ describe("personal console", () => {
     expect(script).toContain('if (identity.loginState === "ready")');
     expect(script).toContain("refreshIdentityAfterLogin");
     expect(script).toContain("/refresh`");
-    expect(styles).toContain(".topbar-quota-popover");
+    expect(styles).not.toContain(".topbar-quota-popover");
     expect(styles).toContain(".identity-actions");
     expect(styles).toContain(".floating-disclosure-close");
   });

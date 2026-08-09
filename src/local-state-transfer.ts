@@ -28,7 +28,11 @@ import {
   normalizeWorkOrderSourceContext,
   type WorkOrderSourceContext,
 } from "./work-order";
-import type { WorkOrderStore } from "./work-order-store";
+import type { NotificationPreferences, WorkOrderStore } from "./work-order-store";
+import {
+  normalizeSessionOrganizationModelSettings,
+  type SessionOrganizationModelSettings,
+} from "./session-organization-resources";
 
 const bundleFormat = "teamline-local-state" as const;
 const bundleVersion = 4 as const;
@@ -47,6 +51,8 @@ export type LocalStateBundle = {
   settings: {
     maxConcurrency: number;
     executionMapView: "map" | "list";
+    sessionOrganizationModelSettings?: SessionOrganizationModelSettings;
+    notificationPreferences?: NotificationPreferences;
   };
   projects: Project[];
   projectMaterials: ProjectMaterial[];
@@ -181,6 +187,8 @@ export class LocalStateTransfer {
       settings: {
         maxConcurrency: this.store.getExecutionSettings().maxConcurrency,
         executionMapView: this.store.getExecutionMapView(),
+        sessionOrganizationModelSettings: this.store.getSessionOrganizationModelSettings(),
+        notificationPreferences: this.store.getNotificationPreferences(),
       },
       projects: redactObject(snapshot.projects),
       projectMaterials: redactObject(snapshot.projectMaterials),
@@ -233,11 +241,23 @@ export class LocalStateTransfer {
     const currentSettings = {
       maxConcurrency: this.store.getExecutionSettings().maxConcurrency,
       executionMapView: this.store.getExecutionMapView(),
+      sessionOrganizationModelSettings: this.store.getSessionOrganizationModelSettings(),
+      notificationPreferences: this.store.getNotificationPreferences(),
     };
     const settingsConflict =
       this.store.list().length > 0 &&
       (currentSettings.maxConcurrency !== bundle.settings.maxConcurrency ||
-        currentSettings.executionMapView !== bundle.settings.executionMapView);
+        currentSettings.executionMapView !== bundle.settings.executionMapView ||
+        (bundle.settings.sessionOrganizationModelSettings !== undefined &&
+          !sameSessionOrganizationModelSettings(
+            currentSettings.sessionOrganizationModelSettings,
+            bundle.settings.sessionOrganizationModelSettings,
+          )) ||
+        (bundle.settings.notificationPreferences !== undefined &&
+          !sameNotificationPreferences(
+            currentSettings.notificationPreferences,
+            bundle.settings.notificationPreferences,
+          )));
     const checkpointAvailability = inspectCheckpointAvailability(bundle.workOrders);
     const workOrders = bundle.workOrders.map((workOrder) => ({
       sourceId: workOrder.id,
@@ -394,6 +414,16 @@ export class LocalStateTransfer {
       if (!preview.settingsConflict || input.settingsResolution === "use_imported") {
         this.store.saveMaxConcurrency(preview.bundle.settings.maxConcurrency);
         this.store.saveExecutionMapView(preview.bundle.settings.executionMapView);
+        if (preview.bundle.settings.sessionOrganizationModelSettings) {
+          this.store.saveSessionOrganizationModelSettings(
+            preview.bundle.settings.sessionOrganizationModelSettings,
+          );
+        }
+        if (preview.bundle.settings.notificationPreferences) {
+          this.store.saveNotificationPreferences(
+            preview.bundle.settings.notificationPreferences,
+          );
+        }
       }
     })();
     this.previews.delete(input.previewId);
@@ -823,7 +853,35 @@ function databaseFingerprint(store: WorkOrderStore): string {
     decisions,
     executionSettings: store.getExecutionSettings(),
     executionMapView: store.getExecutionMapView(),
+    sessionOrganizationModelSettings: store.getSessionOrganizationModelSettings(),
+    notificationPreferences: store.getNotificationPreferences(),
   });
+}
+
+function sameSessionOrganizationModelSettings(
+  left: SessionOrganizationModelSettings,
+  right: SessionOrganizationModelSettings,
+): boolean {
+  const sortSources = (settings: SessionOrganizationModelSettings) => ({
+    sources: Object.fromEntries(
+      Object.entries(settings.sources)
+        .sort(([leftSource], [rightSource]) => leftSource.localeCompare(rightSource))
+        .map(([source, preference]) => [source, preference]),
+    ),
+  });
+  return JSON.stringify(sortSources(left)) === JSON.stringify(sortSources(right));
+}
+
+function sameNotificationPreferences(
+  left: NotificationPreferences,
+  right: NotificationPreferences,
+): boolean {
+  return (
+    left.needsResponse === right.needsResponse &&
+    left.runFailed === right.runFailed &&
+    left.goalPendingAcceptance === right.goalPendingAcceptance &&
+    left.resourceUnavailable === right.resourceUnavailable
+  );
 }
 
 function insertHistoricalExecutionIdentity(
@@ -1148,9 +1206,23 @@ function parseBundle(value: unknown): LocalStateBundle {
   );
   const exportedAt = dateString(bundle.exportedAt);
   const settingsObject = object(bundle.settings, "本机设置格式无法识别");
-  exactKeys(settingsObject, ["maxConcurrency", "executionMapView"]);
+  exactKeys(settingsObject, [
+    "maxConcurrency",
+    "executionMapView",
+    "sessionOrganizationModelSettings",
+    "notificationPreferences",
+  ], true);
+  if (!("maxConcurrency" in settingsObject) || !("executionMapView" in settingsObject)) {
+    throw new InvalidStateBundleError("导出文件缺少必要字段");
+  }
   const maxConcurrency = integer(settingsObject.maxConcurrency, 1, 32);
   const executionMapView = oneOf(settingsObject.executionMapView, ["map", "list"] as const);
+  const sessionOrganizationModelSettings = settingsObject.sessionOrganizationModelSettings === undefined
+    ? undefined
+    : parseSessionOrganizationModelSettings(settingsObject.sessionOrganizationModelSettings);
+  const notificationPreferences = settingsObject.notificationPreferences === undefined
+    ? undefined
+    : parseNotificationPreferences(settingsObject.notificationPreferences);
   if (!Array.isArray(bundle.workOrders) || bundle.workOrders.length > maxWorkOrders) {
     throw new InvalidStateBundleError("目标列表格式无法识别");
   }
@@ -1251,7 +1323,12 @@ function parseBundle(value: unknown): LocalStateBundle {
     format: bundleFormat,
     version,
     exportedAt,
-    settings: { maxConcurrency, executionMapView },
+    settings: {
+      maxConcurrency,
+      executionMapView,
+      ...(sessionOrganizationModelSettings ? { sessionOrganizationModelSettings } : {}),
+      ...(notificationPreferences ? { notificationPreferences } : {}),
+    },
     projects,
     projectMaterials,
     executionIdentities,
@@ -1273,6 +1350,32 @@ function assignLegacySourceOwnership(workOrders: ExportedWorkOrder[]): void {
       return true;
     });
   }
+}
+
+function parseSessionOrganizationModelSettings(
+  value: unknown,
+): SessionOrganizationModelSettings {
+  try {
+    return normalizeSessionOrganizationModelSettings(value);
+  } catch {
+    throw new InvalidStateBundleError("会话整理模型设置格式无法识别");
+  }
+}
+
+function parseNotificationPreferences(value: unknown): NotificationPreferences {
+  const preferences = object(value, "通知偏好格式无法识别");
+  exactKeys(preferences, [
+    "needsResponse",
+    "runFailed",
+    "goalPendingAcceptance",
+    "resourceUnavailable",
+  ]);
+  return {
+    needsResponse: boolean(preferences.needsResponse),
+    runFailed: boolean(preferences.runFailed),
+    goalPendingAcceptance: boolean(preferences.goalPendingAcceptance),
+    resourceUnavailable: boolean(preferences.resourceUnavailable),
+  };
 }
 
 function parseProject(value: unknown): Project {

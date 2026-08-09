@@ -46,11 +46,18 @@
         </div>
         <div id="work-order-list" class="work-order-list" aria-live="polite"></div>
         <div class="sidebar-bottom">
-          <button class="sidebar-nav" id="open-resources" type="button">
-            <span data-i18n="nav.resources">资源</span>
+          <button class="sidebar-nav resource-mini-card" id="open-resources" type="button">
+            <span class="resource-mini-copy">
+              <span data-i18n="nav.resources">资源</span>
+              <small id="resource-mini-status">正在读取</small>
+            </span>
           </button>
           <button class="sidebar-nav" id="open-local-state" type="button">
             <span>本地数据</span>
+          </button>
+          <button class="sidebar-nav" id="open-settings" type="button">
+            <span>设置</span>
+            <kbd>⌘,</kbd>
           </button>
         </div>
       </aside>
@@ -59,9 +66,6 @@
         <header class="console-topbar">
           <div class="window-heading">
             <span class="local-status"><i></i> 本地运行</span>
-          </div>
-          <div id="resource-summary" class="resource-summary" aria-live="polite">
-            <span>Codex 额度正在读取…</span>
           </div>
           <div class="topbar-status" aria-label="本地服务状态">
             <label class="language-control">

@@ -211,7 +211,9 @@ const SESSION_MONITORING_AUTOMATIC_COOLDOWN_MS = 5 * 60_000;
 
 const staticFiles: Record<string, { path: string; type: string }> = {
   "/": { path: "public/index.html", type: "text/html; charset=utf-8" },
+  "/settings": { path: "public/settings.html", type: "text/html; charset=utf-8" },
   "/app.js": { path: "public/app.js", type: "text/javascript; charset=utf-8" },
+  "/settings.js": { path: "public/settings.js", type: "text/javascript; charset=utf-8" },
   "/context-inspector.js": {
     path: "public/context-inspector.js",
     type: "text/javascript; charset=utf-8",
@@ -241,6 +243,7 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     type: "text/javascript; charset=utf-8",
   },
   "/styles.css": { path: "public/styles.css", type: "text/css; charset=utf-8" },
+  "/settings.css": { path: "public/settings.css", type: "text/css; charset=utf-8" },
   "/teamline-logo.png": { path: "public/teamline-logo.png", type: "image/png" },
 };
 
@@ -1788,12 +1791,33 @@ export function createApp({
           }
           return { ...candidate, sourcePath: candidate.sourcePath };
         });
+        const resource = sessionOrganizationResourceSelector
+          ? await withSessionMonitoringTimeout(
+              (signal) => sessionOrganizationResourceSelector.select({
+                purpose: "session_organization",
+                sessionKey: `${sourceKind}:${workOrder.id}`,
+                sourceKind,
+                accountId: workOrder.sourceSessions[0]?.executionIdentityId ?? null,
+                preference: "low_cost",
+              }, signal),
+              sessionOrganizationTimeoutMs,
+              "会话整理资源暂时不可用，请重试",
+              controller,
+            )
+          : undefined;
+        if (
+          sessionOrganizationResourceSelector &&
+          (!resource || !resource.tool.trim() || !resource.model.trim())
+        ) {
+          throw new Error("当前没有可用的会话整理资源，请重试");
+        }
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const organization = await Promise.race([
           sessionOrganizer.organize({
             name: workOrder.name,
             sourceLabel: sourceKindLabel(sourceKind),
             sourceKind,
+            resource,
             sessions,
           }, controller.signal),
           new Promise<never>((_, reject) => {
@@ -3696,6 +3720,65 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/preferences/language") {
         return Response.json({ language: store.getInterfaceLanguage() });
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/preferences/models") {
+        return Response.json({ settings: store.getSessionOrganizationModelSettings() });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/api/preferences/models") {
+        try {
+          const body = (await request.json()) as { settings?: unknown } & Record<string, unknown>;
+          return Response.json({
+            settings: store.saveSessionOrganizationModelSettings(body.settings ?? body),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_MODEL_SETTINGS",
+              error: error instanceof Error ? error.message : "无法保存模型设置",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/preferences/notifications") {
+        return Response.json({ settings: store.getNotificationPreferences() });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/api/preferences/notifications") {
+        try {
+          const body = (await request.json()) as {
+            settings?: {
+              needsResponse?: unknown;
+              runFailed?: unknown;
+              goalPendingAcceptance?: unknown;
+              resourceUnavailable?: unknown;
+            };
+            needsResponse?: unknown;
+            runFailed?: unknown;
+            goalPendingAcceptance?: unknown;
+            resourceUnavailable?: unknown;
+          };
+          const source = body.settings ?? body;
+          return Response.json({
+            settings: store.saveNotificationPreferences({
+              needsResponse: source.needsResponse as boolean,
+              runFailed: source.runFailed as boolean,
+              goalPendingAcceptance: source.goalPendingAcceptance as boolean,
+              resourceUnavailable: source.resourceUnavailable as boolean,
+            }),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_NOTIFICATION_PREFERENCES",
+              error: error instanceof Error ? error.message : "无法保存通知偏好",
+            },
+            { status: 400 },
+          );
+        }
       }
 
       if (request.method === "PUT" && url.pathname === "/api/preferences/language") {

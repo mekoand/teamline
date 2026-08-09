@@ -19,4 +19,7 @@ contextBridge.exposeInMainWorld("teamlineDesktop", Object.freeze({
       workOrderId: request.workOrderId,
     });
   },
+  openSettings() {
+    return ipcRenderer.invoke("teamline:open-settings");
+  },
 }));

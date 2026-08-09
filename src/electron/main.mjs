@@ -68,6 +68,13 @@ function installArtifactActionBridge() {
   });
 }
 
+function installSettingsBridge() {
+  ipcMain.handle("teamline:open-settings", () => {
+    openSettingsWindow();
+    return { opened: true };
+  });
+}
+
 async function executeArtifactAction(path, action) {
   if (action === "quicklook") {
     if (process.platform !== "darwin" || !existsSync("/usr/bin/qlmanage")) {
@@ -196,7 +203,7 @@ function createTray() {
 function installApplicationMenu() {
   const appMenu = [
     { label: "显示 Teamline", click: showMainWindow },
-    { label: "设置…", click: openSettingsWindow },
+    { label: "设置…", accelerator: "CmdOrCtrl+,", click: openSettingsWindow },
     { type: "separator" },
     { label: "退出并停止后台服务", click: () => void stopCoreAndQuit() },
     { label: "退出 Teamline", role: "quit" },
@@ -221,13 +228,15 @@ function openSettingsWindow() {
     title: "Teamline 设置",
     parent: mainWindow ?? undefined,
     backgroundColor: "#f5f7f5",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    trafficLightPosition: process.platform === "darwin" ? { x: 14, y: 12 } : undefined,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   settingsWindow.on("closed", () => {
     settingsWindow = null;
   });
-  const markup = `<!doctype html><meta charset="utf-8"><title>Teamline 设置</title><style>body{margin:0;padding:32px;font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#20211f;background:#f7f7f4}h1{font-size:22px;font-weight:650}section{margin-top:24px;padding:16px;border:1px solid #dedfda;border-radius:10px;background:#fff}p{color:#555852;line-height:1.6}</style><h1>Teamline 设置</h1><section><strong>客户端</strong><p>主窗口、Local Core 与本地数据目录彼此独立。详细诊断和恢复入口仍保留在主窗口的本地数据面板。</p></section>`;
-  void settingsWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(markup)}`);
+  if (!coreConnection) return;
+  void settingsWindow.loadURL(new URL("/settings", coreConnection.url).toString());
 }
 
 async function choosePackagedDataDirectory({ canonicalDirectory, candidates }) {
@@ -311,6 +320,7 @@ app.whenReady().then(async () => {
     });
     installApplicationMenu();
     installArtifactActionBridge();
+    installSettingsBridge();
     createTray();
     createMainWindow();
   } catch (error) {
