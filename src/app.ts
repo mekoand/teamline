@@ -169,6 +169,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     path: "public/goal-workbench.js",
     type: "text/javascript; charset=utf-8",
   },
+  "/project-goal-graph.js": {
+    path: "public/project-goal-graph.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/i18n.js": {
     path: "public/i18n.js",
     type: "text/javascript; charset=utf-8",

@@ -361,11 +361,51 @@ describe("personal console", () => {
     expect(script).toContain("workOrder.plan?.stages?.[preferredStageIndex(workOrder)]");
     expect(script).toContain('workOrder.importContext?.status === "pending"');
     expect(script).toContain('workOrder.importContext?.status === "failed"');
-    expect(script).toContain('["progress", "进展"]');
+    expect(script).toContain('["progress", "执行"]');
     expect(script).toContain('["conversation", "对话"]');
     expect(script).toContain('["result", "成果"]');
     expect(script).toContain("从这里开始由 Teamline 推进");
     expect(script).toContain("完整工具与日志");
+  });
+
+  test("renders a project goal graph from confirmed plans without project completion state", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [script, graphModule] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/project-goal-graph.js")).then((response) => response.text()),
+    ]);
+
+    expect(script).toContain('data-project-goal-graph');
+    expect(script).toContain("renderProjectGoalLane");
+    expect(script).toContain("project-goal-stage-connector");
+    expect(script).toContain("project-goal-stage-edge");
+    expect(script).toContain("项目本身不计算完成度");
+    expect(script).toContain("data-project-goal-stage-id");
+    expect(script).toContain("data-project-goal-edge-from");
+    expect(script).toContain("buildProjectGoalGraph");
+    expect(script).toContain("bindProjectGoalGraphEvents");
+    expect(script).not.toContain('const completed = goals.filter((goal) => goal.userStatus === "completed").length;');
+    expect(script).not.toContain("项目完成百分比");
+    expect(graphModule).toContain("planConfirmed");
+    expect(graphModule).toContain("confirmationRequired === true");
+    expect(graphModule).toContain("dependsOn");
+    expect(graphModule).toContain("edges");
+  });
+
+  test("defaults new goals to the current real project and keeps unclassified explicit", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const [page, script] = await Promise.all([
+      app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
+    ]);
+
+    expect(page).toContain('<option value="">未归类</option>');
+    expect(script).toContain("resolveCreationProjectId");
+    expect(script).toContain("function currentCreationProjectId()");
+    expect(script).toContain("populateProjectSelect(document.querySelector(\"#session-import-project\"), currentCreationProjectId())");
+    expect(script).toContain("openGoalCreationDialog");
+    const graphModule = await (await app.fetch(new Request("http://teamline.local/project-goal-graph.js"))).text();
+    expect(graphModule).toContain("populateProjectSelect(projectSelect, defaultProjectId)");
   });
 
   test("offers one local session import flow for Codex and Claude Code", async () => {

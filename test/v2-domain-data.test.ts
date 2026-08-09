@@ -644,6 +644,6 @@ describe("V2 domain data", () => {
     expect(script).toContain("<dt>来源会话</dt>");
     expect(script).toContain("<dt>当前执行会话</dt>");
     expect(script).toContain("(?:goals|work-orders)");
-    expect(script).toContain('`/goals/${encodeURIComponent(id)}`');
+    expect(script).toContain('`/goals/${encodeURIComponent(id)}${query}`');
   });
 });
