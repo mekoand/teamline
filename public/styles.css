@@ -4274,6 +4274,28 @@ dialog::backdrop {
   background: var(--panel-soft);
 }
 
+.source-context-work-card {
+  background: var(--panel);
+}
+
+.monitoring-goal-action {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.monitoring-goal-action .text-button {
+  justify-content: flex-start;
+  text-align: left;
+  text-wrap: balance;
+}
+
+.monitoring-goal-action .muted {
+  margin: 0;
+  line-height: 1.45;
+  text-wrap: balance;
+}
+
 .source-context-card-heading {
   display: flex;
   align-items: flex-start;
@@ -4343,11 +4365,43 @@ dialog::backdrop {
   line-height: 1.45;
 }
 
+.source-context-snapshot li.source-context-focus {
+  margin-left: -8px;
+  padding-left: 8px;
+  border-left: 2px solid var(--accent);
+}
+
+.source-context-snapshot li.source-context-focus em {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--accent);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+}
+
 .source-context-snapshot li span {
   display: block;
   margin-top: 2px;
   color: var(--muted);
   font-size: 10px;
+}
+
+.source-context-snapshot li small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.source-context-snapshot li code {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .source-update-message {

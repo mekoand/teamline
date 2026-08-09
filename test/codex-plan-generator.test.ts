@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexPlanGenerator } from "../src/codex-plan-generator";
+import { buildPlanPrompt, CodexPlanGenerator } from "../src/codex-plan-generator";
 import { WorkOrderStore } from "../src/work-order-store";
 
 const cleanup: Array<() => void> = [];
@@ -13,6 +13,72 @@ afterEach(() => {
 });
 
 describe("Codex plan generator", () => {
+  test("passes frozen monitoring focus context to the production planner prompt", () => {
+    const database = new Database(":memory:");
+    const workOrder = new WorkOrderStore(database).create({
+      goal: "继续监控工作中的发布验证",
+      importContext: {
+        status: "ready",
+        summary: "A 与 B 的聚合进展",
+        currentState: "等待发布验证",
+        nextAction: "运行发布验证",
+        historicalStages: [],
+        artifacts: [{
+          id: "release-report",
+          type: "file",
+          label: "发布报告",
+          location: "reports/release.md",
+        }],
+        organizedAt: "2026-08-09T02:02:00.000Z",
+        error: null,
+        monitoringContext: {
+          workId: "monitoring-work-1",
+          workName: "正式多来源监控工作",
+          sourceSessionKeys: ["codex_session:none:source-a", "codex_session:none:source-b"],
+          aggregateSnapshotRef: "session-monitoring-work:formal:1",
+          aggregateStatus: "ready",
+          aggregateUpdatedAt: "2026-08-09T02:02:00.000Z",
+          summary: "A 与 B 的聚合进展",
+          currentState: "等待发布验证",
+          nextAction: "运行发布验证",
+          focusNodeId: "source-a:formal-current",
+          focusNode: {
+            id: "source-a:formal-current",
+            outcome: "发布验证",
+            summary: "等待两个来源共同确认",
+            status: "current",
+            sourceSessionIds: ["source-a", "source-b"],
+            sourceSessionKeys: ["codex_session:none:source-a", "codex_session:none:source-b"],
+          },
+          artifacts: [{
+            id: "release-report",
+            type: "file",
+            label: "发布报告",
+            location: "reports/release.md",
+            sourceSessionIds: ["source-b"],
+            sourceSessionKeys: ["codex_session:none:source-b"],
+          }],
+          toolCalls: ["run-check"],
+          logs: ["verification.log"],
+        },
+      },
+    });
+
+    try {
+      const prompt = buildPlanPrompt(workOrder);
+      expect(prompt).toContain('"monitoringContext":{"workId":"monitoring-work-1"');
+      expect(prompt).toContain('"focusNodeId":"source-a:formal-current"');
+      expect(prompt).toContain('"outcome":"发布验证"');
+      expect(prompt).toContain('"summary":"等待两个来源共同确认"');
+      expect(prompt).toContain('"status":"current"');
+      expect(prompt).toContain('"sourceSessionKeys":["codex_session:none:source-a","codex_session:none:source-b"]');
+      expect(prompt).toContain('"location":"reports/release.md"');
+      expect(prompt).toContain("explicit continuation boundary");
+    } finally {
+      database.close();
+    }
+  });
+
   test("allows workspace-free planning from its temporary directory", async () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-plan-generator-test-"));
     cleanup.push(() => rmSync(directory, { recursive: true, force: true }));

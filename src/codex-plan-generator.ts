@@ -157,6 +157,7 @@ export function buildPlanPrompt(workOrder: WorkOrder): string {
         nextAction: workOrder.importContext.nextAction,
         historicalStages: workOrder.importContext.historicalStages,
         artifacts: workOrder.importContext.artifacts,
+        monitoringContext: workOrder.importContext.monitoringContext ?? null,
       })}`
     : "";
   const resources = `\nCurrent resource preferences:\n${JSON.stringify({
@@ -178,6 +179,8 @@ First decide whether the information is sufficient for a confirmable plan. When 
 Always return a complete snapshot of the goal, acceptance criteria, materials, and resource plan. Incorporate confirmed decisions into those snapshots and the plan; do not merely repeat the conversation. Ordinary node supplements are already attached to node context and do not require structural plan changes.
 
 If a compact prior result is provided, it represents existing outcomes and verification state. Plan only the remaining or changed work and do not repeat unaffected completed work.
+
+If imported session organization includes monitoringContext, use its frozen aggregate summary, current state, next action, source keys, artifacts, and activity references as creation-time evidence. When focusNodeId and focusNode are present, treat that node as the explicit continuation boundary and carry its outcome, summary, status, and source scope into the plan; do not silently replace it with a later live refresh.
 
 For clarification: return an empty stages array, put the required question in questions, and briefly explain why it is needed in message.
 For a plan: return an empty questions array, at least one stage, and briefly state in message that the plan or structured decision was updated.

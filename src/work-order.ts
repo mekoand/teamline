@@ -126,6 +126,35 @@ export type ImportedHistoricalStage = {
   sourceSessionIds: string[];
 };
 
+export type WorkOrderMonitoringImportArtifact = PlanReference & {
+  sourceSessionIds: string[];
+  sourceSessionKeys: string[];
+};
+
+export type WorkOrderMonitoringImportContext = {
+  workId: string;
+  workName: string;
+  sourceSessionKeys: string[];
+  aggregateSnapshotRef: string | null;
+  aggregateStatus: "not_started" | "pending" | "ready" | "failed";
+  aggregateUpdatedAt: string | null;
+  summary: string | null;
+  currentState: string | null;
+  nextAction: string | null;
+  focusNodeId: string | null;
+  focusNode: {
+    id: string;
+    outcome: string;
+    summary: string;
+    status: string;
+    sourceSessionIds: string[];
+    sourceSessionKeys: string[];
+  } | null;
+  artifacts: WorkOrderMonitoringImportArtifact[];
+  toolCalls: string[];
+  logs: string[];
+};
+
 export type WorkOrderImportContext = {
   status: "pending" | "ready" | "failed";
   summary: string | null;
@@ -136,6 +165,7 @@ export type WorkOrderImportContext = {
   artifacts: PlanReference[];
   organizedAt: string | null;
   error: string | null;
+  monitoringContext?: WorkOrderMonitoringImportContext;
 };
 
 export type WorkOrderSourceContextSession = {
@@ -151,11 +181,26 @@ export type WorkOrderSourceContextSession = {
   workGraphSnapshot: unknown | null;
 };
 
+export type WorkOrderSourceContextMonitoringWork = {
+  id: string;
+  name: string;
+  projectId: string | null;
+  sourceSessionKeys: string[];
+  aggregateSnapshotRef: string | null;
+  aggregateSnapshot: unknown | null;
+  aggregateStatus: "not_started" | "pending" | "ready" | "failed";
+  aggregateMessage: string | null;
+  aggregateUpdatedAt: string | null;
+  updatedAt: string;
+  focusNodeId?: string | null;
+};
+
 export type WorkOrderSourceContext = {
   kind: "session_monitoring";
   version: 1;
   createdAt: string;
   projectId: string | null;
+  monitoringWork?: WorkOrderSourceContextMonitoringWork;
   sessions: WorkOrderSourceContextSession[];
 };
 
@@ -500,11 +545,78 @@ export function normalizeWorkOrderSourceContext(value: unknown): WorkOrderSource
       };
     });
     if (new Set(sessions.map((session) => session.key)).size !== sessions.length) return null;
+    let monitoringWork: WorkOrderSourceContextMonitoringWork | undefined;
+    if (context.monitoringWork !== undefined && context.monitoringWork !== null) {
+      if (
+        typeof context.monitoringWork !== "object" ||
+        Array.isArray(context.monitoringWork)
+      ) {
+        return null;
+      }
+      const work = context.monitoringWork as Record<string, unknown>;
+      const id = typeof work.id === "string" ? work.id.trim() : "";
+      const name = typeof work.name === "string" ? work.name.trim() : "";
+      const workProjectId = work.projectId === null
+        ? null
+        : typeof work.projectId === "string"
+          ? work.projectId.trim() || null
+          : "invalid";
+      const sourceSessionKeys = Array.isArray(work.sourceSessionKeys)
+        ? work.sourceSessionKeys.map((key) => typeof key === "string" ? key.trim() : "")
+        : [];
+      const aggregateUpdatedAt = work.aggregateUpdatedAt;
+      const updatedAt = work.updatedAt;
+      if (
+        !id ||
+        !name ||
+        (workProjectId === "invalid") ||
+        !sourceSessionKeys.length ||
+        sourceSessionKeys.some((key) => !key) ||
+        new Set(sourceSessionKeys).size !== sourceSessionKeys.length ||
+        sourceSessionKeys.length !== sessions.length ||
+        sourceSessionKeys.some((key) => !sessions.some((session) => session.key === key)) ||
+        work.aggregateSnapshotRef !== null && typeof work.aggregateSnapshotRef !== "string" ||
+        !["not_started", "pending", "ready", "failed"].includes(String(work.aggregateStatus)) ||
+        work.aggregateMessage !== null && typeof work.aggregateMessage !== "string" ||
+        (aggregateUpdatedAt !== null &&
+          (typeof aggregateUpdatedAt !== "string" || !Number.isFinite(Date.parse(aggregateUpdatedAt)))) ||
+        typeof updatedAt !== "string" ||
+        !Number.isFinite(Date.parse(updatedAt)) ||
+        (work.focusNodeId !== undefined &&
+          work.focusNodeId !== null && typeof work.focusNodeId !== "string")
+      ) {
+        return null;
+      }
+      const contextProjectId = context.projectId === null
+        ? null
+        : typeof context.projectId === "string"
+          ? context.projectId.trim() || null
+          : null;
+      if (workProjectId !== contextProjectId) return null;
+      monitoringWork = {
+        id,
+        name,
+        projectId: workProjectId,
+        sourceSessionKeys,
+        aggregateSnapshotRef: work.aggregateSnapshotRef as string | null,
+        aggregateSnapshot: work.aggregateSnapshot ?? null,
+        aggregateStatus: work.aggregateStatus as WorkOrderSourceContextMonitoringWork["aggregateStatus"],
+        aggregateMessage: work.aggregateMessage as string | null,
+        aggregateUpdatedAt: aggregateUpdatedAt === null
+          ? null
+          : new Date(aggregateUpdatedAt as string).toISOString(),
+        updatedAt: new Date(updatedAt).toISOString(),
+        ...(work.focusNodeId === undefined
+          ? {}
+          : { focusNodeId: work.focusNodeId === null ? null : (work.focusNodeId as string).trim() || null }),
+      };
+    }
     return {
       kind: "session_monitoring",
       version: 1,
       createdAt: new Date(context.createdAt).toISOString(),
       projectId: context.projectId === null ? null : context.projectId.trim() || null,
+      ...(monitoringWork ? { monitoringWork } : {}),
       sessions,
     };
   } catch {

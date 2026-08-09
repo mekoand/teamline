@@ -286,6 +286,215 @@ describe("从会话监控创建目标", () => {
     }
   });
 
+  test("从正式监控工作或节点创建目标时冻结聚合快照并保持监控独立", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "teamline-monitoring-work-goal-"));
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const project = store.createProject("监控工作项目");
+    const firstKey = addMonitoredSession(store, {
+      id: "formal-source-a",
+      title: "来源 A",
+      projectId: project.id,
+      workspacePath: workspace,
+      snapshot: { currentState: "A 已完成", nodes: [{ id: "a", outcome: "A 节点", status: "historical" }] },
+    });
+    const secondKey = addMonitoredSession(store, {
+      id: "formal-source-b",
+      title: "来源 B",
+      projectId: project.id,
+      workspacePath: workspace,
+      snapshot: { currentState: "B 正在推进", nodes: [{ id: "b", outcome: "B 节点", status: "current" }] },
+    });
+    const work = store.createSessionMonitoringWork({
+      name: "正式多来源监控工作",
+      projectId: project.id,
+      sourceSessionKeys: [firstKey, secondKey],
+    });
+    const aggregateSnapshot = {
+      version: 1,
+      summary: "A 与 B 的聚合进展",
+      currentState: "等待发布验证",
+      nextAction: "运行发布验证",
+      currentProgressPercent: 60,
+      enumerablePlan: { completed: 3, total: 5 },
+      currentNodeId: "formal-current",
+      sourceSessionKeys: [firstKey, secondKey],
+      sourceUpdatedAt: { [firstKey]: "2026-08-09T02:00:00.000Z", [secondKey]: "2026-08-09T02:01:00.000Z" },
+      nodes: [{
+        id: "formal-current",
+        outcome: "发布验证",
+        summary: "等待两个来源共同确认",
+        status: "current",
+        estimatedProgress: 60,
+        sourceSessionIds: ["formal-source-a", "formal-source-b"],
+        sourceSessionKeys: [firstKey, secondKey],
+        toolCalls: ["run-check"],
+        logs: ["verification.log"],
+        artifacts: [{
+          id: "release-report",
+          type: "file",
+          label: "发布报告",
+          location: "reports/release.md",
+          sourceSessionIds: ["formal-source-b"],
+          sourceSessionKeys: [secondKey],
+        }],
+      }],
+      inferredRelations: [],
+      artifacts: [{
+        id: "release-report",
+        type: "file",
+        label: "发布报告",
+        location: "reports/release.md",
+        sourceSessionIds: ["formal-source-b"],
+        sourceSessionKeys: [secondKey],
+      }],
+      toolCalls: ["run-check"],
+      logs: ["verification.log"],
+    };
+    store.updateSessionMonitoringWorkAggregate(work.id, {
+      snapshot: aggregateSnapshot,
+      status: "ready",
+      message: null,
+      updatedAt: "2026-08-09T02:02:00.000Z",
+    });
+    store.updateSessionMonitoringWorkSnapshotRef(work.id, "session-monitoring-work:formal:1");
+    const app = createApp({ store });
+
+    try {
+      const create = (url: string, body: Record<string, unknown>) => app.fetch(new Request(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ));
+      const firstResponse = await create(
+        `http://teamline.local/api/session-monitoring/works/${work.id}/create-goal`,
+        {
+          name: "继续正式监控工作",
+          projectId: project.id,
+          focusNodeId: "formal-current",
+        },
+      );
+      const first = await responseJson(firstResponse);
+      expect(firstResponse.status).toBe(201);
+      expect(first.workOrder).toMatchObject({
+        projectId: project.id,
+        sourceSessions: [],
+        sourceContext: {
+          kind: "session_monitoring",
+          projectId: project.id,
+          monitoringWork: {
+            id: work.id,
+            name: work.name,
+            projectId: project.id,
+            sourceSessionKeys: [firstKey, secondKey],
+            aggregateSnapshotRef: "session-monitoring-work:formal:1",
+            aggregateSnapshot,
+            aggregateStatus: "ready",
+            aggregateMessage: null,
+            aggregateUpdatedAt: "2026-08-09T02:02:00.000Z",
+            focusNodeId: "formal-current",
+          },
+          sessions: [
+            { key: firstKey, monitoringEnabled: true, organizationStatus: "ready" },
+            { key: secondKey, monitoringEnabled: true, organizationStatus: "ready" },
+          ],
+        },
+        importContext: {
+          status: "ready",
+          monitoringContext: {
+            workId: work.id,
+            workName: work.name,
+            sourceSessionKeys: [firstKey, secondKey],
+            aggregateSnapshotRef: "session-monitoring-work:formal:1",
+            aggregateStatus: "ready",
+            aggregateUpdatedAt: "2026-08-09T02:02:00.000Z",
+            summary: "A 与 B 的聚合进展",
+            currentState: "等待发布验证",
+            nextAction: "运行发布验证",
+            focusNodeId: "formal-current",
+            focusNode: {
+              id: "formal-current",
+              outcome: "发布验证",
+              summary: "等待两个来源共同确认",
+              status: "current",
+              sourceSessionIds: ["formal-source-a", "formal-source-b"],
+              sourceSessionKeys: [firstKey, secondKey],
+            },
+            artifacts: [{
+              id: "release-report",
+              type: "file",
+              label: "发布报告",
+              location: "reports/release.md",
+              sourceSessionIds: ["formal-source-b"],
+              sourceSessionKeys: [secondKey],
+            }],
+            toolCalls: ["run-check"],
+            logs: ["verification.log"],
+          },
+        },
+      });
+      const firstGoalId = first.workOrder.id;
+      const frozenContext = structuredClone(store.get(firstGoalId)!.sourceContext);
+
+      const secondResponse = await create("http://teamline.local/api/session-monitoring/create-goal", {
+        name: "再次从同一监控工作创建目标",
+        projectId: project.id,
+        monitoringWorkId: work.id,
+      });
+      const second = await responseJson(secondResponse);
+      expect(secondResponse.status).toBe(201);
+      expect(second.workOrder.id).not.toBe(firstGoalId);
+      expect(second.workOrder.sourceSessions).toEqual([]);
+      expect(second.workOrder.sourceContext.monitoringWork.sourceSessionKeys).toEqual([firstKey, secondKey]);
+      expect(store.list().filter((goal) => goal.sourceContext?.monitoringWork?.id === work.id)).toHaveLength(2);
+
+      store.updateSessionMonitoringWorkAggregate(work.id, {
+        snapshot: { ...aggregateSnapshot, currentState: "后来已完成验证" },
+        status: "ready",
+        updatedAt: "2026-08-09T03:00:00.000Z",
+      });
+      store.updateSessionMonitoring(firstKey, {
+        monitoringEnabled: true,
+        lastReadPosition: 999,
+        workGraphSnapshot: { currentState: "来源继续变化" },
+      });
+      expect(store.get(firstGoalId)?.sourceContext).toEqual(frozenContext);
+      expect(store.getSessionMonitoring(firstKey)?.monitoringEnabled).toBe(true);
+      expect(store.getSessionMonitoring(secondKey)?.monitoringEnabled).toBe(true);
+
+      const restoredStore = new WorkOrderStore(new Database(":memory:"));
+      const restore = new LocalStateTransfer(restoredStore);
+      const preview = restore.preview(new LocalStateTransfer(store).export());
+      expect(restore.confirm({ previewId: preview.previewId })).toEqual({
+        imported: 2,
+        copied: 0,
+        skipped: 0,
+      });
+      const restoredExpected = structuredClone(frozenContext)!;
+      for (const session of restoredExpected.sessions) {
+        session.source.executionIdentityId = restoredStore.get(firstGoalId)!.executionIdentityId;
+      }
+      expect(restoredStore.get(firstGoalId)?.sourceContext).toEqual(restoredExpected);
+
+      const failedBefore = store.list().length;
+      const failed = await create("http://teamline.local/api/session-monitoring/create-goal", {
+        name: "失败后不应留下目标",
+        projectId: project.id,
+        monitoringWorkId: "missing-monitoring-work",
+      });
+      expect(failed.status).toBe(400);
+      expect(store.list()).toHaveLength(failedBefore);
+      expect(store.listSessionMonitoring().filter((session) => session.monitoringEnabled)).toHaveLength(2);
+      restoredStore.database.close();
+    } finally {
+      await app.close();
+      store.database.close();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("允许同项目多工具多账号来源，并允许同一监控会话重复创建目标", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "teamline-monitoring-goal-mixed-"));
     const store = new WorkOrderStore(new Database(":memory:"));
@@ -365,7 +574,7 @@ describe("从会话监控创建目标", () => {
         skipped: 0,
       });
       expect(restoredStore.list().every((goal) => goal.sourceSessions.length === 0)).toBe(true);
-      expect(restoredStore.list().map((goal) => goal.sourceContext?.sessions.length)).toEqual([3, 1]);
+      expect(restoredStore.list().map((goal) => goal.sourceContext?.sessions.length).sort((a, b) => a - b)).toEqual([1, 3]);
       restoredStore.database.close();
     } finally {
       await app.close();
