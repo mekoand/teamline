@@ -1,80 +1,16 @@
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { homedir } from "node:os";
-import { createApp } from "./app";
-import { CodexPlanGenerator } from "./codex-plan-generator";
-import { CodexExecutionRunner } from "./codex-runner";
-import { WorkOrderStore } from "./work-order-store";
-import { GitWorktreeManager } from "./worktree-manager";
-import { LocalWorkOrderResultProcessor } from "./result-processor";
-import {
-  createServerIdentityResourceProvider,
-  createServerResourceProvider,
-} from "./server-resources";
-import { GitCheckpointManager } from "./checkpoint-manager";
-import { LocalCodexSessionProvider } from "./codex-session-discovery";
-import { LocalClaudeCodeSessionProvider } from "./claude-code-session-discovery";
-import { CodexSessionOrganizer } from "./session-organizer";
-import { LocalCodexIdentityEnvironment } from "./execution-identity-environment";
+import { startLocalCore } from "./local-core";
 
-const projectRoot = resolve(import.meta.dir, "..");
-const dataDirectory = resolve(process.env.TEAMLINE_DATA_DIR ?? join(projectRoot, ".teamline"));
-const systemCodexHome = resolve(process.env.CODEX_HOME ?? join(homedir(), ".codex"));
-mkdirSync(dataDirectory, { recursive: true });
-
-const store = new WorkOrderStore(new Database(join(dataDirectory, "teamline.db"), { create: true }));
-store.interruptActiveRunsAfterRestart();
-const port = Number(process.env.TEAMLINE_PORT ?? 4310);
-const executionIdentityEnvironment = new LocalCodexIdentityEnvironment(
-  join(dataDirectory, "codex-identities"),
-  {
-    executable: process.env.TEAMLINE_CODEX_PATH,
-    systemHome: systemCodexHome,
-  },
-);
-const app = createApp({
-  store,
-  planGenerator: new CodexPlanGenerator(),
-  codexRunner: new CodexExecutionRunner(),
-  worktreeManager: new GitWorktreeManager(join(dataDirectory, "worktrees")),
-  resultProcessor: new LocalWorkOrderResultProcessor(),
-  resourceProvider: createServerResourceProvider(),
-  identityResourceProvider: createServerIdentityResourceProvider(systemCodexHome),
-  checkpointManager: new GitCheckpointManager(),
-  codexSessionProvider: new LocalCodexSessionProvider(systemCodexHome),
-  codexSessionProviderForIdentity: (identity) =>
-    new LocalCodexSessionProvider(
-      identity.homeKind === "managed"
-        ? identity.managedHomePath!
-        : systemCodexHome,
-    ),
-  claudeCodeSessionProvider: new LocalClaudeCodeSessionProvider(
-    resolve(process.env.CLAUDE_CODE_PROJECTS_DIR ?? join(homedir(), ".claude", "projects")),
-  ),
-  sessionOrganizer: new CodexSessionOrganizer(),
-  projectRoot,
-  dataDirectory,
-  executionIdentityEnvironment,
+const core = await startLocalCore({
+  port: Number(process.env.TEAMLINE_PORT ?? 4310),
 });
 
-const server = Bun.serve({
-  hostname: "127.0.0.1",
-  port,
-  idleTimeout: 0,
-  fetch: app.fetch,
-});
-
-console.log(`Teamline is running at ${server.url}`);
+console.log(`Teamline Local Core is running at ${core.url}`);
 
 let shuttingDown = false;
 const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
-  server.stop(true);
-  await app.close();
-  await executionIdentityEnvironment.close();
-  store.database.close();
+  await core.close();
 };
 const shutdownForSignal = () => {
   void shutdown().then(

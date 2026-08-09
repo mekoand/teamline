@@ -64,8 +64,11 @@ The supported setup is:
 - [Bun](https://bun.sh/)
 - A locally installed and signed-in Codex CLI
 - Local browser interface and CLI
+- Source-run Electron desktop shell
 
 There is no packaged installer yet. Windows, Linux, hosted accounts, and full execution support for tools other than Codex are not currently available.
+
+This issue delivers a source-run Electron shell only; packaging and distribution are separate work.
 
 ## Run from source
 
@@ -77,7 +80,16 @@ bun run dev
 
 Open <http://127.0.0.1:4310>.
 
-Teamline stores its local database under `.teamline/` by default. Set `TEAMLINE_DATA_DIR` to use another location.
+The local web interface and the Electron shell use the same Local Core at `http://127.0.0.1:4310`. The web interface does not open a browser automatically. Teamline stores Local Core data under `.teamline/` by default. Set `TEAMLINE_DATA_DIR` to use another location.
+
+To start the source-run desktop shell, install dependencies and run:
+
+```bash
+bun install
+bun run desktop
+```
+
+Closing the Electron window hides the client and leaves Local Core-owned execution running. Reopening the window reconnects to the same local data.
 
 Paid API fallback is optional and off by default. Provide a project-scoped `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`, and the matching `OPENAI_PROJECT_ID`. Use a project dedicated to Teamline: paid nodes are serialized, and the observed project-cost increase is assigned to the goal that ran. Teamline does not save the keys. It starts no paid run without a per-goal limit and the global monthly budget configured in the resource page. Provider cost reporting can be delayed, so the limits stop later nodes after observed usage reaches them; they are not exact hard caps. If actual usage cannot be attributed to the goal, Teamline waits instead of estimating it; a confirmed zero-cost or cross-month edge can be cleared manually from the resource page.
 
