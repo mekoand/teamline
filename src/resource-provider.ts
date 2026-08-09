@@ -64,6 +64,28 @@ export type ResourceProviderSnapshot = {
   pendingPaidUsageWorkOrderId?: string | null;
 };
 
+export type SessionOrganizationResourceRequest = {
+  purpose: "session_organization";
+  sessionKey: string;
+  sourceKind: string;
+  accountId: string | null;
+  preference: "low_cost";
+};
+
+export type ResourceSelection = {
+  tool: string;
+  model: string;
+  accountId: string | null;
+  accountLabel: string | null;
+};
+
+export interface SessionOrganizationResourceSelector {
+  select(
+    request: SessionOrganizationResourceRequest,
+    signal?: AbortSignal,
+  ): Promise<ResourceSelection | null>;
+}
+
 export interface ResourceProvider {
   read(): Promise<ResourceProviderSnapshot>;
   readWithoutCodex?(): Promise<ResourceProviderSnapshot>;

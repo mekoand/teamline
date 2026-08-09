@@ -5,6 +5,7 @@ import type {
   ResourceProviderSnapshot,
   WorkOrderUsage,
 } from "./resource-provider";
+import type { SessionMonitoringResourceUsage } from "./session-monitoring";
 import { presentExecutionIdentity, type ExecutionIdentity } from "./execution-identity";
 import type { WorkOrder } from "./work-order";
 import { semanticMessage, type SemanticMessage } from "./semantic-message";
@@ -86,6 +87,7 @@ export function presentResources(
   snapshot: ResourceProviderSnapshot,
   workOrders: WorkOrder[],
   maxConcurrency = 2,
+  sessionMonitoringUsage: SessionMonitoringResourceUsage[] = [],
 ) {
   const usageByWorkOrder = new Map(
     snapshot.workOrderUsage.map((usage) => [usage.workOrderId, usage]),
@@ -99,6 +101,7 @@ export function presentResources(
     ).length,
     codex: snapshot.codex,
     openaiApi: snapshot.openaiApi,
+    sessionMonitoringUsage,
     workOrders: presented.map((workOrder) => ({
       id: workOrder.id,
       title: workOrder.title,

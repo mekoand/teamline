@@ -17,6 +17,8 @@ export type SessionMonitoringRecord = {
   projectLabel: string;
   lastActiveAt: string;
   sourcePath: string | null;
+  sourcePosition: number | null;
+  sourceModifiedAt: string | null;
   availability: DiscoveredSession["availability"];
   message: string | null;
   projectId: string | null;
@@ -30,9 +32,24 @@ export type SessionMonitoringRecord = {
   updatedAt: string;
 };
 
+export type SessionMonitoringResourceUsage = {
+  id: string;
+  sessionKey: string;
+  sourceKind: SessionMonitoringRecord["sourceKind"];
+  tool: string;
+  model: string;
+  accountId: string | null;
+  accountLabel: string | null;
+  status: "running" | "succeeded" | "failed";
+  startedAt: string;
+  completedAt: string | null;
+  message: string | null;
+};
+
 export type SessionMonitoringUpdate = {
   projectId?: string | null;
   monitoringEnabled?: boolean;
+  message?: string | null;
   lastReadPosition?: number | null;
   lastReadAt?: string | null;
   organizationStatus?: SessionMonitoringOrganizationStatus;

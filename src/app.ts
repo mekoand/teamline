@@ -3,11 +3,15 @@ import {
   constants,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   realpathSync,
+  rmSync,
   statSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import type { PlanGenerator } from "./plan-generator";
 import type { CheckpointManager } from "./checkpoint-manager";
 import { presentConsoleWorkOrders } from "./console-presentation";
@@ -46,6 +50,7 @@ import {
   type CodexResourceSignal,
   type ResourceProvider,
   type ResourceProviderSnapshot,
+  type SessionOrganizationResourceSelector,
 } from "./resource-provider";
 import { decidePaidApiRun } from "./paid-api-budget";
 import {
@@ -117,9 +122,23 @@ type AppDependencies = {
   sessionOrganizer?: SessionOrganizer;
   sessionOrganizationTimeoutMs?: number;
   sessionOrganizationScheduler?: (callback: () => void) => void;
+  sessionOrganizationResourceSelector?: SessionOrganizationResourceSelector;
+  sessionMonitoringScheduler?: (callback: () => void, delayMs: number) => () => void;
+  sessionMonitoringIntervalMs?: number;
+  sessionMonitoringConcurrency?: number;
   dataDirectory?: string;
   executionIdentityEnvironment?: ExecutionIdentityEnvironment;
   openLocalArtifact?: (path: string, reveal: boolean) => Promise<void>;
+};
+
+type SessionMonitoringSourceResult = {
+  sourceKind: SessionMonitoringRecord["sourceKind"];
+  executionIdentityId: string | null;
+  executionIdentityLabel: string | null;
+  status: "available" | "partial" | "unavailable";
+  message: string;
+  sessions: DiscoveredSession[];
+  provider?: SessionProvider;
 };
 
 type NextStageRun = {
@@ -176,6 +195,10 @@ export function createApp({
   sessionOrganizer,
   sessionOrganizationTimeoutMs = 5 * 60 * 1000,
   sessionOrganizationScheduler = scheduleBackgroundTask,
+  sessionOrganizationResourceSelector,
+  sessionMonitoringScheduler = scheduleTimeout,
+  sessionMonitoringIntervalMs = 60_000,
+  sessionMonitoringConcurrency = 2,
   dataDirectory = join(projectRoot, ".teamline"),
   executionIdentityEnvironment,
   openLocalArtifact = openLocalArtifactWithSystem,
@@ -185,6 +208,22 @@ export function createApp({
   const organizingWorkOrderIds = new Set<string>();
   const organizationControllers = new Map<string, AbortController>();
   const backgroundOrganizationPromises = new Set<Promise<unknown>>();
+  const monitoringControllers = new Map<string, AbortController>();
+  const backgroundMonitoringPromises = new Set<Promise<unknown>>();
+  const monitoringKeys = new Set<string>();
+  type SessionMonitoringQueueEntry = {
+    run: () => Promise<void>;
+    onError?: (error: unknown) => void;
+  };
+  const monitoringPending = new Map<string, SessionMonitoringQueueEntry>();
+  const monitoringDeferred = new Map<string, SessionMonitoringQueueEntry>();
+  const monitoringConcurrency = Number.isFinite(sessionMonitoringConcurrency)
+    ? Math.max(1, Math.floor(sessionMonitoringConcurrency))
+    : 2;
+  let monitoringActiveCount = 0;
+  let sessionMonitoringDiscoveryInFlight: Promise<unknown> | null = null;
+  let sessionMonitoringDiscoveryController: AbortController | null = null;
+  let closed = false;
   const startingWorkspacePaths = new Map<string, string>();
   const startingExecutionIdentityIds = new Map<string, string>();
   const activeRuns = new Map<string, StartedCodexRun>();
@@ -222,12 +261,16 @@ export function createApp({
           ),
       );
 
-  const discoverSessionMonitoring = async () => {
+  const discoverSessionMonitoring = async (signal?: AbortSignal) => {
+    if (closed) return sessionMonitoringState();
     const discoveredAt = new Date().toISOString();
+    const previousRecords = new Map(
+      store.listSessionMonitoring().map((record) => [record.key, record]),
+    );
     const identities = store
       .listExecutionIdentities()
       .filter((identity) => identity.tool === "codex" && identity.status !== "removed");
-    const codexResults = await Promise.all(
+    const codexResults: SessionMonitoringSourceResult[] = await Promise.all(
       identities.map(async (identity) => {
         const provider = codexSessionProviderForIdentity?.(identity) ??
           (identity.homeKind === "system" ? codexSessionProvider : undefined);
@@ -242,12 +285,18 @@ export function createApp({
           };
         }
         try {
-          const result = await provider.discover();
+          const result = await discoverSessionProvider(
+            provider,
+            "Codex",
+            sessionOrganizationTimeoutMs,
+            signal,
+          );
           return {
             sourceKind: "codex_session" as const,
             executionIdentityId: identity.id,
             executionIdentityLabel: identity.label,
             ...result,
+            provider,
           };
         } catch {
           return {
@@ -257,27 +306,40 @@ export function createApp({
             status: "unavailable" as const,
             message: "暂时无法读取这个 Codex 账号的本机会话",
             sessions: [] as DiscoveredSession[],
+            provider,
           };
         }
       }),
     );
-    const claudeResult = claudeCodeSessionProvider
-      ? await discoverSessionProvider(claudeCodeSessionProvider, "Claude Code")
+    const claudeResult: SessionMonitoringSourceResult = claudeCodeSessionProvider
+      ? await discoverSessionProvider(
+          claudeCodeSessionProvider,
+          "Claude Code",
+          sessionOrganizationTimeoutMs,
+          signal,
+        )
+          .then((result) => ({
+            sourceKind: "claude_code_session" as const,
+            executionIdentityId: null,
+            executionIdentityLabel: null,
+            ...result,
+            provider: claudeCodeSessionProvider,
+          }))
       : {
+          sourceKind: "claude_code_session" as const,
+          executionIdentityId: null,
+          executionIdentityLabel: null,
           status: "unavailable" as const,
           message: "Claude Code 会话发现服务尚未配置",
           sessions: [] as DiscoveredSession[],
         };
-    const sourceResults = [
+    const sourceResults: SessionMonitoringSourceResult[] = [
       ...codexResults,
-      {
-        sourceKind: "claude_code_session" as const,
-        executionIdentityId: null,
-        executionIdentityLabel: null,
-        ...claudeResult,
-      },
+      claudeResult,
     ];
+    if (closed) return sessionMonitoringState();
     const workOrders = store.list();
+    const seenKeys = new Set<string>();
     let excludedCount = 0;
     for (const result of sourceResults) {
       for (const session of result.sessions) {
@@ -288,12 +350,16 @@ export function createApp({
           excludedCount += 1;
           continue;
         }
+        const key = sessionMonitoringKey(
+          result.sourceKind,
+          result.executionIdentityId,
+          session.id,
+        );
+        seenKeys.add(key);
+        const previous = previousRecords.get(key);
+        const sourceChanged = !previous || sessionMonitoringSourceChanged(previous, session);
         store.upsertDiscoveredSession({
-          key: sessionMonitoringKey(
-            result.sourceKind,
-            result.executionIdentityId,
-            session.id,
-          ),
+          key,
           sourceKind: result.sourceKind,
           executionIdentityId: result.executionIdentityId,
           executionIdentityLabel: result.executionIdentityLabel,
@@ -303,13 +369,80 @@ export function createApp({
           projectLabel: session.projectLabel,
           lastActiveAt: session.lastActiveAt,
           sourcePath: session.sourcePath,
+          sourcePosition: session.sourcePosition,
+          sourceModifiedAt: session.sourceModifiedAt,
           availability: session.availability,
-          message: session.message,
+          message:
+            previous?.organizationStatus === "failed" && !sourceChanged
+              ? previous.message
+              : session.message,
           lastDiscoveredAt: discoveredAt,
         });
       }
     }
+    for (const previous of previousRecords.values()) {
+      if (seenKeys.has(previous.key)) continue;
+      const sourceResult = sourceResults.find(
+        (result) =>
+          result.sourceKind === previous.sourceKind &&
+          result.executionIdentityId === previous.executionIdentityId,
+      );
+      const knownCandidate = previous.monitoringEnabled
+        ? sessionMonitoringCandidateFromRecord(previous)
+        : null;
+      if (knownCandidate && sourceResult?.provider) {
+        seenKeys.add(previous.key);
+        sourceResult.sessions.push(knownCandidate);
+        store.upsertDiscoveredSession({
+          key: previous.key,
+          sourceKind: previous.sourceKind,
+          executionIdentityId: previous.executionIdentityId,
+          executionIdentityLabel: previous.executionIdentityLabel,
+          id: knownCandidate.id,
+          title: knownCandidate.title,
+          workspacePath: knownCandidate.workspacePath,
+          projectLabel: knownCandidate.projectLabel,
+          lastActiveAt: knownCandidate.lastActiveAt,
+          sourcePath: knownCandidate.sourcePath,
+          sourcePosition: knownCandidate.sourcePosition,
+          sourceModifiedAt: knownCandidate.sourceModifiedAt,
+          availability: knownCandidate.availability,
+          message: previous.organizationStatus === "failed"
+            ? previous.message
+            : knownCandidate.message,
+          lastDiscoveredAt: discoveredAt,
+        });
+        continue;
+      }
+      const sourceStillExists = Boolean(previous.sourcePath && existsSync(previous.sourcePath));
+      if (sourceResult?.status !== "unavailable" && sourceStillExists) continue;
+      const message = sourceResult?.message || "来源会话当前不可用，请重试";
+      store.upsertDiscoveredSession({
+        key: previous.key,
+        sourceKind: previous.sourceKind,
+        executionIdentityId: previous.executionIdentityId,
+        executionIdentityLabel: previous.executionIdentityLabel,
+        id: previous.id,
+        title: previous.title,
+        workspacePath: previous.workspacePath,
+        projectLabel: previous.projectLabel,
+        lastActiveAt: previous.lastActiveAt,
+        sourcePath: null,
+        sourcePosition: null,
+        sourceModifiedAt: null,
+        availability: "unavailable",
+        message,
+        lastDiscoveredAt: discoveredAt,
+      });
+      if (previous.monitoringEnabled) {
+        store.updateSessionMonitoring(previous.key, {
+          organizationStatus: "failed",
+          message,
+        });
+      }
+    }
     store.saveSessionMonitoringDiscoveryAt(discoveredAt);
+    queueSessionMonitoringUpdates(previousRecords, sourceResults);
     const sessions = visibleSessionMonitoring();
     const groups = groupSessionMonitoring(sessions);
     const statuses = sourceResults.map((result) => result.status);
@@ -327,6 +460,22 @@ export function createApp({
       sessions: sessions.map(presentSessionMonitoring),
       groups,
     };
+  };
+
+  const discoverSessionMonitoringOnce = () => {
+    if (sessionMonitoringDiscoveryInFlight) return sessionMonitoringDiscoveryInFlight;
+    const controller = new AbortController();
+    sessionMonitoringDiscoveryController = controller;
+    const task = discoverSessionMonitoring(controller.signal).finally(() => {
+      if (sessionMonitoringDiscoveryInFlight === task) {
+        sessionMonitoringDiscoveryInFlight = null;
+      }
+      if (sessionMonitoringDiscoveryController === controller) {
+        sessionMonitoringDiscoveryController = null;
+      }
+    });
+    sessionMonitoringDiscoveryInFlight = task;
+    return task;
   };
 
   const sessionMonitoringState = () => {
@@ -428,8 +577,13 @@ export function createApp({
       if (selection.workGraphSnapshot !== undefined) {
         update.workGraphSnapshot = selection.workGraphSnapshot;
       }
-      return store.updateSessionMonitoring(key, update);
+      const updated = store.updateSessionMonitoring(key, update);
+      if (update.monitoringEnabled === false) {
+        monitoringControllers.get(key)?.abort();
+      }
+      return updated;
     });
+    scheduleSessionMonitoringScan(0);
     const visibleSessions = visibleSessionMonitoring();
     return {
       sessions: visibleSessions.map(presentSessionMonitoring),
@@ -441,12 +595,361 @@ export function createApp({
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
   let backgroundRefreshInFlight: Promise<unknown> | null = null;
+  let sessionMonitoringScanInFlight: Promise<unknown> | null = null;
   let cancelAutoRunTimer: (() => void) | null = null;
-  let closed = false;
+  let cancelSessionMonitoringTimer: (() => void) | null = null;
   let handleRequest!: (request: Request) => Promise<Response>;
   let scheduleAutoRunCheck!: (delayMs?: number) => void;
+  let scheduleSessionMonitoringScan!: (delayMs?: number) => void;
 
   store.markInterruptedSessionOrganizations();
+  for (const record of store.listSessionMonitoring()) {
+    if (!record.monitoringEnabled || record.organizationStatus !== "pending") continue;
+    store.updateSessionMonitoring(record.key, {
+      organizationStatus: "failed",
+      message: "上一次会话监控在后台中断，请重试",
+    });
+  }
+  for (const usage of store.listRunningSessionMonitoringResourceUsage()) {
+    store.finishSessionMonitoringResourceUsage(
+      usage.id,
+      "failed",
+      "上一次会话监控在后台中断，请重试",
+    );
+  }
+
+  const pumpSessionMonitoring = () => {
+    while (!closed && monitoringActiveCount < monitoringConcurrency && monitoringPending.size > 0) {
+      const next = monitoringPending.entries().next().value as
+        | [string, { run: () => Promise<void>; onError?: (error: unknown) => void }]
+        | undefined;
+      if (!next) return;
+      const [key, entry] = next;
+      monitoringPending.delete(key);
+      if (!store.getSessionMonitoring(key)?.monitoringEnabled) {
+        monitoringKeys.delete(key);
+        monitoringControllers.delete(key);
+        continue;
+      }
+      monitoringActiveCount += 1;
+      const task = entry.run().catch((error) => {
+        entry.onError?.(error);
+      }).finally(() => {
+        backgroundMonitoringPromises.delete(task);
+        monitoringControllers.delete(key);
+        const deferred = monitoringDeferred.get(key);
+        if (deferred && !closed && store.getSessionMonitoring(key)?.monitoringEnabled) {
+          monitoringDeferred.delete(key);
+          monitoringPending.set(key, deferred);
+        } else {
+          monitoringDeferred.delete(key);
+          monitoringKeys.delete(key);
+        }
+        monitoringActiveCount -= 1;
+        pumpSessionMonitoring();
+      });
+      backgroundMonitoringPromises.add(task);
+      void task;
+    }
+  };
+
+  const enqueueSessionMonitoring = (
+    key: string,
+    entry: SessionMonitoringQueueEntry,
+  ) => {
+    if (closed) return false;
+    if (monitoringKeys.has(key)) {
+      if (monitoringPending.has(key)) {
+        monitoringPending.set(key, entry);
+      } else {
+        monitoringDeferred.set(key, entry);
+      }
+      return true;
+    }
+    monitoringKeys.add(key);
+    monitoringPending.set(key, entry);
+    pumpSessionMonitoring();
+    return true;
+  };
+
+  const queueSessionMonitoringAttempt = (
+    record: SessionMonitoringRecord,
+    candidate: DiscoveredSession,
+    sourceProvider: SessionProvider,
+    forceFromStart = false,
+  ) => {
+    enqueueSessionMonitoring(record.key, {
+      run: () => monitorSessionFromSource(
+        record,
+        candidate,
+        sourceProvider,
+        forceFromStart,
+      ),
+    });
+  };
+
+  const queueSessionMonitoringUpdates = (
+    previousRecords: Map<string, SessionMonitoringRecord>,
+    sourceResults: SessionMonitoringSourceResult[],
+  ) => {
+    for (const result of sourceResults) {
+      if (!result.provider) continue;
+      for (const candidate of result.sessions) {
+        const key = sessionMonitoringKey(
+          result.sourceKind,
+          result.executionIdentityId,
+          candidate.id,
+        );
+        const current = store.getSessionMonitoring(key);
+        if (!current?.monitoringEnabled) continue;
+        const previous = previousRecords.get(key);
+        if (
+          !previous ||
+          sessionMonitoringSourceChanged(previous, candidate)
+        ) {
+          queueSessionMonitoringAttempt(
+            current,
+            candidate,
+            result.provider,
+            Boolean(previous && sessionMonitoringSourceNeedsFullRead(previous, candidate)),
+          );
+        }
+      }
+    }
+  };
+
+  const runSessionMonitoringRetry = async (key: string, controller: AbortController) => {
+    const record = store.getSessionMonitoring(key);
+    if (!record || !record.monitoringEnabled) return;
+    let sourceProvider: SessionProvider | undefined;
+    try {
+      sourceProvider = sessionProviderForSource(record.sourceKind, record.executionIdentityId);
+    } catch (error) {
+      store.updateSessionMonitoring(key, {
+        organizationStatus: "failed",
+        message: error instanceof Error ? error.message : "来源会话不可用，请重试",
+      });
+      return;
+    }
+    if (!sourceProvider) {
+      store.updateSessionMonitoring(key, {
+        organizationStatus: "failed",
+        message: "来源会话读取服务尚未配置，请重试",
+      });
+      return;
+    }
+    const discovered = await withSessionMonitoringTimeout(
+      (signal) => sourceProvider!.discover(signal),
+      sessionOrganizationTimeoutMs,
+      "来源会话检查超时，请重试",
+      controller,
+    );
+    const candidate = discovered.sessions.find((session) => session.id === record.id) ??
+      sessionMonitoringCandidateFromRecord(record);
+    if (!candidate) {
+      store.updateSessionMonitoring(key, {
+        organizationStatus: "failed",
+        message: discovered.message || "来源会话当前不可用，请重试",
+      });
+      return;
+    }
+    const forceFromStart = sessionMonitoringSourceNeedsFullRead(record, candidate);
+    const refreshed = store.upsertDiscoveredSession({
+      key,
+      sourceKind: record.sourceKind,
+      executionIdentityId: record.executionIdentityId,
+      executionIdentityLabel: record.executionIdentityLabel,
+      id: candidate.id,
+      title: candidate.title,
+      workspacePath: candidate.workspacePath,
+      projectLabel: candidate.projectLabel,
+      lastActiveAt: candidate.lastActiveAt,
+      sourcePath: candidate.sourcePath,
+      sourcePosition: candidate.sourcePosition,
+      sourceModifiedAt: candidate.sourceModifiedAt,
+      availability: candidate.availability,
+      message: candidate.message,
+      lastDiscoveredAt: new Date().toISOString(),
+    });
+    await monitorSessionFromSource(refreshed, candidate, sourceProvider, forceFromStart);
+  };
+
+  const queueSessionMonitoringRetry = (key: string) => {
+    if (monitoringKeys.has(key)) return false;
+    const controller = new AbortController();
+    monitoringControllers.set(key, controller);
+    const queued = enqueueSessionMonitoring(key, {
+      run: () => runSessionMonitoringRetry(key, controller),
+      onError: (error) => {
+        if (!closed && store.getSessionMonitoring(key)) {
+          store.updateSessionMonitoring(key, {
+            organizationStatus: "failed",
+            message: error instanceof Error ? error.message : "来源会话重试失败，请稍后重试",
+          });
+        }
+      },
+    });
+    if (!queued) monitoringControllers.delete(key);
+    return queued;
+  };
+
+  scheduleSessionMonitoringScan = (delayMs = 0) => {
+    if (closed) return;
+    if (!store.listSessionMonitoring().some((record) => record.monitoringEnabled)) {
+      cancelSessionMonitoringTimer?.();
+      cancelSessionMonitoringTimer = null;
+      return;
+    }
+    if (cancelSessionMonitoringTimer) {
+      if (delayMs > 0) return;
+      cancelSessionMonitoringTimer();
+      cancelSessionMonitoringTimer = null;
+    }
+    let active = true;
+    const cancel = sessionMonitoringScheduler(() => {
+      if (!active) return;
+      active = false;
+      cancelSessionMonitoringTimer = null;
+      sessionMonitoringScanInFlight = discoverSessionMonitoringOnce().finally(() => {
+        sessionMonitoringScanInFlight = null;
+        scheduleSessionMonitoringScan(sessionMonitoringIntervalMs);
+      });
+      void sessionMonitoringScanInFlight.catch(() => undefined);
+    }, delayMs);
+    cancelSessionMonitoringTimer = () => {
+      if (!active) return;
+      active = false;
+      cancel();
+    };
+  };
+
+  const monitorSessionFromSource = async (
+    record: SessionMonitoringRecord,
+    candidate: DiscoveredSession,
+    sourceProvider: SessionProvider,
+    forceFromStart = false,
+  ) => {
+    const current = store.getSessionMonitoring(record.key);
+    if (closed || !current?.monitoringEnabled) return;
+    const controller = new AbortController();
+    monitoringControllers.set(record.key, controller);
+    let usageId: string | null = null;
+    let temporaryDirectory: string | null = null;
+    const ensureActive = () => {
+      const latest = store.getSessionMonitoring(record.key);
+      if (closed || !latest?.monitoringEnabled) {
+        throw new Error("会话监控已停止，请重试");
+      }
+    };
+    try {
+      ensureActive();
+      store.updateSessionMonitoring(record.key, {
+        organizationStatus: "pending",
+        message: null,
+      });
+      if (candidate.availability === "unavailable" || !candidate.sourcePath) {
+        throw new Error(candidate.message || "来源会话当前不可用，请重试");
+      }
+      if (!sourceProvider.read) {
+        throw new Error("来源会话读取服务尚未配置，请重试");
+      }
+      const fromPosition = forceFromStart || current.lastReadPosition === null
+        ? 0
+        : candidate.sourcePosition !== null && candidate.sourcePosition !== undefined &&
+            current.lastReadPosition > candidate.sourcePosition
+          ? 0
+          : current.lastReadPosition;
+      const sourceRead = await withSessionMonitoringTimeout(
+        (signal) => sourceProvider.read!(candidate, fromPosition, signal),
+        sessionOrganizationTimeoutMs,
+        "来源会话读取超时，请重试",
+        controller,
+      );
+      ensureActive();
+      if (!sourceRead.content) {
+        store.updateSessionMonitoring(record.key, {
+          lastReadPosition: sourceRead.nextPosition,
+          lastReadAt: new Date().toISOString(),
+          organizationStatus: "ready",
+          message: candidate.message,
+        });
+        return;
+      }
+      if (!sessionOrganizationResourceSelector) {
+        throw new Error("快速整理资源尚未配置，请重试");
+      }
+      const resource = await withSessionMonitoringTimeout(
+        (signal) => sessionOrganizationResourceSelector.select({
+          purpose: "session_organization",
+          sessionKey: record.key,
+          sourceKind: record.sourceKind,
+          accountId: record.executionIdentityId,
+          preference: "low_cost",
+        }, signal),
+        sessionOrganizationTimeoutMs,
+        "快速整理资源暂时不可用，请重试",
+        controller,
+      );
+      ensureActive();
+      if (!resource || !resource.tool.trim() || !resource.model.trim()) {
+        throw new Error("当前没有可用的快速整理资源，请重试");
+      }
+      if (!sessionOrganizer) {
+        throw new Error("会话整理服务尚未配置，请重试");
+      }
+      const usage = store.startSessionMonitoringResourceUsage({
+        sessionKey: record.key,
+        sourceKind: record.sourceKind,
+        tool: resource.tool,
+        model: resource.model,
+        accountId: resource.accountId,
+        accountLabel: resource.accountLabel,
+      });
+      usageId = usage.id;
+      temporaryDirectory = mkdtempSync(join(tmpdir(), "teamline-session-monitoring-"));
+      const temporarySourcePath = join(temporaryDirectory, "increment.jsonl");
+      writeFileSync(temporarySourcePath, sourceRead.content, "utf8");
+      const organization = await withSessionMonitoringTimeout(
+        (signal) => sessionOrganizer.organize({
+          name: candidate.title,
+          sourceLabel: sourceKindLabel(record.sourceKind),
+          sourceKind: record.sourceKind,
+          previousSnapshot: current.workGraphSnapshot,
+          resource,
+          sessions: [{ ...candidate, sourcePath: temporarySourcePath }],
+        }, signal),
+        sessionOrganizationTimeoutMs,
+        "快速整理超时，请重试",
+        controller,
+      );
+      ensureActive();
+      store.updateSessionMonitoring(record.key, {
+        lastReadPosition: sourceRead.nextPosition,
+        lastReadAt: new Date().toISOString(),
+        organizationStatus: "ready",
+        workGraphSnapshot: organization,
+        message: candidate.message,
+      });
+      store.finishSessionMonitoringResourceUsage(usage.id, "succeeded");
+    } catch (error) {
+      const message = controller.signal.aborted
+        ? "会话监控已停止，请重试"
+        : error instanceof Error
+          ? error.message
+          : "会话整理失败，请重试";
+      if (!closed && store.getSessionMonitoring(record.key)) {
+        store.updateSessionMonitoring(record.key, {
+          organizationStatus: "failed",
+          message,
+        });
+      }
+      if (usageId) store.finishSessionMonitoringResourceUsage(usageId, "failed", message);
+    } finally {
+      monitoringControllers.delete(record.key);
+      controller.abort();
+      if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  };
 
   const clearRunTimeout = (id: string) => {
     runTimeouts.get(id)?.();
@@ -1927,7 +2430,7 @@ export function createApp({
 
       if (request.method === "GET" && url.pathname === "/api/session-monitoring") {
         return url.searchParams.get("refresh") === "1" || url.searchParams.get("refresh") === "true"
-          ? Response.json(await discoverSessionMonitoring())
+          ? Response.json(await discoverSessionMonitoringOnce())
           : Response.json(sessionMonitoringState());
       }
 
@@ -1961,7 +2464,7 @@ export function createApp({
             }
           }
         }
-        return Response.json(await discoverSessionMonitoring());
+        return Response.json(await discoverSessionMonitoringOnce());
       }
 
       if (
@@ -1981,6 +2484,36 @@ export function createApp({
             { status: 400 },
           );
         }
+      }
+
+      const sessionMonitoringRetryMatch = url.pathname.match(
+        /^\/api\/session-monitoring\/([^/]+)\/retry$/,
+      );
+      if (request.method === "POST" && sessionMonitoringRetryMatch) {
+        const key = decodeURIComponent(sessionMonitoringRetryMatch[1]);
+        const record = store.getSessionMonitoring(key);
+        if (!record) {
+          return Response.json(
+            { code: "SESSION_MONITORING_NOT_FOUND", error: "找不到这个本机会话" },
+            { status: 404 },
+          );
+        }
+        if (!record.monitoringEnabled) {
+          return Response.json(
+            { code: "SESSION_MONITORING_DISABLED", error: "请先启用这个会话的监控" },
+            { status: 409 },
+          );
+        }
+        if (!queueSessionMonitoringRetry(key)) {
+          return Response.json(
+            { code: "SESSION_MONITORING_BUSY", error: "会话监控正在整理，请稍候" },
+            { status: 409 },
+          );
+        }
+        return Response.json(
+          { outcome: "pending", session: presentSessionMonitoring(record) },
+          { status: 202 },
+        );
       }
 
       const sessionMonitoringMatch = url.pathname.match(
@@ -2017,9 +2550,14 @@ export function createApp({
               ? { workGraphSnapshot: body.workGraphSnapshot }
               : {}),
           };
-          return Response.json({
-            session: presentSessionMonitoring(store.updateSessionMonitoring(key, update)),
-          });
+          const updated = store.updateSessionMonitoring(key, update);
+          if (update.monitoringEnabled === false) {
+            monitoringControllers.get(key)?.abort();
+          }
+          if (body.monitoringEnabled !== undefined || body.enabled !== undefined) {
+            scheduleSessionMonitoringScan(0);
+          }
+          return Response.json({ session: presentSessionMonitoring(updated) });
         } catch (error) {
           return Response.json(
             {
@@ -2297,6 +2835,7 @@ export function createApp({
           displayedSnapshot,
           store.list(),
           store.getExecutionSettings().maxConcurrency,
+          store.listSessionMonitoringResourceUsage(),
         );
         const paidAttribution = store.getPaidApiAttributionState();
         return Response.json({
@@ -4088,6 +4627,7 @@ export function createApp({
     }
   };
   scheduleAutoRunCheck();
+  scheduleSessionMonitoringScan(0);
   return {
     fetch: handleRequest,
     async close() {
@@ -4095,11 +4635,21 @@ export function createApp({
       closed = true;
       cancelAutoRunTimer?.();
       cancelAutoRunTimer = null;
+      cancelSessionMonitoringTimer?.();
+      cancelSessionMonitoringTimer = null;
+      sessionMonitoringDiscoveryController?.abort();
+      for (const key of monitoringPending.keys()) monitoringKeys.delete(key);
+      monitoringPending.clear();
+      monitoringDeferred.clear();
       for (const controller of organizationControllers.values()) controller.abort();
+      for (const controller of monitoringControllers.values()) controller.abort();
       await Promise.all([
         autoRunCheckInFlight?.catch(() => undefined),
         backgroundRefreshInFlight?.catch(() => undefined),
+        sessionMonitoringDiscoveryInFlight?.catch(() => undefined),
+        sessionMonitoringScanInFlight?.catch(() => undefined),
         ...[...backgroundOrganizationPromises].map((task) => task.catch(() => undefined)),
+        ...[...backgroundMonitoringPromises].map((task) => task.catch(() => undefined)),
       ]);
       store.markInterruptedSessionOrganizations();
     },
@@ -4746,19 +5296,34 @@ function presentSession(
 async function discoverSessionProvider(
   provider: SessionProvider,
   sourceLabel: string,
+  timeoutMs?: number,
+  parentSignal?: AbortSignal,
 ): Promise<{
   status: "available" | "partial" | "unavailable";
   message: string;
   sessions: DiscoveredSession[];
 }> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (parentSignal?.aborted) controller.abort();
+  else parentSignal?.addEventListener("abort", abort, { once: true });
   try {
-    return await provider.discover();
+    return timeoutMs === undefined
+      ? await provider.discover(parentSignal)
+      : await withSessionMonitoringTimeout(
+          (signal) => provider.discover(signal),
+          timeoutMs,
+          `${sourceLabel} 会话发现超时，请重试`,
+          controller,
+        );
   } catch {
     return {
       status: "unavailable",
       message: `暂时无法读取 ${sourceLabel} 本机会话`,
       sessions: [],
     };
+  } finally {
+    parentSignal?.removeEventListener("abort", abort);
   }
 }
 
@@ -4791,6 +5356,66 @@ function presentSessionMonitoring(
 ): PresentedSessionMonitoring {
   const { sourcePath: _sourcePath, ...publicSession } = session;
   return publicSession;
+}
+
+function sessionMonitoringSourceChanged(
+  record: SessionMonitoringRecord,
+  candidate: DiscoveredSession,
+): boolean {
+  const candidatePosition = candidate.sourcePosition ?? null;
+  const candidateModifiedAt = candidate.sourceModifiedAt ?? null;
+  const hasSourceMetadata =
+    record.sourcePosition !== null ||
+    candidatePosition !== null ||
+    record.sourceModifiedAt !== null ||
+    candidateModifiedAt !== null;
+  return (
+    (record.lastReadPosition === null && record.organizationStatus === "not_started") ||
+    record.sourcePath !== candidate.sourcePath ||
+    record.sourcePosition !== candidatePosition ||
+    record.sourceModifiedAt !== candidateModifiedAt ||
+    record.availability !== candidate.availability ||
+    (!hasSourceMetadata && record.lastActiveAt !== candidate.lastActiveAt)
+  );
+}
+
+function sessionMonitoringSourceNeedsFullRead(
+  record: SessionMonitoringRecord,
+  candidate: DiscoveredSession,
+): boolean {
+  const candidatePosition = candidate.sourcePosition ?? null;
+  return (
+    record.sourcePath === null ||
+    record.sourcePath !== candidate.sourcePath ||
+    record.availability === "unavailable" ||
+    (record.sourcePosition !== null &&
+      record.sourcePosition === candidatePosition &&
+      record.sourceModifiedAt !== (candidate.sourceModifiedAt ?? null))
+  );
+}
+
+function sessionMonitoringCandidateFromRecord(
+  record: SessionMonitoringRecord,
+): DiscoveredSession | null {
+  if (!record.sourcePath) return null;
+  try {
+    const details = statSync(record.sourcePath);
+    if (!details.isFile()) return null;
+    return {
+      id: record.id,
+      title: record.title,
+      workspacePath: record.workspacePath,
+      projectLabel: record.projectLabel,
+      lastActiveAt: record.lastActiveAt,
+      sourcePath: record.sourcePath,
+      sourcePosition: details.size,
+      sourceModifiedAt: details.mtime.toISOString(),
+      availability: record.availability === "unavailable" ? "available" : record.availability,
+      message: record.availability === "unavailable" ? null : record.message,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function isTeamlineExecutionSession(
@@ -4977,10 +5602,38 @@ async function discoverSessionsWithin(
     timeout.unref?.();
   });
   try {
-    return await Promise.race([provider.discover(), interrupted, timedOut]);
+    return await Promise.race([provider.discover(signal), interrupted, timedOut]);
   } finally {
     clearTimeout(timeout);
     if (abort) signal.removeEventListener("abort", abort);
+  }
+}
+
+async function withSessionMonitoringTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+  controller = new AbortController(),
+): Promise<T> {
+  if (controller.signal.aborted) throw new Error("来源读取已停止");
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_, reject) => {
+    abort = () => reject(new Error("来源读取已停止"));
+    controller.signal.addEventListener("abort", abort, { once: true });
+  });
+  const timedOut = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([operation(controller.signal), interrupted, timedOut]);
+  } finally {
+    clearTimeout(timeout);
+    if (abort) controller.signal.removeEventListener("abort", abort);
   }
 }
 

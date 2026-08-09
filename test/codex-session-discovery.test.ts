@@ -45,11 +45,63 @@ describe("local Codex session discovery", () => {
           projectLabel: "example-project",
           lastActiveAt: "2026-08-03T02:00:00.000Z",
           sourcePath: rollout,
+          sourcePosition: expect.any(Number),
+          sourceModifiedAt: "2026-08-03T01:30:00.000Z",
           availability: "available",
           message: null,
         },
       ]);
       expect(JSON.stringify(result)).not.toContain("private prompt");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads only the requested source increment and reports a missing source", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-codex-sessions-"));
+    const id = "019fc374-5a5b-78b0-81da-c5bf1452cebf";
+    const directory = join(root, "sessions", "2026", "08", "03");
+    const workspace = join(root, "example-project");
+    const rollout = join(directory, `rollout-2026-08-03T01-10-10-${id}.jsonl`);
+    mkdirSync(directory, { recursive: true });
+    mkdirSync(workspace);
+    const initial = `${JSON.stringify({ type: "session_meta", payload: { id, cwd: workspace } })}\n`;
+    writeFileSync(rollout, initial);
+    writeFileSync(
+      join(root, "session_index.jsonl"),
+      `${JSON.stringify({ id, thread_name: "增量会话", updated_at: "2026-08-03T02:00:00Z" })}\n`,
+    );
+    const provider = new LocalCodexSessionProvider(root);
+
+    try {
+      const discovered = await provider.discover();
+      const session = discovered.sessions[0]!;
+      const first = await provider.read!(session, 0);
+      expect(first).toEqual({ content: initial, nextPosition: Buffer.byteLength(initial) });
+      const appended = `${JSON.stringify({ type: "response_item", payload: { role: "assistant" } })}\n`;
+      writeFileSync(rollout, initial + appended);
+      const increment = await provider.read!(
+        { ...session, sourcePosition: Buffer.byteLength(initial) },
+        Buffer.byteLength(initial),
+      );
+      expect(increment).toEqual({
+        content: appended,
+        nextPosition: Buffer.byteLength(initial + appended),
+      });
+      const partial = JSON.stringify({ type: "response_item", payload: { role: "user" } });
+      const completePosition = Buffer.byteLength(initial + appended);
+      writeFileSync(rollout, initial + appended + partial);
+      expect(await provider.read!(session, completePosition)).toEqual({
+        content: "",
+        nextPosition: completePosition,
+      });
+      writeFileSync(rollout, initial + appended + `${partial}\n`);
+      expect(await provider.read!(session, completePosition)).toEqual({
+        content: `${partial}\n`,
+        nextPosition: Buffer.byteLength(initial + appended + `${partial}\n`),
+      });
+      rmSync(rollout);
+      await expect(provider.read!(session, 0)).rejects.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

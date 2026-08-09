@@ -998,6 +998,9 @@ function renderSessionMonitoringCard(session) {
         <div><dt>整理状态</dt><dd>${escapeHtml(sessionOrganizationStatusLabel(session.organizationStatus))}</dd></div>
       </dl>
       ${session.message ? `<p class="session-warning">${escapeHtml(session.message)}</p>` : ""}
+      ${session.monitoringEnabled && session.organizationStatus === "failed"
+        ? `<button class="secondary-button" type="button" data-session-monitoring-retry="${escapeHtml(session.key)}">手动重试</button>`
+        : ""}
     </article>`;
 }
 
@@ -1269,6 +1272,9 @@ function bindSessionMonitoringEvents() {
   document.querySelectorAll("[data-session-project], [data-session-monitoring-toggle]").forEach((control) => {
     control.addEventListener("change", () => persistSessionMonitoringRow(control.dataset.sessionProject ?? control.dataset.sessionMonitoringToggle));
   });
+  document.querySelectorAll("[data-session-monitoring-retry]").forEach((button) => {
+    button.addEventListener("click", () => retrySessionMonitoring(button.dataset.sessionMonitoringRetry, button));
+  });
   document.querySelector("#save-session-monitoring-selection")?.addEventListener("click", saveSessionMonitoringSelection);
 }
 
@@ -1310,6 +1316,22 @@ async function persistSessionMonitoringRow(key) {
   } catch (error) {
     state.sessionMonitoringError = messageFrom(error, "无法保存会话监控设置");
     renderConsole();
+  }
+}
+
+async function retrySessionMonitoring(key, button) {
+  if (!key || !button) return;
+  button.disabled = true;
+  try {
+    await requestJson(`/api/session-monitoring/${encodeURIComponent(key)}/retry`, {
+      method: "POST",
+    });
+    await refreshConsole();
+  } catch (error) {
+    state.sessionMonitoringError = messageFrom(error, "无法重试会话监控");
+    renderConsole();
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -1597,6 +1619,7 @@ function renderResourceWorkspace() {
         ${renderApiResourceCard(resources.openaiApi, resources.paidApi)}
       </section>
       ${Array.isArray(resources.codexAccounts) ? renderCodexAccountQuota(resources.codexAccounts) : ""}
+      ${renderSessionMonitoringUsage(resources.sessionMonitoringUsage)}
       <section class="resource-runtime-panel">
         <div><p class="overline">运行设置</p><h2>本机并发</h2></div>
         <div class="resource-runtime-controls">
@@ -1621,6 +1644,30 @@ function renderResourceWorkspace() {
           : '<p class="muted">新建目标后，可在这里安排优先级、执行节奏和自动运行。</p>'}
       </section>
     </section>`;
+}
+
+function renderSessionMonitoringUsage(usages = []) {
+  return `
+    <section class="resource-orders-panel">
+      <div class="section-heading compact">
+        <div><p class="overline">会话监控</p><h2>后台整理用量</h2></div>
+        <span class="subtle-label">${usages.length} 条记录</span>
+      </div>
+      ${usages.length
+        ? `<div class="resource-order-list">${usages.map((usage) => `
+          <article class="resource-order-row">
+            <div class="resource-card-heading">
+              <div><strong>${escapeHtml(usage.model)}</strong><small>${escapeHtml(usage.tool)} · ${escapeHtml(usage.accountLabel || usage.accountId || "未指定账号")}</small></div>
+              <span class="status-pill ${usage.status === "succeeded" ? "running" : usage.status === "failed" ? "queued" : "response"}">${sessionMonitoringUsageStatusLabel(usage.status)}</span>
+            </div>
+            <p class="resource-message compact">${formatDate(usage.startedAt)}${usage.message ? ` · ${escapeHtml(usage.message)}` : ""}</p>
+          </article>`).join("")}</div>`
+        : '<p class="muted">启用会话监控后，后台整理使用的工具、模型和账号会显示在这里。</p>'}
+    </section>`;
+}
+
+function sessionMonitoringUsageStatusLabel(status) {
+  return { running: "进行中", succeeded: "已完成", failed: "失败" }[status] || status;
 }
 
 function renderCodexResourceCard(codex, runningCount) {

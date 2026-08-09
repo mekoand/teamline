@@ -12,8 +12,10 @@ import { basename, join } from "node:path";
 import type {
   DiscoveredSession,
   SessionDiscoveryResult,
+  SessionSourceRead,
   SessionProvider,
 } from "./session-discovery";
+import { readSessionSource } from "./session-discovery";
 
 export type DiscoveredCodexSession = DiscoveredSession;
 export type CodexSessionDiscoveryResult = SessionDiscoveryResult;
@@ -71,6 +73,8 @@ export class LocalCodexSessionProvider implements SessionProvider {
         projectLabel: workspacePath ? basename(workspacePath) || workspacePath : "文件夹不可用",
         lastActiveAt,
         sourcePath: file.path,
+        sourcePosition: file.size,
+        sourceModifiedAt: file.modifiedAt,
         availability: degraded ? "degraded" : "available",
         message: degraded
           ? [
@@ -96,6 +100,8 @@ export class LocalCodexSessionProvider implements SessionProvider {
         projectLabel: "来源文件不可用",
         lastActiveAt: indexed.updatedAt || new Date(0).toISOString(),
         sourcePath: null,
+        sourcePosition: null,
+        sourceModifiedAt: null,
         availability: "unavailable",
         message: "本地会话索引仍在，但来源文件已经不可用",
       });
@@ -131,6 +137,14 @@ export class LocalCodexSessionProvider implements SessionProvider {
           : "只读取本机 Codex 会话索引和必要元数据"),
       sessions: sorted,
     };
+  }
+
+  read(
+    session: DiscoveredSession,
+    fromPosition: number,
+    signal?: AbortSignal,
+  ): Promise<SessionSourceRead> {
+    return readSessionSource(session, fromPosition, signal);
   }
 }
 
@@ -208,9 +222,10 @@ function listRecentRolloutFiles(root: string): Array<{
   id: string;
   path: string;
   modifiedAt: string;
+  size: number;
 }> {
   if (!existsSync(root)) return [];
-  const files: Array<{ id: string; path: string; modifiedAt: string }> = [];
+  const files: Array<{ id: string; path: string; modifiedAt: string; size: number }> = [];
   const visit = (directory: string) => {
     let entries;
     try {
@@ -230,7 +245,12 @@ function listRecentRolloutFiles(root: string): Array<{
       try {
         const details = lstatSync(path);
         if (!details.isFile()) continue;
-        files.push({ id, path, modifiedAt: details.mtime.toISOString() });
+        files.push({
+          id,
+          path,
+          modifiedAt: details.mtime.toISOString(),
+          size: details.size,
+        });
       } catch {
         // The file may disappear while Codex rotates local sessions.
       }

@@ -37,12 +37,42 @@ describe("local Claude Code session discovery", () => {
           projectLabel: "project",
           lastActiveAt: "2026-08-04T06:00:00.000Z",
           sourcePath: source,
+          sourcePosition: expect.any(Number),
+          sourceModifiedAt: "2026-08-04T06:00:00.000Z",
           availability: "available",
           message: null,
         }],
       });
       expect(JSON.stringify(result)).not.toContain("private prompt");
       expect(JSON.stringify(result)).not.toContain("private response");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads an appended increment and rejects a disappeared source", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-claude-sessions-"));
+    const project = join(root, "project-a");
+    const workspace = join(root, "project");
+    const source = join(project, "session-a.jsonl");
+    mkdirSync(project, { recursive: true });
+    mkdirSync(workspace);
+    const initial = `${JSON.stringify({ type: "user", sessionId: "session-a", cwd: workspace })}\n`;
+    const appended = `${JSON.stringify({ type: "assistant", sessionId: "session-a" })}\n`;
+    writeFileSync(source, initial);
+    const provider = new LocalClaudeCodeSessionProvider(root);
+
+    try {
+      const session = (await provider.discover()).sessions[0]!;
+      const first = await provider.read!(session, 0);
+      expect(first).toEqual({ content: initial, nextPosition: Buffer.byteLength(initial) });
+      writeFileSync(source, initial + appended);
+      expect(await provider.read!(session, Buffer.byteLength(initial))).toEqual({
+        content: appended,
+        nextPosition: Buffer.byteLength(initial + appended),
+      });
+      rmSync(source);
+      await expect(provider.read!(session, 0)).rejects.toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
