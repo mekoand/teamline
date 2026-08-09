@@ -193,4 +193,15 @@ describe("resource preferences", () => {
     expect(styles).toContain("line-break: strict");
   });
 
+  test("keeps missing and failed quota data unknown while reserving unavailable for explicit states", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+
+    expect(script).toContain('if (["unavailable", "not_connected"].includes(status))');
+    expect(script).toContain('<strong>未知</strong><small>暂无数据</small>');
+    expect(script).toContain('if (status === "available" && quota?.shortWindow && quota?.longWindow) return "可用";');
+    expect(script).toContain('return "未知";');
+    expect(script).not.toContain('return `<div><span>${label}</span><strong>不可用</strong><small>暂无数据</small></div>`');
+  });
+
 });

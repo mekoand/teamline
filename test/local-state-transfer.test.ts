@@ -768,6 +768,125 @@ describe("local Teamline state transfer", () => {
     expect(serialized).not.toContain("worktreePath");
   });
 
+  test("exports and restores session organization and notification preferences", async () => {
+    const sourceStore = new WorkOrderStore(new Database(":memory:"));
+    sourceStore.create({ goal: "来源目标" });
+    const modelSettings = {
+      sources: {
+        codex: {
+          automaticModel: "adapter-fast",
+          deepModel: "adapter-deep",
+          fallbackModel: "adapter-alt",
+          accountId: "source-account",
+        },
+        claude_code: {
+          automaticModel: "claude-fast",
+          deepModel: null,
+          fallbackModel: null,
+          accountId: null,
+        },
+      },
+    };
+    const notificationPreferences = {
+      needsResponse: true,
+      runFailed: false,
+      goalPendingAcceptance: false,
+      resourceUnavailable: true,
+    };
+    sourceStore.saveSessionOrganizationModelSettings(modelSettings);
+    sourceStore.saveNotificationPreferences(notificationPreferences);
+
+    const sourceApp = createApp({ store: sourceStore });
+    const bundle = await (await sourceApp.fetch(request("/api/local-state/export"))).json();
+    expect(bundle.settings).toMatchObject({
+      sessionOrganizationModelSettings: modelSettings,
+      notificationPreferences,
+    });
+
+    const targetStore = new WorkOrderStore(new Database(":memory:"));
+    targetStore.create({ goal: "目标库已有目标" });
+    const existingModelSettings = {
+      sources: {
+        codex: {
+          automaticModel: "existing-fast",
+          deepModel: null,
+          fallbackModel: null,
+          accountId: null,
+        },
+      },
+    };
+    const existingNotificationPreferences = {
+      needsResponse: false,
+      runFailed: true,
+      goalPendingAcceptance: true,
+      resourceUnavailable: false,
+    };
+    targetStore.saveSessionOrganizationModelSettings(existingModelSettings);
+    targetStore.saveNotificationPreferences(existingNotificationPreferences);
+    const targetApp = createApp({ store: targetStore });
+    const preview = await (
+      await targetApp.fetch(request("/api/local-state/restore/preview", { bundle }))
+    ).json();
+    expect(preview.settingsConflict).toBe(true);
+    const unresolved = await targetApp.fetch(
+      request("/api/local-state/restore/confirm", { previewId: preview.previewId }),
+    );
+    expect(unresolved.status).toBe(409);
+
+    const kept = await targetApp.fetch(
+      request("/api/local-state/restore/confirm", {
+        previewId: preview.previewId,
+        settingsResolution: "keep_existing",
+      }),
+    );
+    expect(kept.status).toBe(201);
+    expect(targetStore.getSessionOrganizationModelSettings()).toEqual(existingModelSettings);
+    expect(targetStore.getNotificationPreferences()).toEqual(existingNotificationPreferences);
+
+    const importedStore = new WorkOrderStore(new Database(":memory:"));
+    importedStore.create({ goal: "另一个目标库已有目标" });
+    const importedApp = createApp({ store: importedStore });
+    const importedPreview = await (
+      await importedApp.fetch(request("/api/local-state/restore/preview", { bundle }))
+    ).json();
+    const imported = await importedApp.fetch(
+      request("/api/local-state/restore/confirm", {
+        previewId: importedPreview.previewId,
+        settingsResolution: "use_imported",
+      }),
+    );
+    expect(imported.status).toBe(201);
+    expect(importedStore.getSessionOrganizationModelSettings()).toEqual(modelSettings);
+    expect(importedStore.getNotificationPreferences()).toEqual(notificationPreferences);
+
+    const legacyBundle = structuredClone(bundle);
+    delete legacyBundle.settings.sessionOrganizationModelSettings;
+    delete legacyBundle.settings.notificationPreferences;
+    const legacyTargetStore = new WorkOrderStore(new Database(":memory:"));
+    const legacySettings = {
+      sources: {
+        codex: {
+          automaticModel: "legacy-target",
+          deepModel: null,
+          fallbackModel: null,
+          accountId: null,
+        },
+      },
+    };
+    legacyTargetStore.saveSessionOrganizationModelSettings(legacySettings);
+    legacyTargetStore.saveNotificationPreferences(existingNotificationPreferences);
+    const legacyApp = createApp({ store: legacyTargetStore });
+    const legacyPreview = await (
+      await legacyApp.fetch(request("/api/local-state/restore/preview", { bundle: legacyBundle }))
+    ).json();
+    const legacyRestored = await legacyApp.fetch(
+      request("/api/local-state/restore/confirm", { previewId: legacyPreview.previewId }),
+    );
+    expect(legacyRestored.status).toBe(201);
+    expect(legacyTargetStore.getSessionOrganizationModelSettings()).toEqual(legacySettings);
+    expect(legacyTargetStore.getNotificationPreferences()).toEqual(existingNotificationPreferences);
+  });
+
   test("round-trips identity history and results without restoring identity or session authorization", async () => {
     const sourceStore = new WorkOrderStore(new Database(":memory:"));
     const sourceIdentityId = "11111111-1111-4111-8111-111111111111";

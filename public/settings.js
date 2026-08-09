@@ -1,5 +1,6 @@
 const sections = [...document.querySelectorAll("[data-settings-section]")];
 const panels = [...document.querySelectorAll("[data-settings-panel]")];
+let modelSettings = { sources: {} };
 let restorePreview = null;
 
 function requestJson(path, options) {
@@ -51,7 +52,8 @@ async function loadSettings() {
   }
   try {
     const { settings } = await requestJson("/api/preferences/models");
-    const codex = settings?.sources?.codex || {};
+    modelSettings = settings || { sources: {} };
+    const codex = modelSettings.sources?.codex || {};
     document.querySelector("#model-codex-automatic").value = codex.automaticModel || "";
     document.querySelector("#model-codex-deep").value = codex.deepModel || "";
     document.querySelector("#model-codex-fallback").value = codex.fallbackModel || "";
@@ -103,11 +105,12 @@ async function saveModels(event) {
   const form = event.currentTarget;
   const value = (name) => form.elements[name].value.trim() || null;
   try {
-    await requestJson("/api/preferences/models", {
+    const { settings } = await requestJson("/api/preferences/models", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         sources: {
+          ...modelSettings.sources,
           codex: {
             automaticModel: value("automaticModel"),
             deepModel: value("deepModel"),
@@ -117,6 +120,7 @@ async function saveModels(event) {
         },
       }),
     });
+    modelSettings = settings || modelSettings;
     setFeedback("model-feedback", "模型设置已保存。", false);
   } catch (error) {
     setFeedback("model-feedback", error.message, true);

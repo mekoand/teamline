@@ -1791,12 +1791,33 @@ export function createApp({
           }
           return { ...candidate, sourcePath: candidate.sourcePath };
         });
+        const resource = sessionOrganizationResourceSelector
+          ? await withSessionMonitoringTimeout(
+              (signal) => sessionOrganizationResourceSelector.select({
+                purpose: "session_organization",
+                sessionKey: `${sourceKind}:${workOrder.id}`,
+                sourceKind,
+                accountId: workOrder.sourceSessions[0]?.executionIdentityId ?? null,
+                preference: "low_cost",
+              }, signal),
+              sessionOrganizationTimeoutMs,
+              "会话整理资源暂时不可用，请重试",
+              controller,
+            )
+          : undefined;
+        if (
+          sessionOrganizationResourceSelector &&
+          (!resource || !resource.tool.trim() || !resource.model.trim())
+        ) {
+          throw new Error("当前没有可用的会话整理资源，请重试");
+        }
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const organization = await Promise.race([
           sessionOrganizer.organize({
             name: workOrder.name,
             sourceLabel: sourceKindLabel(sourceKind),
             sourceKind,
+            resource,
             sessions,
           }, controller.signal),
           new Promise<never>((_, reject) => {

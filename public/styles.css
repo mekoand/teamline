@@ -315,68 +315,6 @@ pre {
   display: none;
 }
 
-.resource-summary {
-  position: relative;
-  min-width: 0;
-  margin-left: auto;
-  margin-right: 12px;
-}
-
-.resource-summary > button,
-.topbar-quota-control > summary {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 9px;
-  color: var(--muted);
-  background: var(--panel-soft);
-  font-size: 11px;
-}
-
-.resource-summary strong,
-.topbar-quota-control i {
-  color: var(--text);
-  font-size: 11px;
-}
-
-.topbar-quota-control > summary {
-  list-style: none;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.topbar-quota-control > summary::-webkit-details-marker {
-  display: none;
-}
-
-.topbar-quota-control > summary::after {
-  content: "⌄";
-  color: var(--faint);
-  font-size: 9px;
-}
-
-.topbar-quota-control i {
-  color: var(--muted);
-  font-style: normal;
-}
-
-.topbar-quota-popover {
-  position: absolute;
-  z-index: 20;
-  top: 42px;
-  right: 0;
-  width: min(420px, calc(100vw - 32px));
-  display: grid;
-  gap: 8px;
-  padding: 36px 12px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
 .floating-disclosure-close {
   position: absolute;
   top: 8px;
@@ -384,44 +322,6 @@ pre {
   width: 24px;
   min-height: 24px;
   padding: 0;
-}
-
-.topbar-quota-popover article {
-  display: grid;
-  grid-template-columns: minmax(100px, 1fr) minmax(210px, 1.5fr);
-  align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
-  border-radius: 9px;
-  background: var(--panel-soft);
-}
-
-.topbar-quota-popover article > div,
-.topbar-quota-popover dl > div {
-  display: grid;
-  gap: 3px;
-}
-
-.topbar-quota-popover article span,
-.topbar-quota-popover dt {
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.topbar-quota-popover dl {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.topbar-quota-popover dd {
-  font-size: 11px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.topbar-quota-popover > button {
-  justify-self: end;
 }
 
 .local-status {
@@ -3001,10 +2901,6 @@ dialog::backdrop {
     height: 58px;
   }
 
-  .resource-summary {
-    display: none;
-  }
-
   .console-topbar {
     gap: 8px;
     padding-inline: 10px;
@@ -3027,30 +2923,6 @@ dialog::backdrop {
     min-height: 24px;
     padding-inline: 5px;
     font-size: 9px;
-  }
-
-  .topbar-quota-control > summary {
-    gap: 7px;
-    padding-inline: 9px;
-  }
-
-  .topbar-quota-control > summary > span {
-    display: none;
-  }
-
-  .topbar-quota-control > summary i {
-    display: none;
-  }
-
-  .topbar-quota-popover {
-    position: fixed;
-    top: 51px;
-    right: 8px;
-    width: calc(100vw - 16px);
-  }
-
-  .topbar-quota-popover article {
-    grid-template-columns: minmax(90px, 0.8fr) minmax(190px, 1.5fr);
   }
 
   .topbar-status {
@@ -6526,19 +6398,10 @@ button {
   background: var(--bg);
 }
 
-.console-shell[class] .resource-summary > button {
-  padding-inline: 0;
-  background: transparent;
-}
-
 .console-shell[class] .window-heading strong,
 .console-shell[class] .local-status,
 .console-shell[class] .notification-button {
   white-space: nowrap;
-}
-
-.console-shell[class] .resource-summary {
-  max-width: min(380px, 34vw);
 }
 
 .console-shell[class] .primary-button {
@@ -6741,9 +6604,6 @@ button {
     --shell-left-column: 240px;
   }
 
-  .console-shell[class] .resource-summary {
-    max-width: 26vw;
-  }
 }
 
 @media (max-width: 979px) {
@@ -6771,7 +6631,6 @@ button {
 }
 
 @media (max-width: 1000px) {
-  .console-shell[class] .resource-summary,
   .console-shell[class] .window-heading .local-status {
     display: none;
   }
@@ -6786,9 +6645,6 @@ button {
     --shell-left-column: 224px;
   }
 
-  .console-shell[class] .resource-summary {
-    display: none;
-  }
 }
 
 @media (max-width: 680px) {
@@ -6815,7 +6671,6 @@ button {
   }
 
   .console-shell[class] .window-heading .local-status,
-  .console-shell[class] .resource-summary,
   .console-shell[class] .language-control > span,
   .console-shell[class] .notification-button > span {
     display: none;

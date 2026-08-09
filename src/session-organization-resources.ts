@@ -10,7 +10,7 @@ export type SessionOrganizationSourcePreference = {
   automaticModel: string | null;
   /** A one-off high-quality choice; it never becomes the automatic default. */
   deepModel: string | null;
-  /** An explicitly configured replacement when automaticModel is unavailable. */
+  /** An explicitly configured model used only when automaticModel is not configured. */
   fallbackModel: string | null;
   accountId: string | null;
 };
