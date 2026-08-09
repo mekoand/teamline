@@ -3506,6 +3506,21 @@ dialog::backdrop {
   text-wrap: balance;
 }
 
+.project-detail-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.project-detail-heading .workspace-lede {
+  max-width: 560px;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  text-wrap: balance;
+}
+
 .project-detail-heading dl {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -3546,6 +3561,183 @@ dialog::backdrop {
   padding: 18px 2px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.project-goal-graph-section {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.project-goal-graph {
+  display: grid;
+  gap: 10px;
+}
+
+.project-goal-lane {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.project-goal-lane-heading {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 11px 14px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.project-goal-lane-heading:hover {
+  background: var(--panel-soft);
+}
+
+.project-goal-lane-heading .status-dot {
+  flex: 0 0 auto;
+}
+
+.project-goal-lane-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+
+.project-goal-lane-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.project-goal-lane-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-goal-lane-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.project-goal-stage-track {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding-top: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.project-goal-stage-node {
+  min-width: 168px;
+  flex: 1 0 168px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--panel-soft);
+  text-align: left;
+}
+
+.project-goal-stage-node:hover,
+.project-goal-stage-node.selected {
+  border-color: var(--faint);
+  background: var(--panel-strong);
+}
+
+.project-goal-stage-node.completed {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+}
+
+.project-goal-stage-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.project-goal-stage-node strong {
+  min-height: 30px;
+  font-size: 11px;
+  line-height: 1.45;
+  text-wrap: balance;
+}
+
+.project-goal-stage-dependencies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.project-goal-stage-edge {
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.project-goal-stage-node small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.project-goal-stage-connector {
+  align-self: center;
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 16px;
+}
+
+.project-goal-stage-empty,
+.project-goal-current {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.project-goal-current {
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--text-soft);
+}
+
+.result-acceptance-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.result-acceptance-heading > div {
+  min-width: 0;
+}
+
+.result-acceptance-heading p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  text-wrap: balance;
 }
 
 .project-goal-list {
@@ -6441,6 +6633,11 @@ button {
   .console-shell[class] .goal-snapshot-facts > div + div {
     border-top: 1px solid var(--line);
     border-left: 0;
+  }
+
+  .result-acceptance-heading {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

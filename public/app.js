@@ -14,6 +14,13 @@ import {
   visibleGoalConversation,
 } from "./goal-workbench.js";
 import {
+  bindProjectCreationEntry,
+  bindProjectGoalGraphEvents,
+  buildProjectGoalGraph,
+  openGoalCreationDialog,
+  resolveCreationProjectId,
+} from "./project-goal-graph.js";
+import {
   applyStaticTranslations,
   localizeTree,
   normalizeLocale,
@@ -608,12 +615,24 @@ function openQuickNavigatorItem(item) {
   void refreshConsole();
 }
 
+function currentCreationProjectId() {
+  return resolveCreationProjectId(currentShellProjectId(), state.projects);
+}
+
 function openCreateDialog() {
-  populateProjectSelect(document.querySelector("#create-project-select"));
-  state.createProjectMaterials = null;
-  renderCreateProjectMaterials();
-  createDialog.showModal();
-  createDialog.querySelector('[name="name"]').focus();
+  openGoalCreationDialog({
+    dialog: createDialog,
+    projectSelect: document.querySelector("#create-project-select"),
+    currentProjectId: currentShellProjectId(),
+    projects: state.projects,
+    populateProjectSelect,
+    resetProjectMaterials: () => {
+      state.createProjectMaterials = null;
+    },
+    renderProjectMaterials: renderCreateProjectMaterials,
+    refreshProjectMaterials: refreshCreateProjectMaterials,
+    focusTarget: createDialog.querySelector('[name="name"]'),
+  });
 }
 
 function resetGoalSelection() {
@@ -1233,7 +1252,7 @@ function renderConsole(feedback = "") {
         <button class="primary-button" id="empty-create" type="button">新建目标</button>
       </section>`;
     contextElement.innerHTML = "";
-    document.querySelector("#empty-create")?.addEventListener("click", () => createDialog.showModal());
+    document.querySelector("#empty-create")?.addEventListener("click", openCreateDialog);
     return;
   }
 
@@ -2016,34 +2035,24 @@ function renderProjectsWorkspace() {
       ${state.projects.length
         ? `<div class="project-list">${state.projects.map((project) => {
             const goals = state.workOrders.filter((workOrder) => workOrder.projectId === project.id);
-            const completed = goals.filter((goal) => goal.userStatus === "completed").length;
-            return `<button class="project-row" data-project-id="${escapeHtml(project.id)}" type="button"><span><strong data-i18n-preserve>${escapeHtml(project.name)}</strong><small>${goals.length} 个目标${completed ? ` · ${completed} 个已完成` : ""}</small></span><span class="row-arrow" aria-hidden="true">›</span></button>`;
+            return `<button class="project-row" data-project-id="${escapeHtml(project.id)}" type="button"><span><strong data-i18n-preserve>${escapeHtml(project.name)}</strong><small>${goals.length} 个目标</small></span><span class="row-arrow" aria-hidden="true">›</span></button>`;
           }).join("")}</div>`
         : '<section class="home-empty"><h2>还没有项目</h2><p>项目只用来整理相关目标、素材和成果。</p></section>'}
     </section>`;
 }
 
 function renderProjectDetailWorkspace(detail) {
-  const { project, summary, goals, materials, results } = detail;
+  const { project, goals, materials, results } = detail;
   const virtualProject = project.id === "unclassified";
-  const focusGoals = goals.filter((goal) => ["running", "response", "review"].includes(visibleStatus(goal, state.workOrders).status));
-  const recentGoals = [...goals].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 6);
   const completedGoals = state.workOrders.filter((goal) => goal.status === "delivered");
   return `
     <section class="workspace-content project-detail-workspace">
       <button class="mobile-back-button project-back-button" id="back-to-projects" type="button">‹ 全部项目</button>
       <header class="project-detail-heading">
-        <div><p class="overline">项目</p><h1 data-i18n-preserve>${escapeHtml(project.name)}</h1></div>
-        <dl><div><dt>目标</dt><dd>${summary.totalGoals}</dd></div><div><dt>已完成</dt><dd>${summary.completedGoals}</dd></div></dl>
+        <div><p class="overline">项目</p><h1 data-i18n-preserve>${escapeHtml(project.name)}</h1><p class="workspace-lede">按目标显示已确认计划与真实节点状态；项目本身不计算完成度。</p></div>
+        <button class="secondary-button" id="create-goal-in-project" type="button">新建目标</button>
       </header>
-      <section class="project-section">
-        <div class="section-heading compact"><div><p class="overline">当前</p><h2>需要关注</h2></div></div>
-        ${focusGoals.length ? `<div class="project-goal-list">${focusGoals.map(renderProjectGoalRow).join("")}</div>` : '<p class="project-empty-copy">当前没有运行中、需响应或待验收的目标。</p>'}
-      </section>
-      <section class="project-section">
-        <div class="section-heading compact"><div><p class="overline">目标</p><h2>最近更新</h2></div><button class="secondary-button" id="create-goal-in-project" type="button">新建目标</button></div>
-        ${recentGoals.length ? `<div class="project-goal-list">${recentGoals.map(renderProjectGoalRow).join("")}</div>` : '<p class="project-empty-copy">这个项目还没有目标。</p>'}
-      </section>
+      ${renderProjectGoalGraph(goals)}
       ${virtualProject ? `<section class="project-section project-virtual-section"><p class="overline">虚拟项目</p><p class="project-empty-copy">没有所属项目的目标会显示在这里。可以在目标详情中重新归入项目。</p></section>` : `<section class="project-section project-material-section">
         <div class="section-heading compact"><div><p class="overline">项目素材</p><h2>可供目标使用</h2></div><span class="subtle-label">${materials.length} 项</span></div>
         ${materials.length ? `<div class="project-material-grid">${materials.map(renderProjectMaterialCard).join("")}</div>` : '<p class="project-empty-copy">还没有素材，可以新建、引用或上传。</p>'}
@@ -2070,6 +2079,75 @@ function renderProjectDetailWorkspace(detail) {
         ${results.length ? `<div class="project-result-list">${results.map(renderProjectResultCard).join("")}</div>` : '<p class="project-empty-copy">项目内目标产生成果后，会汇总在这里。</p>'}
       </section>
     </section>`;
+}
+
+function renderProjectGoalGraph(goals) {
+  const orderedGoals = [...goals].sort(compareProjectGoals);
+  const entries = buildProjectGoalGraph(orderedGoals);
+  const goalsById = new Map(orderedGoals.map((goal) => [goal.id, goal]));
+  return `
+    <section class="project-section project-goal-graph-section" data-project-goal-graph>
+      <div class="section-heading compact">
+        <div><p class="overline">目标工作图</p><h2>项目内目标</h2></div>
+        <span class="subtle-label">${entries.length} 个目标</span>
+      </div>
+      ${entries.length
+        ? `<div class="project-goal-graph">${entries.map((entry) => renderProjectGoalLane(entry, goalsById.get(entry.id))).join("")}</div>`
+        : '<p class="project-empty-copy">这个项目还没有目标，可以从“新建目标”开始。</p>'}
+    </section>`;
+}
+
+function renderProjectGoalLane(entry, goal) {
+  const presentation = visibleStatus(goal, state.workOrders);
+  const stageById = new Map(entry.stages.map((stage) => [stage.id, stage]));
+  const stageNodes = entry.stages.map((stage, index) => {
+    const previousStage = entry.stages[index - 1];
+    const directEdge = entry.edges.find((edge) => edge.from === previousStage?.id && edge.to === stage.id);
+    const supplementaryEdges = entry.edges.filter((edge) =>
+      edge.to === stage.id && edge.from !== directEdge?.from,
+    );
+    const connector = directEdge
+      ? `<span class="project-goal-stage-connector" data-project-goal-edge-from="${escapeHtml(directEdge.from)}" data-project-goal-edge-to="${escapeHtml(directEdge.to)}" aria-hidden="true">→</span>`
+      : "";
+    return `${connector}${renderProjectGoalStageNode(entry.id, stage, supplementaryEdges, stageById)}`;
+  });
+  return `
+    <article class="project-goal-lane" data-project-goal-lane="${escapeHtml(entry.id)}">
+      <button class="project-goal-lane-heading" data-project-goal-id="${escapeHtml(entry.id)}" type="button">
+        <span class="status-dot ${presentation.status}"></span>
+        <span class="project-goal-lane-copy"><strong data-i18n-preserve>${escapeHtml(entry.title)}</strong><small>${escapeHtml(formatVisibleStatus(presentation.status, presentation.reason))}</small></span>
+        <span class="row-arrow" aria-hidden="true">›</span>
+      </button>
+      <div class="project-goal-lane-body">
+        ${entry.planConfirmed
+          ? stageNodes.length
+            ? `<div class="project-goal-stage-track">${stageNodes.join("")}</div>`
+            : '<p class="project-goal-stage-empty">已确认计划暂未包含节点。</p>'
+          : '<p class="project-goal-stage-empty">计划尚未确认，确认后会显示真实执行节点。</p>'}
+        <p class="project-goal-current" data-i18n-preserve>${escapeHtml(entry.currentSummary || "等待目标状态更新")}</p>
+      </div>
+    </article>`;
+}
+
+function renderProjectGoalStageNode(goalId, stage, supplementaryEdges, stageById) {
+  const dependencyEdges = supplementaryEdges.map((edge) => {
+    const dependency = stageById.get(edge.from);
+    return `<span class="project-goal-stage-edge" data-project-goal-edge-from="${escapeHtml(edge.from)}" data-project-goal-edge-to="${escapeHtml(edge.to)}">← 节点 ${dependency ? dependency.index + 1 : "?"}</span>`;
+  });
+  return `
+    <button class="project-goal-stage-node ${escapeHtml(stage.status)}" data-project-goal-id="${escapeHtml(goalId)}" data-project-goal-stage-id="${escapeHtml(stage.id)}" type="button">
+      <span class="project-goal-stage-topline"><span>节点 ${stage.index + 1}</span><span class="node-status ${escapeHtml(stage.status)}">${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</span></span>
+      <strong data-i18n-preserve>${escapeHtml(stage.outcome)}</strong>
+      ${dependencyEdges.length ? `<span class="project-goal-stage-dependencies">${dependencyEdges.join("")}</span>` : ""}
+      <small data-i18n-preserve>${escapeHtml(stage.statusReason)}</small>
+    </button>`;
+}
+
+function compareProjectGoals(left, right) {
+  const order = { response: 0, review: 1, running: 2, planning: 3, queued: 4, completed: 5 };
+  const leftStatus = visibleStatus(left, state.workOrders).status;
+  const rightStatus = visibleStatus(right, state.workOrders).status;
+  return order[leftStatus] - order[rightStatus] || String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""));
 }
 
 function unclassifiedProjectDetail() {
@@ -2510,15 +2588,11 @@ function bindOverviewEvents() {
     button.addEventListener("click", () => openProject(button.dataset.projectId));
   });
   document.querySelector("#back-to-projects")?.addEventListener("click", openProjects);
-  document.querySelector("#create-goal-in-project")?.addEventListener("click", () => {
-    openCreateDialog();
-    document.querySelector("#create-project-select").value =
-      state.projectDetail.project.id === "unclassified" ? "" : state.projectDetail.project.id;
-    void refreshCreateProjectMaterials();
-  });
+  bindProjectCreationEntry(document, openCreateDialog);
   document.querySelectorAll(".project-goal-row").forEach((button) => {
     button.addEventListener("click", () => selectWorkOrder(button.dataset.workOrderId));
   });
+  bindProjectGoalGraphEvents(document, (id, stageId) => selectWorkOrder(id, stageId));
   document.querySelectorAll("[data-project-material-id]").forEach((button) => {
     button.addEventListener("click", () => {
       openContextInspector({ type: "project-material", id: button.dataset.projectMaterialId });
@@ -3335,7 +3409,7 @@ function renderPrimaryWorkSurface(workOrder, stages, canEditPlan, feedback) {
   const presentation = visibleStatus(workOrder, state.workOrders);
   const activeView = state.primaryView ?? defaultGoalWorkbenchView(presentation.status);
   const tabs = [
-    ["progress", "进展"],
+    ["progress", "执行"],
     ["conversation", "对话"],
     ["result", "成果"],
   ];
@@ -3366,7 +3440,7 @@ function renderProgressSurface(workOrder, stages, canEditPlan, feedback) {
       <div class="primary-surface-heading">
         <div class="section-heading">
           <div>
-            <p class="overline">进展</p>
+            <p class="overline">执行</p>
             <h2>${stages ? (canEditPlan ? "编辑执行计划" : "执行节点") : "准备执行计划"}</h2>
           </div>
           <div class="map-heading-actions">
@@ -3397,7 +3471,7 @@ function renderImportedHistorySurface(workOrder, feedback) {
     <section class="map-panel workbench-tab-panel import-history-surface">
       <div class="primary-surface-heading">
         <div class="section-heading">
-          <div><p class="overline">进展</p><h2>${ready ? "历史进展" : "尚未整理"}</h2></div>
+          <div><p class="overline">执行</p><h2>${ready ? "历史进展" : "尚未整理"}</h2></div>
           <span class="subtle-label">${workOrder.sourceSessions.length} 个来源</span>
         </div>
       </div>
@@ -3834,6 +3908,12 @@ function renderResultPanel(workOrder) {
           <h3>仍需处理</h3>
           <ul data-i18n-preserve>${resultData.incomplete.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </section>` : ""}
+      <section class="result-section result-acceptance">
+        <div class="result-acceptance-heading"><div><h3>验收</h3><p>${historical ? "这是上一轮成果，当前目标仍以最新计划为准。" : workOrder.status === "review" ? "检查成果与验证后，由你确认目标是否完成。" : "这个目标已由你确认完成。"}</p></div>
+        ${!historical && workOrder.status === "review"
+          ? '<button class="primary-button" id="deliver-work-order-result" type="button">确认完成</button>'
+          : ""}</div>
+      </section>
       ${workOrder.status === "review" ? `
         <details class="result-revision">
           <summary>还需要调整</summary>
@@ -4847,6 +4927,7 @@ function bindRenderedEvents() {
   bindAction("#continue-work-order", "正在继续…", "继续当前现场", "continue", "正在从现有进度继续推进目标。");
   bindAction("#reexecute-work-order", "正在恢复…", "从最近节点重新执行", "reexecute", "正在恢复最近完整位置并启动新的运行。");
   bindAction("#deliver-work-order", "正在确认…", "确认完成", "deliver", "");
+  bindAction("#deliver-work-order-result", "正在确认…", "确认完成", "deliver", "");
 
   document.querySelector("#workspace-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -4979,7 +5060,7 @@ async function openSessionImport() {
   document.querySelector("#session-search").value = "";
   document.querySelector("#session-import-name").value = "";
   document.querySelector("#session-import-source").value = state.sessionSource;
-  populateProjectSelect(document.querySelector("#session-import-project"));
+  populateProjectSelect(document.querySelector("#session-import-project"), currentCreationProjectId());
   document.querySelector("#session-candidate-list").innerHTML =
     '<div class="loading-state">正在读取本机会话…</div>';
   document.querySelector("#session-source-message").textContent = "";
@@ -5102,16 +5183,17 @@ async function importSelectedSessions(event) {
   }
 }
 
-async function selectWorkOrder(id) {
+async function selectWorkOrder(id, stageId = null) {
   if (!id) return;
   state.draftStages = null;
-  if (id !== state.selected?.id) {
+  if (id !== state.selected?.id || stageId) {
     state.selectedStageIndex = 0;
-    state.followCurrentStage = true;
+    state.followCurrentStage = !stageId;
     state.contextTab = "artifacts";
     state.primaryView = null;
     state.inspector = clearContextInspector();
-    history.pushState({}, "", `/goals/${encodeURIComponent(id)}`);
+    const query = stageId ? `?stage=${encodeURIComponent(stageId)}` : "";
+    history.pushState({}, "", `/goals/${encodeURIComponent(id)}${query}`);
   }
   try {
     await requestJson("/api/notifications/read", {
@@ -5220,7 +5302,7 @@ function projectMaterialKindLabel(kind) {
 
 function projectOptions(selectedId = "") {
   return [
-    '<option value="">暂不归入项目</option>',
+    '<option value="">未归类</option>',
     ...state.projects.map(
       (project) => `<option value="${escapeHtml(project.id)}" data-i18n-preserve ${project.id === selectedId ? "selected" : ""}>${escapeHtml(project.name)}</option>`,
     ),
