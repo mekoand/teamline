@@ -457,6 +457,170 @@ describe("result review persistence", () => {
     }
   });
 
+  test("previews collected text locally and delegates native actions only after path authorization", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "teamline-preview-artifact-"));
+    const outsidePath = join(tmpdir(), "teamline-preview-outside.md");
+    try {
+      const artifactPath = join(directory, "RESULT.md");
+      const imagePath = join(directory, "preview.png");
+      const pdfPath = join(directory, "document.pdf");
+      const unsupportedPath = join(directory, "bundle.zip");
+      const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      writeFileSync(artifactPath, "# Local result\n\nNo upload.\n");
+      writeFileSync(imagePath, imageBytes);
+      writeFileSync(pdfPath, "%PDF-1.4\nlocal\n");
+      writeFileSync(unsupportedPath, "not a preview\n");
+      writeFileSync(outsidePath, "outside\n");
+      const store = new WorkOrderStore(new Database(":memory:"));
+      const created = store.create({
+        workspace: { kind: "directory", path: directory },
+        goal: "预览成果",
+      });
+      store.savePlan(created.id, [{
+        outcome: "生成成果",
+        scope: "RESULT.md",
+        verification: "检查文件",
+        verificationCommand: "true",
+      }]);
+      store.saveDirectWorkspace(created.id, directory);
+      store.markStarted(created.id);
+      const verifying = store.beginResultProcessing(created.id, "Codex 已正常结束");
+      const stage = verifying.plan!.stages[0]!;
+      store.completeReview(created.id, {
+        planVersion: verifying.plan!.version,
+        artifacts: [{
+          id: "directory-result:RESULT.md",
+          type: "file",
+          label: "RESULT.md",
+          location: artifactPath,
+        }, {
+          id: "directory-result:preview.png",
+          type: "file",
+          label: "preview.png",
+          location: imagePath,
+        }, {
+          id: "directory-result:document.pdf",
+          type: "file",
+          label: "document.pdf",
+          location: pdfPath,
+        }, {
+          id: "directory-result:bundle.zip",
+          type: "file",
+          label: "bundle.zip",
+          location: unsupportedPath,
+        }],
+        git: {
+          diffStat: "普通文件夹不提供 Git 变化统计",
+          statusShort: "结果保留在所选本地文件夹中",
+        },
+        verifications: [{
+          stageId: stage.id,
+          stageOutcome: stage.outcome,
+          command: "true",
+          status: "passed",
+          exitCode: 0,
+          output: "（无输出）",
+        }],
+        completedAt: new Date().toISOString(),
+      });
+
+      const actions: Array<{ path: string; action: string }> = [];
+      const app = createApp({
+        store,
+        openLocalArtifactAction: async (path, action) => {
+          actions.push({ path, action });
+        },
+      });
+      const preview = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(artifactPath)}`,
+      ));
+      expect(preview.status).toBe(200);
+      expect(await preview.json()).toMatchObject({
+        preview: {
+          kind: "text",
+          name: "RESULT.md",
+          previewable: true,
+          text: "# Local result\n\nNo upload.\n",
+        },
+      });
+
+      for (const [path, kind] of [[imagePath, "image"], [pdfPath, "pdf"]] as const) {
+        const response = await app.fetch(new Request(
+          `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(path)}`,
+        ));
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ preview: { kind, previewable: true } });
+      }
+      const imageRaw = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(imagePath)}&raw=1`,
+      ));
+      expect(imageRaw.status).toBe(200);
+      expect(imageRaw.headers.get("content-type")).toBe("image/png");
+      expect([...new Uint8Array(await imageRaw.arrayBuffer())]).toEqual([...imageBytes]);
+      const pdfRaw = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(pdfPath)}&raw=1`,
+      ));
+      expect(pdfRaw.status).toBe(200);
+      expect(pdfRaw.headers.get("content-type")).toBe("application/pdf");
+      expect(await pdfRaw.text()).toBe("%PDF-1.4\nlocal\n");
+      const unsupported = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(unsupportedPath)}`,
+      ));
+      expect(unsupported.status).toBe(200);
+      expect(await unsupported.json()).toMatchObject({
+        preview: { kind: "unsupported", previewable: false },
+      });
+      const unsupportedRaw = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(unsupportedPath)}&raw=1`,
+      ));
+      expect(unsupportedRaw.status).toBe(415);
+
+      const opened = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/open`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "quicklook", path: artifactPath }),
+        },
+      ));
+      expect(opened.status).toBe(200);
+      expect(actions).toEqual([{ path: realpathSync(artifactPath), action: "quicklook" }]);
+
+      const delegated = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/open`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "open", delegate: true, path: artifactPath }),
+        },
+      ));
+      expect(delegated.status).toBe(200);
+      expect(await delegated.json()).toEqual({
+        action: "open",
+        authorizedPath: realpathSync(artifactPath),
+      });
+      expect(actions).toHaveLength(1);
+
+      const rejectedDelegate = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/open`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "open", delegate: true, path: outsidePath }),
+        },
+      ));
+      expect(rejectedDelegate.status).toBe(400);
+
+      const rejected = await app.fetch(new Request(
+        `http://teamline.local/api/work-orders/${created.id}/artifacts/preview?path=${encodeURIComponent(outsidePath)}`,
+      ));
+      expect(rejected.status).toBe(400);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      rmSync(outsidePath, { force: true });
+    }
+  });
+
   test("keeps existing ordinary-folder artifacts and removes files deleted by a later node", () => {
     const directory = mkdtempSync(join(tmpdir(), "teamline-merge-artifacts-"));
     try {

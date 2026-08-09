@@ -6,6 +6,10 @@ const electronMainSource = readFileSync(
   new URL("../src/electron/main.mjs", import.meta.url),
   "utf8",
 );
+const electronPreloadSource = readFileSync(
+  new URL("../src/electron/preload.cjs", import.meta.url),
+  "utf8",
+);
 const packageJson = JSON.parse(readFileSync(
   new URL("../package.json", import.meta.url),
   "utf8",
@@ -30,6 +34,19 @@ test("Electron hides the window without stopping Local Core and reopens the same
   expect(electronMainSource).toContain('app.on("activate", () => {\n  if (coreConnection) createMainWindow();');
   expect(electronMainSource).toContain('app.on("window-all-closed", (event) => {\n  event.preventDefault();');
   expect(electronMainSource).toContain("coreConnection = await ensureLocalCore({");
+});
+
+test("Electron exposes only an authorized artifact action bridge", () => {
+  expect(electronMainSource).toContain('ipcMain.handle("teamline:artifact-action"');
+  expect(electronMainSource).toContain("delegate: true");
+  expect(electronMainSource).toContain('preload: resolve(sourceRoot, "src/electron/preload.cjs")');
+  expect(electronMainSource).toContain('child.once("close"');
+  expect(electronMainSource).toContain("Quick Look 无法打开这个成果");
+  expect(electronPreloadSource).toContain('contextBridge.exposeInMainWorld("teamlineDesktop"');
+  expect(electronPreloadSource).toContain('ipcRenderer.invoke("teamline:artifact-action"');
+  expect(electronPreloadSource).toContain('require("electron")');
+  expect(electronPreloadSource).not.toContain("shell.openPath");
+  expect(electronPreloadSource).not.toContain("readFile");
 });
 
 describe("Electron Local Core connection", () => {

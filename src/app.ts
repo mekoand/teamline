@@ -10,7 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { PlanGenerator } from "./plan-generator";
 import type { CheckpointManager } from "./checkpoint-manager";
@@ -137,7 +137,55 @@ type AppDependencies = {
   dataDirectory?: string;
   executionIdentityEnvironment?: ExecutionIdentityEnvironment;
   openLocalArtifact?: (path: string, reveal: boolean) => Promise<void>;
+  openLocalArtifactAction?: (
+    path: string,
+    action: ArtifactAction,
+  ) => Promise<void>;
 };
+
+type ArtifactAction = "open" | "reveal" | "quicklook";
+
+const artifactActions = new Set<ArtifactAction>(["open", "reveal", "quicklook"]);
+const maxTextPreviewBytes = 256 * 1024;
+const maxBinaryPreviewBytes = 16 * 1024 * 1024;
+const textArtifactExtensions = new Set([
+  ".cjs",
+  ".css",
+  ".csv",
+  ".go",
+  ".h",
+  ".hpp",
+  ".html",
+  ".htm",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".log",
+  ".markdown",
+  ".md",
+  ".mjs",
+  ".py",
+  ".rs",
+  ".sh",
+  ".sql",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+const imageArtifactMimes = new Map([
+  [".avif", "image/avif"],
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
 
 type SessionMonitoringSourceResult = {
   sourceKind: SessionMonitoringRecord["sourceKind"];
@@ -225,7 +273,15 @@ export function createApp({
   dataDirectory = join(projectRoot, ".teamline"),
   executionIdentityEnvironment,
   openLocalArtifact = openLocalArtifactWithSystem,
+  openLocalArtifactAction: providedArtifactAction,
 }: AppDependencies) {
+  const openLocalArtifactAction = providedArtifactAction ??
+    (async (path: string, action: ArtifactAction) => {
+      if (action === "quicklook") {
+        return openLocalArtifactActionWithSystem(path, action);
+      }
+      return openLocalArtifact(path, action === "reveal");
+    });
   const startingWorkOrderIds = new Set<string>();
   const planningWorkOrderIds = new Set<string>();
   const organizingWorkOrderIds = new Set<string>();
@@ -4675,7 +4731,12 @@ export function createApp({
           );
         }
         try {
-          const body = (await request.json()) as { path?: string; reveal?: boolean };
+          const body = (await request.json()) as {
+            action?: string;
+            delegate?: boolean;
+            path?: string;
+            reveal?: boolean;
+          };
           const artifactPath = resolveCollectedArtifact(workOrder, body.path);
           if (!artifactPath) {
             return Response.json(
@@ -4683,13 +4744,74 @@ export function createApp({
               { status: 400 },
             );
           }
-          await openLocalArtifact(artifactPath, body.reveal === true);
+          const action = artifactActionFromRequest(body);
+          if (!action) {
+            return Response.json(
+              { code: "INVALID_ARTIFACT_ACTION", error: "不支持这个成果操作" },
+              { status: 400 },
+            );
+          }
+          if (body.delegate === true) {
+            return Response.json({ authorizedPath: artifactPath, action });
+          }
+          await openLocalArtifactAction(artifactPath, action);
           return Response.json({ opened: true });
         } catch (error) {
           return Response.json(
             {
               code: "ARTIFACT_OPEN_FAILED",
               error: error instanceof Error ? error.message : "无法打开这个成果",
+            },
+            { status: 500 },
+          );
+        }
+      }
+
+      const artifactPreviewMatch = url.pathname.match(
+        /^\/api\/work-orders\/([^/]+)\/artifacts\/preview$/,
+      );
+      if (request.method === "GET" && artifactPreviewMatch) {
+        const workOrder = store.get(decodeURIComponent(artifactPreviewMatch[1]));
+        if (!workOrder) {
+          return Response.json(
+            { code: "WORK_ORDER_NOT_FOUND", error: "找不到这个目标" },
+            { status: 404 },
+          );
+        }
+        const artifactPath = resolveCollectedArtifact(
+          workOrder,
+          url.searchParams.get("path"),
+        );
+        if (!artifactPath) {
+          return Response.json(
+            { code: "INVALID_ARTIFACT_PATH", error: "找不到这个成果文件" },
+            { status: 400 },
+          );
+        }
+        try {
+          const preview = await describeArtifactPreview(artifactPath);
+          if (url.searchParams.get("raw") === "1") {
+            if (!preview.previewable || !["image", "pdf"].includes(preview.kind)) {
+              return Response.json(
+                { code: "ARTIFACT_PREVIEW_UNSUPPORTED", error: preview.reason },
+                { status: 415 },
+              );
+            }
+            return new Response(Bun.file(artifactPath), {
+              headers: {
+                "cache-control": "no-store",
+                "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(preview.name)}`,
+                "content-type": preview.mimeType,
+                "x-content-type-options": "nosniff",
+              },
+            });
+          }
+          return Response.json({ preview });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "ARTIFACT_PREVIEW_FAILED",
+              error: error instanceof Error ? error.message : "无法读取成果预览",
             },
             { status: 500 },
           );
@@ -6837,8 +6959,35 @@ function resolveCollectedArtifact(
   }
 }
 
+function artifactActionFromRequest(value: {
+  action?: string;
+  reveal?: boolean;
+}): ArtifactAction | null {
+  if (value.action !== undefined) {
+    return artifactActions.has(value.action as ArtifactAction)
+      ? value.action as ArtifactAction
+      : null;
+  }
+  return value.reveal === true ? "reveal" : "open";
+}
+
 async function openLocalArtifactWithSystem(path: string, reveal: boolean): Promise<void> {
-  const subprocess = Bun.spawn(reveal ? ["open", "-R", path] : ["open", path], {
+  return openLocalArtifactActionWithSystem(path, reveal ? "reveal" : "open");
+}
+
+async function openLocalArtifactActionWithSystem(
+  path: string,
+  action: ArtifactAction,
+): Promise<void> {
+  if (action === "quicklook" && process.platform !== "darwin") {
+    throw new Error("Quick Look 仅支持 macOS");
+  }
+  const command = action === "quicklook"
+    ? ["qlmanage", "-p", path]
+    : action === "reveal"
+      ? ["open", "-R", path]
+      : ["open", path];
+  const subprocess = Bun.spawn(command, {
     stdout: "ignore",
     stderr: "pipe",
   });
@@ -6847,8 +6996,69 @@ async function openLocalArtifactWithSystem(path: string, reveal: boolean): Promi
     new Response(subprocess.stderr).text(),
   ]);
   if (exitCode !== 0) {
-    throw new Error(stderr.trim() || "无法打开这个成果");
+    throw new Error(stderr.trim() || "无法执行这个成果操作");
   }
+}
+
+async function describeArtifactPreview(path: string): Promise<{
+  kind: "text" | "image" | "pdf" | "unsupported";
+  mimeType: string;
+  modifiedAt: string;
+  name: string;
+  previewable: boolean;
+  reason: string | null;
+  sizeBytes: number;
+  text?: string;
+  truncated?: boolean;
+}> {
+  const details = statSync(path);
+  const extension = extname(path).toLowerCase();
+  const mimeType = imageArtifactMimes.get(extension) ||
+    (extension === ".pdf" ? "application/pdf" : textMimeType(extension));
+  const kind = extension === ".pdf"
+    ? "pdf"
+    : imageArtifactMimes.has(extension)
+      ? "image"
+      : textArtifactExtensions.has(extension)
+        ? "text"
+        : "unsupported";
+  const maxBytes = kind === "text" ? maxTextPreviewBytes : maxBinaryPreviewBytes;
+  const previewable = kind === "text" || (details.size <= maxBytes && kind !== "unsupported");
+  const reason = kind === "unsupported"
+    ? "这个文件类型暂不支持本地预览"
+    : kind !== "text" && details.size > maxBytes
+      ? "文件过大，暂不在右栏预览"
+      : null;
+  const preview = {
+    kind,
+    mimeType,
+    modifiedAt: details.mtime.toISOString(),
+    name: basename(path),
+    previewable,
+    reason,
+    sizeBytes: details.size,
+  } as {
+    kind: "text" | "image" | "pdf" | "unsupported";
+    mimeType: string;
+    modifiedAt: string;
+    name: string;
+    previewable: boolean;
+    reason: string | null;
+    sizeBytes: number;
+    text?: string;
+    truncated?: boolean;
+  };
+  if (kind === "text" && previewable) {
+    preview.text = await Bun.file(path).slice(0, maxTextPreviewBytes).text();
+    preview.truncated = details.size > maxTextPreviewBytes;
+  }
+  return preview;
+}
+
+function textMimeType(extension: string): string {
+  if (extension === ".json") return "application/json";
+  if ([".html", ".htm", ".xml"].includes(extension)) return "text/html";
+  return "text/plain";
 }
 
 function checkpointReference(

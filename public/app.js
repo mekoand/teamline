@@ -64,6 +64,12 @@ const state = {
   primaryView: null,
   progressView: "map",
   inspector: createContextInspectorState(),
+  artifactPreview: {
+    key: null,
+    status: "idle",
+    data: null,
+    error: "",
+  },
   events: [],
   executionSettings: { maxConcurrency: 2 },
   resources: null,
@@ -153,6 +159,18 @@ bindShellEvents();
 initializeLanguage().finally(refreshConsole);
 
 function bindShellEvents() {
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== " " || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target?.isContentEditable) return;
+    const card = event.target?.closest?.("[data-result-artifact]");
+    const location = card?.dataset.resultArtifact ||
+      (state.inspector.selection?.type === "artifact" ? state.inspector.selection.id : null);
+    if (!location || event.target?.closest?.("[data-artifact-action]")) return;
+    event.preventDefault();
+    if (state.inspector.selection?.id !== location) openArtifactPreview(location);
+    void runArtifactAction(location, "quicklook");
+  });
+
   document.querySelector("#language-select").addEventListener("change", async (event) => {
     const locale = normalizeLocale(event.currentTarget.value);
     if (!locale) return;
@@ -662,6 +680,7 @@ function resetGoalSelection() {
   state.progressView = "map";
   state.contextTab = "artifacts";
   state.inspector = clearContextInspector();
+  state.artifactPreview = { key: null, status: "idle", data: null, error: "" };
 }
 
 function openContextInspector(selection) {
@@ -670,6 +689,45 @@ function openContextInspector(selection) {
     rightSidebarCollapsed: false,
   });
   state.inspector = selectContextInspector(state.inspector, selection);
+}
+
+function openArtifactPreview(location) {
+  openContextInspector({ type: "artifact", id: location });
+  state.artifactPreview = {
+    key: artifactPreviewKey(state.selected.id, location),
+    status: "loading",
+    data: null,
+    error: "",
+  };
+  renderConsole();
+  void loadArtifactPreview(state.selected.id, location);
+}
+
+async function loadArtifactPreview(workOrderId, location) {
+  const key = artifactPreviewKey(workOrderId, location);
+  try {
+    const result = await requestJson(artifactPreviewUrl(workOrderId, location));
+    if (state.artifactPreview.key !== key || state.inspector.selection?.id !== location) return;
+    state.artifactPreview = { key, status: "ready", data: result.preview, error: "" };
+    renderConsole();
+  } catch (error) {
+    if (state.artifactPreview.key !== key || state.inspector.selection?.id !== location) return;
+    state.artifactPreview = {
+      key,
+      status: "error",
+      data: null,
+      error: messageFrom(error, "无法读取成果预览。"),
+    };
+    renderConsole();
+  }
+}
+
+function artifactPreviewKey(workOrderId, location) {
+  return `${workOrderId}:${location}`;
+}
+
+function artifactPreviewUrl(workOrderId, location, raw = false) {
+  return `/api/work-orders/${encodeURIComponent(workOrderId)}/artifacts/preview?path=${encodeURIComponent(location)}${raw ? "&raw=1" : ""}`;
 }
 
 function dismissContextInspector() {
@@ -4097,7 +4155,7 @@ function renderResultPanel(workOrder) {
         ${workOrder.workspace?.kind === "directory" ? '<p class="result-artifact-note">本轮新建或修改的文件，最多显示 100 项。</p>' : ""}
         <div class="result-artifact-grid">
           ${resultData.artifacts.length
-            ? resultData.artifacts.map((reference) => renderResultArtifactCard(reference)).join("")
+            ? resultData.artifacts.map((reference) => renderResultArtifactCard(reference, workOrder)).join("")
             : '<p class="result-empty">没有识别到单独的产物引用，请在工作空间中查看本轮变化。</p>'}
         </div>
       </section>
@@ -4162,20 +4220,30 @@ function renderImportedResultPanel(workOrder) {
         <h3>产物</h3>
         <div class="result-artifact-grid">
           ${artifacts.length
-            ? artifacts.map((reference) => renderResultArtifactCard(reference)).join("")
+            ? artifacts.map((reference) => renderResultArtifactCard(reference, workOrder)).join("")
             : '<p class="result-empty">来源会话中没有识别到明确的成果引用。</p>'}
         </div>
       </section>
     </section>`;
 }
 
-function renderResultArtifactCard(reference) {
+function renderResultArtifactCard(reference, workOrder) {
+  const canOpen = Boolean(workOrder && canOpenResultArtifact(workOrder, reference));
+  if (!canOpen) {
+    return `
+      <article class="reference-card result-artifact-card">
+        <span>${escapeHtml(referenceTypeLabel(reference.type))}</span>
+        <strong data-i18n-preserve>${escapeHtml(reference.label)}</strong>
+        <code>${escapeHtml(reference.location)}</code>
+        <small>成果位置已记录，当前无法直接打开</small>
+      </article>`;
+  }
   return `
-    <button class="reference-card result-artifact-card" type="button" data-result-artifact="${escapeHtml(reference.location)}">
+    <button class="reference-card result-artifact-card" type="button" data-result-artifact="${escapeHtml(reference.location)}" title="单击预览，双击打开文件，空格 Quick Look" aria-label="预览 ${escapeHtml(reference.label)}">
       <span>${escapeHtml(referenceTypeLabel(reference.type))}</span>
       <strong data-i18n-preserve>${escapeHtml(reference.label)}</strong>
       <code>${escapeHtml(reference.location)}</code>
-      <small>查看详情</small>
+      <small>单击预览 · 双击打开 · 空格 Quick Look</small>
     </button>`;
 }
 
@@ -4317,6 +4385,7 @@ function renderArtifactContext(workOrder, artifactId) {
   const reference = artifacts.find((artifact) => artifact.location === artifactId);
   if (!reference) return renderUnavailableContext();
   const canOpen = canOpenResultArtifact(workOrder, reference);
+  const codexSessionId = compatibleCodexSessionId(workOrder, reference);
   return `
     <section class="context-content">
       <div class="context-heading">
@@ -4328,10 +4397,59 @@ function renderArtifactContext(workOrder, artifactId) {
         <div><dt>来源</dt><dd>${escapeHtml(artifactSourceLabel(workOrder, reference))}</dd></div>
         <div><dt>位置</dt><dd><code>${escapeHtml(reference.location)}</code></dd></div>
       </dl>
+      ${renderArtifactPreview(workOrder, reference)}
       ${canOpen
-        ? `<div class="artifact-actions context-section"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>`
+        ? `<div class="artifact-actions context-section" aria-label="成果操作">
+            <button class="secondary-button" type="button" data-artifact-action="open" data-artifact-path="${escapeHtml(reference.location)}">打开文件</button>
+            <button type="button" data-artifact-action="quicklook" data-artifact-path="${escapeHtml(reference.location)}">Quick Look</button>
+            <button type="button" data-artifact-action="reveal" data-artifact-path="${escapeHtml(reference.location)}">打开所在位置</button>
+            <button type="button" data-artifact-action="copy" data-artifact-path="${escapeHtml(reference.location)}">复制路径</button>
+            ${codexSessionId ? `<button type="button" data-artifact-codex-session="${escapeHtml(codexSessionId)}">在 Codex 中打开</button>` : ""}
+          </div>`
         : '<p class="context-summary context-section">成果保留在原位置，当前无法直接从 Teamline 打开。</p>'}
     </section>`;
+}
+
+function renderArtifactPreview(workOrder, reference) {
+  if (reference.type !== "file") {
+    return '<section class="artifact-preview context-section"><h3>预览</h3><p class="muted">这个引用不是本地文件，Teamline 不会复制或上传它。</p></section>';
+  }
+  const key = artifactPreviewKey(workOrder.id, reference.location);
+  const preview = state.artifactPreview.key === key ? state.artifactPreview : null;
+  if (!preview || preview.status === "loading") {
+    return '<section class="artifact-preview context-section"><h3>预览</h3><p class="muted">正在读取本机预览…</p></section>';
+  }
+  if (preview.status === "error") {
+    return `<section class="artifact-preview context-section"><h3>预览</h3><p class="inline-feedback is-error">${escapeHtml(preview.error || "无法读取成果预览。")}</p></section>`;
+  }
+  const data = preview.data;
+  if (!data?.previewable) {
+    return `<section class="artifact-preview context-section"><h3>预览</h3><p class="muted">${escapeHtml(data?.reason || "这个文件当前无法在右栏预览。")}</p>${renderArtifactFileFacts(data)}</section>`;
+  }
+  const rawUrl = artifactPreviewUrl(workOrder.id, reference.location, true);
+  const body = data.kind === "text"
+    ? `<pre class="artifact-text-preview" data-i18n-preserve>${escapeHtml(data.text || "")}</pre>`
+    : data.kind === "image"
+      ? `<img class="artifact-image-preview" src="${escapeHtml(rawUrl)}" alt="${escapeHtml(reference.label)}" />`
+      : `<iframe class="artifact-pdf-preview" src="${escapeHtml(rawUrl)}" title="${escapeHtml(reference.label)}"></iframe>`;
+  return `<section class="artifact-preview context-section"><div class="artifact-preview-heading"><h3>预览</h3><span>${escapeHtml(data.kind === "text" ? "文本" : data.kind === "image" ? "图片" : "PDF")}</span></div>${body}${data.truncated ? '<p class="muted">预览内容已截断。</p>' : ""}${renderArtifactFileFacts(data)}</section>`;
+}
+
+function renderArtifactFileFacts(data) {
+  if (!data) return "";
+  return `<dl class="artifact-file-facts"><div><dt>大小</dt><dd>${formatFileSize(data.sizeBytes)}</dd></div><div><dt>更新时间</dt><dd>${escapeHtml(formatDate(data.modifiedAt))}</dd></div></dl>`;
+}
+
+function compatibleCodexSessionId(workOrder, reference) {
+  if (!canOpenResultArtifact(workOrder, reference)) return null;
+  const currentSessionId = workOrder.currentSessionId ?? workOrder.sessionId;
+  const current = workOrder.sourceSessions?.find(
+    (source) => source.kind === "codex_session" && source.id === currentSessionId && source.openInCodex === true,
+  );
+  if (current) return current.id;
+  return workOrder.sourceSessions?.find(
+    (source) => source.kind === "codex_session" && source.openInCodex === true,
+  )?.id ?? null;
 }
 
 function canOpenResultArtifact(workOrder, reference) {
@@ -4641,7 +4759,7 @@ function cleanCompletionSummary(summary) {
 
 function renderReference(reference, workOrder) {
   const canOpen = workOrder ? canOpenResultArtifact(workOrder, reference) : false;
-  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong data-i18n-preserve>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-open-result-artifact="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-reveal-result-artifact="${escapeHtml(reference.location)}">打开所在位置</button></div>` : ""}</article>`;
+  return `<article class="reference-card"><span>${escapeHtml(referenceTypeLabel(reference.type))}</span><strong data-i18n-preserve>${escapeHtml(reference.label)}</strong><code>${escapeHtml(reference.location)}</code>${canOpen ? `<div class="artifact-actions"><button class="secondary-button" type="button" data-artifact-action="open" data-artifact-path="${escapeHtml(reference.location)}">打开文件</button><button type="button" data-artifact-action="reveal" data-artifact-path="${escapeHtml(reference.location)}">打开所在位置</button><button type="button" data-artifact-action="copy" data-artifact-path="${escapeHtml(reference.location)}">复制路径</button></div>` : ""}</article>`;
 }
 
 function renderContextAction(workOrder) {
@@ -4799,6 +4917,103 @@ function renderProgressSecondaryActions(workOrder) {
     : '<p class="muted">普通文件夹暂不提供检查点回退。</p>'}</div>`;
 }
 
+async function runArtifactAction(location, action, button = null) {
+  if (!location || !["open", "reveal", "quicklook", "copy"].includes(action)) return;
+  if (action === "copy") {
+    try {
+      const authorized = await requestJson(`/api/work-orders/${encodedSelectedId()}/artifacts/open`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "open", delegate: true, path: location }),
+      });
+      await navigator.clipboard.writeText(authorized.authorizedPath);
+      setFeedback("result-feedback", "已复制成果路径。", false);
+    } catch {
+      setFeedback("result-feedback", "无法访问剪贴板，请手动复制。", true);
+    }
+    return;
+  }
+
+  const labels = {
+    open: "打开文件",
+    reveal: "打开所在位置",
+    quicklook: "Quick Look",
+  };
+  setBusy(button, "正在打开…");
+  try {
+    const desktop = window.teamlineDesktop;
+    if (desktop?.openArtifact) {
+      await desktop.openArtifact({
+        action,
+        path: location,
+        workOrderId: state.selected.id,
+      });
+    } else {
+      await requestJson(`/api/work-orders/${encodedSelectedId()}/artifacts/open`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, path: location }),
+      });
+    }
+    resetBusy(button, labels[action]);
+    setFeedback(
+      "result-feedback",
+      action === "reveal"
+        ? "已在 Finder 中显示成果。"
+        : action === "quicklook"
+          ? "已请求 Quick Look 预览。"
+          : "已打开成果文件。",
+      false,
+    );
+  } catch (error) {
+    resetBusy(button, labels[action]);
+    setFeedback("result-feedback", messageFrom(error, "无法执行这个成果操作。"), true);
+  }
+}
+
+function showArtifactContextMenu(event, location) {
+  event.preventDefault();
+  document.querySelector("#artifact-context-menu")?.remove();
+  const menu = document.createElement("div");
+  menu.id = "artifact-context-menu";
+  menu.className = "artifact-context-menu";
+  menu.setAttribute("role", "menu");
+  menu.innerHTML = `
+    <strong>成果操作</strong>
+    <button type="button" role="menuitem" data-context-artifact-action="open">打开文件</button>
+    <button type="button" role="menuitem" data-context-artifact-action="quicklook">Quick Look</button>
+    <button type="button" role="menuitem" data-context-artifact-action="reveal">在 Finder 中显示</button>
+    <button type="button" role="menuitem" data-context-artifact-action="copy">复制路径</button>`;
+  menu.style.left = `${Math.min(event.clientX, Math.max(8, window.innerWidth - 190))}px`;
+  menu.style.top = `${Math.min(event.clientY, Math.max(8, window.innerHeight - 190))}px`;
+  document.body.append(menu);
+  const close = () => menu.remove();
+  menu.querySelectorAll("[data-context-artifact-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.contextArtifactAction;
+      close();
+      void runArtifactAction(location, action);
+    });
+  });
+  menu.addEventListener("keydown", (menuEvent) => {
+    if (menuEvent.key === "Escape") close();
+  });
+  setTimeout(() => {
+    document.addEventListener("pointerdown", (pointerEvent) => {
+      if (!menu.contains(pointerEvent.target)) close();
+    }, { once: true });
+  }, 0);
+  menu.querySelector("button")?.focus();
+}
+
+function openCodexSession(sessionId, feedbackId = "result-feedback") {
+  if (!sessionId) return;
+  window.location.href = `codex://threads/${encodeURIComponent(sessionId)}`;
+  setTimeout(() => {
+    setFeedback(feedbackId, "如果 Codex 没有打开，可使用 Finder 或复制路径继续。", false);
+  }, 700);
+}
+
 function bindRenderedEvents() {
   document.querySelector("#back-to-all-goals")?.addEventListener("click", openAllGoals);
   document.querySelector("#open-goal-context")?.addEventListener("click", () => {
@@ -4834,31 +5049,31 @@ function bindRenderedEvents() {
     renderConsole();
   });
   document.querySelectorAll("[data-result-artifact]").forEach((button) => {
-    button.addEventListener("click", () => {
-      openContextInspector({ type: "artifact", id: button.dataset.resultArtifact });
-      renderConsole();
+    button.addEventListener("click", (event) => {
+      // The first click rerenders the inspector, so let the second click reach
+      // the new card and keep the native dblclick event reliable.
+      if (event.detail > 1) return;
+      openArtifactPreview(button.dataset.resultArtifact);
+    });
+    button.addEventListener("dblclick", () => {
+      void runArtifactAction(button.dataset.resultArtifact, "open", button);
+    });
+    button.addEventListener("contextmenu", (event) => {
+      showArtifactContextMenu(event, button.dataset.resultArtifact);
     });
   });
-  document.querySelectorAll("[data-open-result-artifact], [data-reveal-result-artifact]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const reveal = button.hasAttribute("data-reveal-result-artifact");
-      const path = reveal
-        ? button.dataset.revealResultArtifact
-        : button.dataset.openResultArtifact;
-      const idleLabel = reveal ? "打开所在位置" : "打开文件";
-      setBusy(button, "正在打开…");
-      try {
-        await requestJson(`/api/work-orders/${encodedSelectedId()}/artifacts/open`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path, reveal }),
-        });
-        resetBusy(button, idleLabel);
-        setFeedback("result-feedback", reveal ? "已在 Finder 中显示成果。" : "已打开成果文件。", false);
-      } catch (error) {
-        resetBusy(button, idleLabel);
-        setFeedback("result-feedback", messageFrom(error, "无法打开这个成果。"), true);
-      }
+  document.querySelectorAll("[data-artifact-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void runArtifactAction(
+        button.dataset.artifactPath,
+        button.dataset.artifactAction,
+        button,
+      );
+    });
+  });
+  document.querySelectorAll("[data-artifact-codex-session]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openCodexSession(button.dataset.artifactCodexSession);
     });
   });
   document.querySelectorAll("[data-progress-view]").forEach((button) => {
@@ -4943,11 +5158,7 @@ function bindRenderedEvents() {
 
   document.querySelectorAll("[data-open-codex-session]").forEach((button) => {
     button.addEventListener("click", () => {
-      const sessionId = button.dataset.openCodexSession;
-      window.location.href = `codex://threads/${encodeURIComponent(sessionId)}`;
-      setTimeout(() => {
-        setFeedback("session-entry-feedback", "如果 Codex 没有打开，可以复制 CLI 命令恢复会话。", false);
-      }, 700);
+      openCodexSession(button.dataset.openCodexSession, "session-entry-feedback");
     });
   });
   document.querySelectorAll("[data-copy-session-id]").forEach((button) => {
@@ -5850,6 +6061,23 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatFileSize(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  const units = state.locale === "zh-CN"
+    ? ["字节", "KB", "MB", "GB"]
+    : ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  const formatted = new Intl.NumberFormat(state.locale, {
+    maximumFractionDigits: unit === 0 ? 0 : 1,
+  }).format(size);
+  return `${formatted} ${units[unit]}`;
 }
 
 function formatRemaining(window) {
