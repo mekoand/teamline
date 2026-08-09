@@ -110,9 +110,70 @@ describe("session monitoring catalog", () => {
     expect(script).toContain('"/session-monitoring"');
     expect(script).toContain("data-session-monitoring-toggle");
     expect(script).toContain("data-session-monitoring-retry");
+    expect(script).toContain("buildMonitoringProjectGraph");
+    expect(script).toContain("renderSessionMonitoringContext");
+    expect(script).toContain("data-monitoring-session");
+    expect(script).toContain("data-monitoring-node");
+    expect(script).toContain("data-monitoring-artifact");
+    expect(script).toContain("后续 · 来源明确");
+    expect(script).toContain("估算");
+    expect(script).toContain('if (isSessionMonitoringView()) {\n    state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 30_000);');
     expect(script).toContain("未归类");
     expect(styles).toContain(".sidebar-bottom");
     expect(styles).toContain(".session-monitoring-card");
+    expect(styles).toContain(".session-monitoring-lane");
+    expect(styles).toContain(".monitoring-edge.source-order");
+    expect(styles).toContain(".monitoring-edge.inferred");
+  });
+
+  test("opens an available source record without exposing its path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-session-monitoring-source-"));
+    const sourcePath = join(root, "session.jsonl");
+    writeFileSync(sourcePath, "source record\n", "utf8");
+    const opened: Array<{ path: string; reveal: boolean }> = [];
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const app = createApp({
+      store,
+      codexSessionProvider: provider(() => ({
+        status: "available",
+        message: "Codex",
+        sessions: [{ ...session("openable", "可打开会话", root), sourcePath }],
+      })),
+      claudeCodeSessionProvider: provider(() => ({
+        status: "available",
+        message: "Claude Code",
+        sessions: [],
+      })),
+      openLocalArtifact: async (path, reveal) => opened.push({ path, reveal }),
+    });
+
+    try {
+      const discovered = await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/discover",
+        { method: "POST" },
+      )).then((response) => response.json());
+      const record = discovered.sessions[0];
+      expect(record.sourcePath).toBeUndefined();
+      expect(record.sourceAvailable).toBe(true);
+
+      const openedResponse = await app.fetch(new Request(
+        `http://teamline.local/api/session-monitoring/${encodeURIComponent(record.key)}/source/open`,
+        { method: "POST" },
+      ));
+      expect(openedResponse.status).toBe(200);
+      expect(opened).toEqual([{ path: sourcePath, reveal: false }]);
+
+      rmSync(sourcePath);
+      const unavailableResponse = await app.fetch(new Request(
+        `http://teamline.local/api/session-monitoring/${encodeURIComponent(record.key)}/source/open`,
+        { method: "POST" },
+      ));
+      expect(unavailableResponse.status).toBe(409);
+    } finally {
+      await app.close();
+      store.database.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("scans Codex accounts and Claude Code without creating goals", async () => {

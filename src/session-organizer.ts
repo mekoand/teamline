@@ -13,6 +13,22 @@ export type SessionOrganization = {
   completedHighlights?: string[];
   nextAction?: string;
   historicalStages: WorkOrderImportContext["historicalStages"];
+  futureStages?: Array<WorkOrderImportContext["historicalStages"][number] & {
+    explicit: true;
+  }>;
+  currentProgressPercent?: number;
+  enumerablePlan?: {
+    completed: number;
+    total: number;
+  };
+  inferredRelations?: Array<{
+    id: string;
+    from: string;
+    to: string;
+    label: string;
+  }>;
+  toolCalls?: string[];
+  logs?: string[];
   artifacts: WorkOrderImportContext["artifacts"];
 };
 
@@ -201,9 +217,14 @@ Read every listed source file fully, then return:
 - completedHighlights: up to three completed highlights, at most 80 characters each;
 - nextAction: one line with the most appropriate next action, at most 100 characters;
 - historicalStages: up to eight important historical nodes. Outcomes are at most 80 characters and summaries at most 120 characters. They are history, not a future executable plan, and each cites the relevant source session IDs;
+- futureStages: optional, up to four next-step nodes, only when the source explicitly proposes those steps. Every item must include \`explicit: true\`, and these are display-only future nodes, not Teamline execution plans;
+- currentProgressPercent: optional integer from 0 to 100 for the current node, only an estimate grounded in explicit source progress;
+- enumerablePlan: optional \`{ completed, total }\`, only when the source contains a stable, enumerable plan. Omit it when a total cannot be supported;
+- inferredRelations: optional cross-session relationships only when the source supports them. Each relation must be labeled as an inference and must not be used for execution;
+- toolCalls and logs: optional short related entries for inspection, up to eight each. Do not include every message or tool call and do not create nodes from them;
 - artifacts: major files, folders, repositories, images, or links explicitly present in the sessions. Do not guess locations.
 
-Do not copy long passages of conversation or logs and do not turn every tool call into a node. Report conflicts between sources truthfully in the summary. Return only a result matching the JSON Schema.`;
+Do not copy long passages of conversation or logs and do not turn every tool call into a node. Preserve useful history from the previous snapshot, add only newly supported progress, and never invent a total completion percentage. Report conflicts between sources truthfully in the summary. Return only a result matching the JSON Schema.`;
 }
 
 function lastUsefulLine(output: string): string {
