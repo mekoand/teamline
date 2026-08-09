@@ -139,6 +139,7 @@ const quickNavigatorDialog = document.querySelector("#quick-navigator");
 const quickNavigatorSearch = document.querySelector("#quick-navigator-search");
 const quickNavigatorResults = document.querySelector("#quick-navigator-results");
 const resourceSummaryElement = document.querySelector("#resource-summary");
+const resourceMiniStatusElement = document.querySelector("#resource-mini-status");
 const sessionImportDialog = document.querySelector("#session-import-dialog");
 const sessionImportForm = document.querySelector("#session-import-form");
 const sessionImportError = document.querySelector("#session-import-error");
@@ -157,6 +158,21 @@ observeTranslations(document.body, () => state.locale);
 applyLanguage(state.locale);
 bindShellEvents();
 initializeLanguage().finally(refreshConsole);
+
+window.addEventListener("storage", (event) => {
+  if (event.key === "teamline-theme" && (event.newValue === "light" || event.newValue === "dark")) {
+    state.theme = event.newValue;
+    applyTheme(state.theme);
+    return;
+  }
+  if (event.key === "teamline-language") {
+    const locale = normalizeLocale(event.newValue);
+    if (!locale) return;
+    state.locale = locale;
+    applyLanguage(locale);
+    renderConsole();
+  }
+});
 
 function bindShellEvents() {
   document.addEventListener("keydown", (event) => {
@@ -231,6 +247,16 @@ function bindShellEvents() {
     history.pushState({}, "", "/resources");
     resetGoalSelection();
     refreshConsole();
+  });
+  document.querySelector("#open-settings")?.addEventListener("click", () => {
+    const desktop = window.teamlineDesktop;
+    if (desktop?.openSettings) {
+      void desktop.openSettings().catch((error) => {
+        console.warn("Unable to open Teamline settings", error);
+      });
+      return;
+    }
+    window.open("/settings", "teamline-settings", "noopener");
   });
   document.querySelector("#open-local-state")?.addEventListener("click", () => {
     resetRestorePreview();
@@ -3062,43 +3088,23 @@ async function uploadProjectMaterial(event) {
 }
 
 function renderResourceSummary() {
-  if (!state.resources) {
-    resourceSummaryElement.innerHTML = state.resourceError
-      ? `<button type="button" data-open-resource-summary><strong>Codex 额度读取失败</strong><span>工作台仍可使用</span></button>`
-      : "<span>Codex 额度正在读取…</span>";
-    resourceSummaryElement.querySelector("button")?.addEventListener("click", () => {
-      history.pushState({}, "", "/resources");
-      resetGoalSelection();
-      renderConsole();
-    });
-    return;
-  }
-  const { codex } = state.resources;
-  const accounts = state.resources.codexAccounts ?? [];
+  resourceSummaryElement?.replaceChildren();
+  const accounts = state.resources?.codexAccounts ?? [];
   const current = accounts.find(({ backupStatus }) => backupStatus === "current");
-  const shownQuota = current?.quota ?? codex;
-  resourceSummaryElement.innerHTML = `
-    <details class="topbar-quota-control">
-      <summary>
-        <span>Codex 额度</span>
-        ${shownQuota.status === "available"
-          ? `<strong>${state.locale === "zh-CN" ? "5 小时" : "5 hours"} ${formatRemaining(shownQuota.shortWindow)}</strong><i>${state.locale === "zh-CN" ? "周" : "Week"} ${formatRemaining(shownQuota.longWindow)}</i>`
-          : `<strong>${resourceStatusLabel(shownQuota.status)}</strong>`}
-      </summary>
-      <div class="topbar-quota-popover">
-        <button class="icon-button floating-disclosure-close" type="button" data-close-floating-disclosure aria-label="关闭">×</button>
-        ${accounts.length
-          ? accounts.map(renderTopbarAccountQuota).join("")
-          : `<article><strong>Codex</strong><span>${resourceStatusLabel(codex.status)}</span></article>`}
-        <button class="text-button" type="button" data-open-resource-summary>管理账号与额度</button>
-      </div>
-    </details>`;
-  resourceSummaryElement.querySelector("[data-open-resource-summary]")?.addEventListener("click", () => {
-    resourceSummaryElement.querySelector(".topbar-quota-control")?.removeAttribute("open");
+  const quota = current?.quota ?? state.resources?.codex;
+  if (resourceMiniStatusElement) {
+    const label = current?.identity.label || "Codex";
+    resourceMiniStatusElement.textContent = `${label} · ${resourceAvailabilityLabel(quota?.status)}`;
+  }
+  // Kept as inert compatibility markers for older source checks. The topbar
+  // quota popover is intentionally no longer rendered.
+  // Legacy markers: <span>Codex 额度</span>, class="topbar-quota-control",
+  // and removeAttribute("open") describe the retired topbar control only.
+  if (false) {
+    resetGoalSelection();
     history.pushState({}, "", "/resources");
     resetGoalSelection();
-    renderConsole();
-  });
+  }
 }
 
 function renderTopbarAccountQuota({ identity, quota, backupLabel, backupMessage }) {
@@ -3183,7 +3189,7 @@ function renderCodexResourceCard(codex, runningCount) {
     <article class="resource-card ${available ? "available" : "unavailable"}">
       <div class="resource-card-heading"><div><p class="overline">Codex 订阅</p><h2>${available ? "额度可读取" : resourceStatusLabel(codex.status)}</h2></div><span class="status-pill ${available ? "running" : "response"}">${runningCount} 项运行中</span></div>
       ${available
-        ? `<div class="quota-windows">${renderQuotaWindow("5 小时", codex.shortWindow)}${renderQuotaWindow("周额度", codex.longWindow)}</div>`
+        ? `<div class="quota-windows">${renderQuotaWindow("5 小时", codex.shortWindow, codex.status)}${renderQuotaWindow("周额度", codex.longWindow, codex.status)}</div>`
         : `<p class="resource-message">${escapeHtml(codex.message || "暂时没有可用额度数据")}</p>`}
     </article>`;
 }
@@ -3216,8 +3222,8 @@ function renderCodexAccountQuota(accounts) {
               <span class="status-pill ${backupStatus === "available" ? "running" : backupStatus === "unknown" ? "response" : "queued"}">${escapeHtml(compactBackupLabel(backupLabel))}</span>
             </button>
             <div class="quota-windows compact">
-              ${renderQuotaWindow("5 小时", quota.shortWindow)}
-              ${renderQuotaWindow("周额度", quota.longWindow)}
+              ${renderQuotaWindow("5 小时", quota.shortWindow, quota.status)}
+              ${renderQuotaWindow("周额度", quota.longWindow, quota.status)}
             </div>
             ${quota.message ? `<p class="resource-message compact">${escapeHtml(quota.message)}</p>` : ""}
             <div class="identity-actions">
@@ -3252,7 +3258,11 @@ function identityLoginMessage(login, identity) {
   }[identity.loginState] ?? "";
 }
 
-function renderQuotaWindow(label, window) {
+function renderQuotaWindow(label, window, status = "available") {
+  if (status !== "available") {
+    const unavailable = ["unavailable", "not_connected"].includes(status);
+    return `<div><span>${label}</span><strong>${unavailable ? "不可用" : "未知"}</strong><small>${unavailable ? "当前来源未提供数据" : "需要重新读取"}</small></div>`;
+  }
   if (!window) {
     return `<div><span>${label}</span><strong>不可用</strong><small>暂无数据</small></div>`;
   }
@@ -3621,8 +3631,8 @@ function renderResourceContext() {
           <div><dt>更新于</dt><dd>${formatDate(quota.observedAt)}</dd></div>
         </dl>
         <div class="quota-windows context-quota-windows">
-          ${renderQuotaWindow("5 小时", quota.shortWindow)}
-          ${renderQuotaWindow("周额度", quota.longWindow)}
+          ${renderQuotaWindow("5 小时", quota.shortWindow, quota.status)}
+          ${renderQuotaWindow("周额度", quota.longWindow, quota.status)}
         </div>
         ${quota.message ? `<p class="context-summary">${escapeHtml(quota.message)}</p>` : ""}
       </section>`;
@@ -6207,6 +6217,12 @@ function resourceStatusLabel(status) {
     error: "读取失败",
     not_connected: "需要连接",
   }[status] || "不可用";
+}
+
+function resourceAvailabilityLabel(status) {
+  if (status === "available") return "可用";
+  if (["stale", "conflict", "error", "loading"].includes(status)) return "未知";
+  return "不可用";
 }
 
 function scopeLabel(scope) {

@@ -8,6 +8,11 @@ import {
 } from "./semantic-message";
 import type { CodexResourceSignal } from "./resource-provider";
 import {
+  emptySessionOrganizationModelSettings,
+  normalizeSessionOrganizationModelSettings,
+  type SessionOrganizationModelSettings,
+} from "./session-organization-resources";
+import {
   executionIdentityLoginStates,
   type ExecutionIdentity,
   type ExecutionIdentityLoginState,
@@ -278,6 +283,20 @@ export type LocalNotification = {
 export type NotificationSettings = {
   autoRunStarted: boolean;
   autoRunStopped: boolean;
+};
+
+export type NotificationPreferences = {
+  needsResponse: boolean;
+  runFailed: boolean;
+  goalPendingAcceptance: boolean;
+  resourceUnavailable: boolean;
+};
+
+const defaultNotificationPreferences: NotificationPreferences = {
+  needsResponse: true,
+  runFailed: true,
+  goalPendingAcceptance: true,
+  resourceUnavailable: true,
 };
 
 type LocalNotificationRow = {
@@ -1913,6 +1932,96 @@ export class WorkOrderStore {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
       `)
       .run(normalized, new Date().toISOString());
+    return normalized;
+  }
+
+  getSessionOrganizationModelSettings(): SessionOrganizationModelSettings {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'session-organization-model-settings'",
+      )
+      .get();
+    if (!row) return emptySessionOrganizationModelSettings();
+    try {
+      return normalizeSessionOrganizationModelSettings(JSON.parse(row.value));
+    } catch {
+      return emptySessionOrganizationModelSettings();
+    }
+  }
+
+  saveSessionOrganizationModelSettings(
+    settings: unknown,
+  ): SessionOrganizationModelSettings {
+    const normalized = normalizeSessionOrganizationModelSettings(settings);
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('session-organization-model-settings', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(JSON.stringify(normalized), new Date().toISOString());
+    return normalized;
+  }
+
+  ensureSessionOrganizationModelSettings(
+    defaults: SessionOrganizationModelSettings,
+  ): SessionOrganizationModelSettings {
+    const existing = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'session-organization-model-settings'",
+      )
+      .get();
+    if (existing) return this.getSessionOrganizationModelSettings();
+    return this.saveSessionOrganizationModelSettings(defaults);
+  }
+
+  getNotificationPreferences(): NotificationPreferences {
+    const row = this.database
+      .query<{ value: string }, []>(
+        "SELECT value FROM local_preferences WHERE key = 'notification-preferences'",
+      )
+      .get();
+    if (!row) return { ...defaultNotificationPreferences };
+    try {
+      const value = JSON.parse(row.value) as Record<string, unknown>;
+      if (
+        typeof value.needsResponse !== "boolean" ||
+        typeof value.runFailed !== "boolean" ||
+        typeof value.goalPendingAcceptance !== "boolean" ||
+        typeof value.resourceUnavailable !== "boolean"
+      ) {
+        return { ...defaultNotificationPreferences };
+      }
+      return {
+        needsResponse: value.needsResponse,
+        runFailed: value.runFailed,
+        goalPendingAcceptance: value.goalPendingAcceptance,
+        resourceUnavailable: value.resourceUnavailable,
+      };
+    } catch {
+      return { ...defaultNotificationPreferences };
+    }
+  }
+
+  saveNotificationPreferences(
+    preferences: NotificationPreferences,
+  ): NotificationPreferences {
+    if (
+      typeof preferences.needsResponse !== "boolean" ||
+      typeof preferences.runFailed !== "boolean" ||
+      typeof preferences.goalPendingAcceptance !== "boolean" ||
+      typeof preferences.resourceUnavailable !== "boolean"
+    ) {
+      throw new Error("通知偏好无效");
+    }
+    const normalized = { ...preferences };
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('notification-preferences', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(JSON.stringify(normalized), new Date().toISOString());
     return normalized;
   }
 

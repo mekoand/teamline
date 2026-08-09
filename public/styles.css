@@ -501,6 +501,29 @@ pre {
   font-size: 10px;
 }
 
+.resource-mini-card {
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.resource-mini-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.resource-mini-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#open-settings kbd {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .sidebar-heading,
 .order-group-heading,
 .workspace-heading,

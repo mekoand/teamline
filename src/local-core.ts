@@ -12,7 +12,7 @@ import { LocalCodexSessionProvider } from "./codex-session-discovery";
 import { LocalWorkOrderResultProcessor } from "./result-processor";
 import { createServerIdentityResourceProvider, createServerResourceProvider } from "./server-resources";
 import { CodexSessionOrganizer } from "./session-organizer";
-import type { SessionOrganizationResourceSelector } from "./resource-provider";
+import { createSessionOrganizationResourceSelector } from "./session-organization-resources";
 import { GitCheckpointManager } from "./checkpoint-manager";
 import { WorkOrderStore } from "./work-order-store";
 import { GitWorktreeManager } from "./worktree-manager";
@@ -74,30 +74,22 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
     environment.TEAMLINE_SESSION_ORGANIZER_MODEL?.trim() || "gpt-5.6-luna";
   const sessionOrganizationDeepModel =
     environment.TEAMLINE_SESSION_ORGANIZER_DEEP_MODEL?.trim() || sessionOrganizationModel;
-  const sessionOrganizationResourceSelector: SessionOrganizationResourceSelector = {
-    async select(request) {
-      const identityId = request.accountId ??
-        store.getCurrentExecutionIdentityId() ??
-        store.getDefaultExecutionIdentityId();
-      const identity = identityId ? store.getExecutionIdentity(identityId) : null;
-      if (
-        !identity ||
-        identity.status !== "enabled" ||
-        (identity.loginState !== "ready" &&
-          !(identity.homeKind === "system" && identity.loginState === "unknown"))
-      ) {
-        return null;
-      }
-      return {
-        tool: "codex",
-        model: request.preference === "high_quality"
-          ? sessionOrganizationDeepModel
-          : sessionOrganizationModel,
-        accountId: identity.id,
-        accountLabel: identity.label,
-      };
+  store.ensureSessionOrganizationModelSettings({
+    sources: {
+      codex: {
+        automaticModel: sessionOrganizationModel,
+        deepModel: sessionOrganizationDeepModel,
+        fallbackModel: null,
+        accountId: null,
+      },
     },
-  };
+  });
+  const sessionOrganizationResourceSelector = createSessionOrganizationResourceSelector({
+    getSettings: () => store.getSessionOrganizationModelSettings(),
+    getIdentity: (id) => store.getExecutionIdentity(id),
+    getCurrentIdentityId: () => store.getCurrentExecutionIdentityId(),
+    getDefaultIdentityId: () => store.getDefaultExecutionIdentityId(),
+  });
   const app = createApp({
     store,
     planGenerator: new CodexPlanGenerator(),
