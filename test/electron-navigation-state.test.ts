@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildQuickNavigationIndex,
   chooseInitialNavigation,
   defaultNavigationState,
+  filterQuickNavigationIndex,
   normalizeNavigationState,
+  quickNavigationTarget,
+  routeForNotification,
   routeForNavigation,
 } from "../public/navigation-state.js";
 
@@ -97,5 +101,84 @@ describe("desktop navigation state", () => {
     });
     expect(restored.workObject).toEqual({ kind: "monitoring-work", id: "work-a" });
     expect(routeForNavigation(restored)).toBe("/session-monitoring?project=project-a");
+  });
+
+  test("restores an unclassified monitoring work selection", () => {
+    const restored = chooseInitialNavigation({
+      saved: {
+        ...defaultNavigationState(),
+        mode: "monitoring",
+        projectId: "unclassified",
+        workObject: { kind: "monitoring-work", id: "work-unclassified" },
+      },
+      projects: [{ id: "project-a" }],
+      monitoringWorks: [{ id: "work-unclassified", projectId: null }],
+    });
+    expect(restored).toMatchObject({
+      projectId: "unclassified",
+      workObject: { kind: "monitoring-work", id: "work-unclassified" },
+    });
+    expect(routeForNavigation(restored)).toBe("/session-monitoring");
+  });
+
+  test("indexes only projects, monitoring works, goals, and virtual unclassified", () => {
+    const index = buildQuickNavigationIndex({
+      projects: [{ id: "project-a", name: "Teamline" }],
+      workOrders: [
+        { id: "goal-a", title: "发布客户端", projectId: "project-a", description: "日志正文不应被搜索" },
+        { id: "goal-unclassified", title: "未归类目标", projectId: null },
+      ],
+      monitoringWorks: [
+        { id: "monitor-a", name: "发布监控", projectId: "project-a", sourceSessionKeys: ["session-a"] },
+        { id: "monitor-unclassified", name: "未归类监控", projectId: null },
+      ],
+    });
+
+    expect(index.map(({ kind, id }) => `${kind}:${id}`)).toEqual([
+      "project:project-a",
+      "project:unclassified",
+      "monitoring-work:monitor-a",
+      "monitoring-work:monitor-unclassified",
+      "goal:goal-a",
+      "goal:goal-unclassified",
+    ]);
+    expect(filterQuickNavigationIndex(index, "日志正文")).toEqual([]);
+    expect(filterQuickNavigationIndex(index, "发布监控")).toEqual([
+      expect.objectContaining({ kind: "monitoring-work", id: "monitor-a" }),
+    ]);
+  });
+
+  test("maps explicit quick-open choices to project, mode, object, and panel state", () => {
+    expect(quickNavigationTarget({ kind: "project", id: "project-a" }, "execution")).toEqual({
+      mode: "execution",
+      projectId: "project-a",
+      workObject: null,
+      rightSidebarCollapsed: true,
+    });
+    expect(quickNavigationTarget({ kind: "monitoring-work", id: "work-a", projectId: "project-a" })).toEqual({
+      mode: "monitoring",
+      projectId: "project-a",
+      workObject: { kind: "monitoring-work", id: "work-a" },
+      rightSidebarCollapsed: false,
+    });
+    expect(quickNavigationTarget({ kind: "goal", id: "goal-a", projectId: "unclassified" })).toEqual({
+      mode: "execution",
+      projectId: "unclassified",
+      workObject: { kind: "goal", id: "goal-a" },
+      rightSidebarCollapsed: false,
+    });
+  });
+
+  test("routes notification clicks by stable target code and object ids", () => {
+    expect(routeForNotification({
+      targetCode: "goal.failure",
+      workOrderId: "goal/7",
+      stageId: "stage-2",
+      targetUrl: "/unexpected",
+    })).toBe("/goals/goal%2F7?stage=stage-2");
+    expect(routeForNotification({
+      targetCode: "resource.account",
+      targetUrl: "/resources?account=account-a&goal=goal-7&project=project-a",
+    })).toBe("/resources?account=account-a&goal=goal-7&project=project-a");
   });
 });

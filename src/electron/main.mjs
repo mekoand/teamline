@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  Notification as ElectronNotification,
   Tray,
 } from "electron";
 import { spawn } from "node:child_process";
@@ -14,6 +15,12 @@ import { fileURLToPath } from "node:url";
 import { ensureLocalCore } from "./local-core-client.mjs";
 import { requestLocalCoreStop } from "./local-core-control.mjs";
 import { resolveClientDataDirectory } from "./data-directory.mjs";
+import {
+  claimLocalNotifications,
+  nativeNotificationOptions,
+  normalizeLocalNotification,
+  releaseLocalNotification,
+} from "./local-notification-pump.mjs";
 
 app.setName("Teamline");
 const sourceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -24,8 +31,68 @@ let tray = null;
 let quitting = false;
 let stoppingCore = false;
 let coreConnection = null;
+let notificationPumpTimer = null;
+let notificationPumpInFlight = false;
+const pendingNotificationClicks = [];
 
 const artifactActions = new Set(["open", "reveal", "quicklook"]);
+
+function nativeNotificationsSupported() {
+  return typeof ElectronNotification?.isSupported !== "function" ||
+    ElectronNotification.isSupported();
+}
+
+function flushNotificationClicks() {
+  if (!mainWindow || mainWindow.webContents.isLoading()) return;
+  while (pendingNotificationClicks.length > 0) {
+    mainWindow.webContents.send(
+      "teamline:notification-click",
+      pendingNotificationClicks.shift(),
+    );
+  }
+}
+
+function deliverNotificationClick(notification) {
+  const normalized = normalizeLocalNotification(notification);
+  if (!normalized) return;
+  pendingNotificationClicks.push(normalized);
+  showMainWindow();
+  flushNotificationClicks();
+}
+
+async function pollNativeNotifications() {
+  if (!coreConnection || notificationPumpInFlight || !nativeNotificationsSupported()) return;
+  notificationPumpInFlight = true;
+  try {
+    const notifications = await claimLocalNotifications(coreConnection.url);
+    for (const localNotification of notifications) {
+      try {
+        const systemNotification = new ElectronNotification(
+          nativeNotificationOptions(localNotification),
+        );
+        systemNotification.on("click", () => {
+          deliverNotificationClick(localNotification);
+        });
+        systemNotification.show();
+      } catch {
+        await releaseLocalNotification(coreConnection.url, localNotification.id).catch(() => {});
+      }
+    }
+  } catch (error) {
+    console.warn(
+      "Unable to poll local notifications",
+      error instanceof Error ? error.message : error,
+    );
+  } finally {
+    notificationPumpInFlight = false;
+  }
+}
+
+function startNativeNotificationPump() {
+  if (notificationPumpTimer || !nativeNotificationsSupported()) return;
+  void pollNativeNotifications();
+  notificationPumpTimer = setInterval(() => void pollNativeNotifications(), 15_000);
+}
 
 function installArtifactActionBridge() {
   ipcMain.handle("teamline:artifact-action", async (_event, request) => {
@@ -170,6 +237,7 @@ function createMainWindow() {
     mainWindow = null;
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("did-finish-load", flushNotificationClicks);
   void mainWindow.loadURL(coreConnection.url.toString());
   mainWindow.once("ready-to-show", () => mainWindow?.show());
 }
@@ -323,6 +391,7 @@ app.whenReady().then(async () => {
     installSettingsBridge();
     createTray();
     createMainWindow();
+    startNativeNotificationPump();
   } catch (error) {
     dialog.showErrorBox(
       "Teamline 无法启动",
@@ -338,6 +407,10 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   quitting = true;
+  if (notificationPumpTimer) {
+    clearInterval(notificationPumpTimer);
+    notificationPumpTimer = null;
+  }
 });
 
 app.on("window-all-closed", (event) => {

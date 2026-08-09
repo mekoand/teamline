@@ -2370,6 +2370,53 @@ export function createApp({
       );
     }
     await refreshIdentityQuota(snapshot.codex);
+    const defaultIdentityId = store.getDefaultExecutionIdentityId();
+    const currentIdentityId = store.getCurrentExecutionIdentityId() ?? defaultIdentityId;
+    store.syncResourceNotifications(
+      store
+        .list()
+        .filter((workOrder) =>
+          Boolean(workOrder.plan) && ["ready", "running"].includes(workOrder.status),
+        )
+        .map((workOrder) => {
+          const executionIdentityId =
+            workOrder.executionIdentityId ?? currentIdentityId;
+          const identity = executionIdentityId
+            ? store.getExecutionIdentity(executionIdentityId)
+            : null;
+          const observed = executionIdentityId
+            ? latestIdentityQuota.find(
+                ({ identity: candidate }) => candidate.id === executionIdentityId,
+              )?.signal
+            : undefined;
+          const signal = observed ?? snapshot.codex;
+          if (
+            identity &&
+            (identity.status !== "enabled" ||
+              (identity.loginState !== "ready" &&
+                !(identity.homeKind === "system" && identity.loginState === "unknown")))
+          ) {
+            return {
+              workOrderId: workOrder.id,
+              executionIdentityId,
+              identityLabel: identity.label,
+              signal: {
+                ...signal,
+                status: "unavailable" as const,
+                message: "这个 Codex 账号当前不可用",
+                shortWindow: null,
+                longWindow: null,
+              },
+            };
+          }
+          return {
+            workOrderId: workOrder.id,
+            executionIdentityId,
+            identityLabel: identity?.label ?? null,
+            signal,
+          };
+        }),
+    );
     return withPaidApiAttribution(snapshot);
   };
   const runAutoRunOnce = () => {
@@ -2907,6 +2954,7 @@ export function createApp({
           notifications,
           unreadCount: store.countUnreadNotifications(),
           settings: store.getNotificationSettings(),
+          preferences: store.getNotificationPreferences(),
         });
       }
 
@@ -2914,6 +2962,7 @@ export function createApp({
         request.method === "POST" &&
         url.pathname === "/api/notifications/claim"
       ) {
+        await readResourceSnapshot().catch(() => {});
         store.syncWorkOrderNotifications();
         return Response.json({ notifications: store.claimPendingNotifications() });
       }
@@ -2992,6 +3041,46 @@ export function createApp({
             {
               code: "INVALID_NOTIFICATION_SETTINGS",
               error: error instanceof Error ? error.message : "无法保存通知设置",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/preferences/notifications"
+      ) {
+        return Response.json({ settings: store.getNotificationPreferences() });
+      }
+
+      if (
+        request.method === "PUT" &&
+        url.pathname === "/api/preferences/notifications"
+      ) {
+        try {
+          const body = (await request.json()) as {
+            settings?: Partial<{
+              needsResponse: boolean;
+              runFailed: boolean;
+              goalPendingAcceptance: boolean;
+              resourceUnavailable: boolean;
+            }>;
+          };
+          const source = body.settings ?? body;
+          return Response.json({
+            settings: store.saveNotificationPreferences({
+              needsResponse: source.needsResponse as boolean,
+              runFailed: source.runFailed as boolean,
+              goalPendingAcceptance: source.goalPendingAcceptance as boolean,
+              resourceUnavailable: source.resourceUnavailable as boolean,
+            }),
+          });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_NOTIFICATION_PREFERENCES",
+              error: error instanceof Error ? error.message : "无法保存通知偏好",
             },
             { status: 400 },
           );

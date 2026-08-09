@@ -38,9 +38,13 @@ import {
 } from "./session-monitoring-graph.js";
 import {
   chooseInitialNavigation,
+  buildQuickNavigationIndex,
   defaultNavigationState,
+  filterQuickNavigationIndex,
   navigationStorageKey,
   normalizeNavigationState,
+  quickNavigationTarget,
+  routeForNotification,
   routeForNavigation,
 } from "./navigation-state.js";
 
@@ -111,7 +115,14 @@ const state = {
   notifications: [],
   unreadNotificationCount: 0,
   notificationSettings: { autoRunStarted: true, autoRunStopped: true },
+  notificationPreferences: {
+    needsResponse: true,
+    runFailed: true,
+    goalPendingAcceptance: true,
+    resourceUnavailable: true,
+  },
   nativeNotificationCheckInFlight: false,
+  navigationFallback: null,
   restorePreview: null,
   navigation: readStoredNavigation(),
   navigationInitialized: false,
@@ -216,12 +227,14 @@ function bindShellEvents() {
   });
   document.querySelector("#close-notifications").addEventListener("click", () => notificationDialog.close());
   document.querySelector("#enable-notifications").addEventListener("click", enableNativeNotifications);
-  document
-    .querySelector("#auto-run-started-notifications")
-    .addEventListener("change", saveNotificationSettings);
-  document
-    .querySelector("#auto-run-stopped-notifications")
-    .addEventListener("change", saveNotificationSettings);
+  for (const id of [
+    "notification-needs-response",
+    "notification-run-failed",
+    "notification-goal-pending-acceptance",
+    "notification-resource-unavailable",
+  ]) {
+    document.querySelector(`#${id}`)?.addEventListener("change", saveNotificationPreferences);
+  }
 
   document.querySelector("#open-create")?.addEventListener("click", () => {
     if (isSessionMonitoringView()) {
@@ -321,7 +334,7 @@ function bindShellEvents() {
       openQuickNavigator();
       return;
     }
-    if (event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    if ((event.key !== "Escape" && event.key !== "Esc") || document.querySelector("dialog[open]")) return;
     if (closeOpenFloatingDisclosures()) {
       event.preventDefault();
       return;
@@ -330,6 +343,10 @@ function bindShellEvents() {
   });
   document.querySelector("#toggle-left-sidebar")?.addEventListener("click", toggleLeftSidebar);
   document.querySelector("#toggle-right-sidebar")?.addEventListener("click", toggleRightSidebar);
+  window.teamlineDesktop?.onNotificationClick?.((notification) => {
+    window.focus();
+    void openLocalNotification(notification);
+  });
   quickNavigatorSearch?.addEventListener("input", (event) => {
     state.quickNavigatorQuery = event.currentTarget.value;
     state.quickNavigatorIndex = 0;
@@ -348,7 +365,7 @@ function bindDismissibleDialog(dialog, close, isBusy = () => false) {
     if (event.target === dialog && !isBusy()) close();
   });
   dialog.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
+    if (event.key !== "Escape" && event.key !== "Esc") return;
     event.preventDefault();
     if (!isBusy()) close();
   });
@@ -502,6 +519,8 @@ function projectHasUnclassifiedData() {
     !workOrder.projectId || !projectIds.has(workOrder.projectId),
   ) || (state.sessionMonitoring.sessions ?? []).some((session) =>
     !session.projectId || !projectIds.has(session.projectId),
+  ) || (state.sessionMonitoring.monitoringWorks ?? []).some((work) =>
+    !work.projectId || !projectIds.has(work.projectId),
   );
 }
 
@@ -589,40 +608,14 @@ function openQuickNavigator() {
 }
 
 function getQuickNavigatorItems() {
-  const items = state.projects.map((project) => ({
-    kind: "project",
-    id: project.id,
-    label: project.name,
-    detail: "项目",
-  }));
-  if (projectHasUnclassifiedData()) {
-    items.push({ kind: "project", id: "unclassified", label: "未归类", detail: "项目" });
-  }
-  items.push(...state.workOrders.map((workOrder) => ({
-    kind: "goal",
-    id: workOrder.id,
-    label: workOrder.name,
-    detail: "目标",
-    projectId: workOrder.projectId || "unclassified",
-  })));
-  items.push(...(state.sessionMonitoring.sessions ?? []).map((session) => ({
-    kind: "session",
-    id: session.key,
-    label: session.title,
-    detail: "来源会话",
-    projectId: session.projectId || "unclassified",
-  })));
-  items.push(...(state.sessionMonitoring.monitoringWorks ?? []).map((work) => ({
-    kind: "monitoring-work",
-    id: work.id,
-    label: work.name,
-    detail: "监控工作",
-    projectId: work.projectId || "unclassified",
-  })));
-  const query = state.quickNavigatorQuery.trim().toLocaleLowerCase();
-  return query
-    ? items.filter((item) => `${item.label} ${item.detail}`.toLocaleLowerCase().includes(query))
-    : items;
+  return filterQuickNavigationIndex(
+    buildQuickNavigationIndex({
+      projects: state.projects,
+      workOrders: state.workOrders,
+      monitoringWorks: state.sessionMonitoring.monitoringWorks ?? [],
+    }),
+    state.quickNavigatorQuery,
+  );
 }
 
 function renderQuickNavigator() {
@@ -635,8 +628,8 @@ function renderQuickNavigator() {
   state.quickNavigatorIndex = Math.min(state.quickNavigatorIndex, items.length - 1);
   quickNavigatorResults.innerHTML = items.map((item, index) => `
     <button class="quick-navigator-row ${index === state.quickNavigatorIndex ? "selected" : ""}" data-quick-index="${index}" type="button" role="option" aria-selected="${index === state.quickNavigatorIndex}">
-      <span><strong data-i18n-preserve>${escapeHtml(item.label)}</strong><small>${item.detail}</small></span>
-      <kbd>${item.kind === "project" ? "项目" : item.kind === "goal" ? "目标" : item.kind === "monitoring-work" ? "监控工作" : "会话"}</kbd>
+      <span><strong data-i18n-preserve>${escapeHtml(item.label)}</strong><small>${item.projectName && item.kind !== "project" ? `${item.projectName} · ` : ""}${item.detail}</small></span>
+      <kbd>${item.kind === "project" ? "项目" : item.kind === "goal" ? "目标" : "监控工作"}</kbd>
     </button>`).join("");
   quickNavigatorResults.querySelectorAll("[data-quick-index]").forEach((button) => {
     button.addEventListener("click", () => openQuickNavigatorItem(items[Number(button.dataset.quickIndex)]));
@@ -663,17 +656,18 @@ function handleQuickNavigatorKeydown(event) {
 function openQuickNavigatorItem(item) {
   if (!item) return;
   quickNavigatorDialog?.close();
+  const target = quickNavigationTarget(item, state.navigation.mode);
+  if (!target) return;
   state.navigation = normalizeNavigationState({
     ...state.navigation,
-    mode: ["session", "monitoring-work"].includes(item.kind) ? "monitoring" : item.kind === "goal" ? "execution" : state.navigation.mode,
-    projectId: item.projectId ?? item.id,
-    workObject: item.kind === "project" ? null : { kind: item.kind, id: item.id },
-    rightSidebarCollapsed: false,
+    ...target,
   });
-  state.monitoringSelectedKey = item.kind === "session" ? item.id : null;
+  state.monitoringSelectedKey = null;
   state.monitoringSelectedWorkId = item.kind === "monitoring-work" ? item.id : null;
-  state.selected = null;
-  state.inspector = clearContextInspector();
+  resetGoalSelection();
+  state.inspector = item.kind === "goal"
+    ? selectContextInspector(state.inspector, { type: "goal", id: item.id })
+    : clearContextInspector();
   history.pushState({}, "", routeForNavigation(state.navigation));
   void refreshConsole();
 }
@@ -903,6 +897,7 @@ async function refreshConsole({
   polling = false,
   checkAutoRun = state.autoRunCheckRequested || isResourceView(),
 } = {}) {
+  const requestedId = selectedIdFromPath();
   clearTimeout(state.refreshTimer);
   if (!polling && state.workOrders.length === 0) {
     workspaceElement.innerHTML = '<div class="loading-state">正在读取本地目标…</div>';
@@ -928,6 +923,8 @@ async function refreshConsole({
     state.notifications = notificationState.notifications;
     state.unreadNotificationCount = notificationState.unreadCount;
     state.notificationSettings = notificationState.settings;
+    state.notificationPreferences = notificationState.preferences ?? state.notificationPreferences;
+    state.navigationFallback = null;
     renderNotificationShell();
     void showPendingNativeNotifications();
     void refreshResources({ checkAutoRun });
@@ -963,6 +960,25 @@ async function refreshConsole({
       }
       if (!state.monitoringSelectedWorkId && savedWorkId && findMonitoringWork(savedWorkId)) {
         state.monitoringSelectedWorkId = savedWorkId;
+      }
+      if (savedSessionId && !findMonitoringSession(savedSessionId)) {
+        state.navigationFallback = {
+          kind: "session",
+          id: savedSessionId,
+          projectId: state.navigation.projectId,
+          message: "这个受监控会话已不可用，但当前项目和监控模式仍已保留。",
+        };
+        state.monitoringSelectedKey = null;
+        state.inspector = clearContextInspector();
+      } else if (savedWorkId && !findMonitoringWork(savedWorkId)) {
+        state.navigationFallback = {
+          kind: "monitoring-work",
+          id: savedWorkId,
+          projectId: state.navigation.projectId,
+          message: "这个监控工作已不可用，但当前项目和监控模式仍已保留。",
+        };
+        state.monitoringSelectedWorkId = null;
+        state.inspector = clearContextInspector();
       }
       if (!state.inspector.selection && state.monitoringSelectedWorkId && findMonitoringWork(state.monitoringSelectedWorkId)) {
         state.inspector = selectContextInspector(state.inspector, {
@@ -1000,7 +1016,6 @@ async function refreshConsole({
       scheduleRefresh();
       return;
     }
-    const requestedId = selectedIdFromPath();
     const selectedId = requestedId ?? null;
 
     if (selectedId) {
@@ -1028,6 +1043,15 @@ async function refreshConsole({
             "",
             `${canonicalUrl.pathname}${canonicalUrl.search}`,
           );
+        } else {
+          state.navigation = normalizeNavigationState({
+            ...state.navigation,
+            rightSidebarCollapsed: false,
+          });
+          state.inspector = selectContextInspector(state.inspector, {
+            type: "navigation-fallback",
+            id: `stage:${requestedStageId}`,
+          });
         }
       }
       if (state.followCurrentStage) {
@@ -1045,6 +1069,26 @@ async function refreshConsole({
     renderConsole();
     scheduleRefresh();
   } catch (error) {
+    if (!polling && requestedId && error?.status === 404) {
+      state.selected = null;
+      state.sourceStatus = null;
+      state.events = [];
+      state.navigationFallback = {
+        kind: "goal",
+        id: requestedId,
+        projectId: state.navigation.projectId,
+        message: "这个目标已不可用，但当前项目和执行模式仍已保留。",
+      };
+      state.inspector = clearContextInspector();
+      state.navigation = normalizeNavigationState({
+        ...state.navigation,
+        mode: "execution",
+        workObject: { kind: "goal", id: requestedId },
+        rightSidebarCollapsed: false,
+      });
+      renderConsole();
+      return;
+    }
     if (polling) {
       state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 4_000);
       return;
@@ -1098,10 +1142,14 @@ function renderNotificationShell() {
     .querySelector("#open-notifications")
     .classList.toggle("has-unread", state.unreadNotificationCount > 0);
 
-  document.querySelector("#auto-run-started-notifications").checked =
-    state.notificationSettings.autoRunStarted;
-  document.querySelector("#auto-run-stopped-notifications").checked =
-    state.notificationSettings.autoRunStopped;
+  document.querySelector("#notification-needs-response").checked =
+    state.notificationPreferences.needsResponse;
+  document.querySelector("#notification-run-failed").checked =
+    state.notificationPreferences.runFailed;
+  document.querySelector("#notification-goal-pending-acceptance").checked =
+    state.notificationPreferences.goalPendingAcceptance;
+  document.querySelector("#notification-resource-unavailable").checked =
+    state.notificationPreferences.resourceUnavailable;
   renderNotificationPermission();
 
   const list = document.querySelector("#notification-list");
@@ -1132,6 +1180,11 @@ function renderNotificationShell() {
 function renderNotificationPermission() {
   const stateElement = document.querySelector("#notification-permission-state");
   const button = document.querySelector("#enable-notifications");
+  if (window.teamlineDesktop?.nativeNotifications) {
+    stateElement.textContent = "已开启";
+    button.hidden = true;
+    return;
+  }
   if (!("Notification" in window)) {
     stateElement.textContent = "当前浏览器不支持";
     button.hidden = true;
@@ -1178,8 +1231,30 @@ async function saveNotificationSettings() {
   }
 }
 
+async function saveNotificationPreferences() {
+  const settings = {
+    needsResponse: document.querySelector("#notification-needs-response").checked,
+    runFailed: document.querySelector("#notification-run-failed").checked,
+    goalPendingAcceptance: document.querySelector("#notification-goal-pending-acceptance").checked,
+    resourceUnavailable: document.querySelector("#notification-resource-unavailable").checked,
+  };
+  try {
+    const result = await requestJson("/api/preferences/notifications", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings }),
+    });
+    state.notificationPreferences = result.settings;
+    setFeedback("notification-feedback", "通知设置已保存。", false);
+  } catch (error) {
+    renderNotificationShell();
+    setFeedback("notification-feedback", messageFrom(error, "无法保存通知设置。"), true);
+  }
+}
+
 async function showPendingNativeNotifications() {
   if (
+    window.teamlineDesktop?.nativeNotifications ||
     !("Notification" in window) ||
     Notification.permission !== "granted" ||
     state.nativeNotificationCheckInFlight
@@ -1221,6 +1296,13 @@ async function showPendingNativeNotifications() {
 }
 
 async function openLocalNotification(notification) {
+  const targetUrl = routeForNotification(notification);
+  const target = new URL(targetUrl, window.location.origin);
+  const goalMatch = target.pathname.match(/^\/goals\/([^/]+)$/);
+  const goalId = goalMatch ? decodeURIComponent(goalMatch[1]) : notification?.workOrderId ?? null;
+  const resourceTarget = notification?.targetCode === "resource.account" ||
+    target.pathname === "/resources";
+  const projectId = target.searchParams.get("project") || state.navigation.projectId;
   try {
     await requestJson("/api/notifications/read", {
       method: "POST",
@@ -1229,10 +1311,38 @@ async function openLocalNotification(notification) {
     });
   } finally {
     notificationDialog.close();
+    resetGoalSelection();
     state.selectedStageIndex = 0;
     state.followCurrentStage = true;
-    state.inspector = clearContextInspector();
-    history.pushState({}, "", notification.targetUrl);
+    state.navigationFallback = null;
+    state.navigation = normalizeNavigationState({
+      ...state.navigation,
+      mode: resourceTarget
+        ? "execution"
+        : target.pathname === "/session-monitoring"
+          ? "monitoring"
+          : goalId
+            ? "execution"
+            : state.navigation.mode,
+      projectId,
+      workObject: resourceTarget
+        ? goalId
+          ? { kind: "goal", id: goalId }
+          : null
+        : goalId
+          ? { kind: "goal", id: goalId }
+          : null,
+      rightSidebarCollapsed: false,
+    });
+    state.inspector = resourceTarget
+      ? selectContextInspector(state.inspector, {
+          type: "resource-account",
+          id: target.searchParams.get("account") || "default",
+        })
+      : goalId
+        ? selectContextInspector(state.inspector, { type: "goal", id: goalId })
+        : clearContextInspector();
+    history.pushState({}, "", targetUrl);
     await refreshConsole();
   }
 }
@@ -1323,6 +1433,12 @@ function renderConsole(feedback = "") {
     document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "会话监控" : "目标")),
   );
   rememberNavigation();
+  if (state.navigationFallback) {
+    workspaceElement.innerHTML = renderNavigationFallback(state.navigationFallback);
+    contextElement.innerHTML = "";
+    document.querySelector("#recover-navigation")?.addEventListener("click", recoverNavigationFallback);
+    return;
+  }
   if (isAllGoalsView()) {
     workspaceElement.innerHTML = hasAnyClientData()
       ? renderAllGoalsWorkspace()
@@ -1382,7 +1498,34 @@ function renderConsole(feedback = "") {
 
 function hasAnyClientData() {
   return state.projects.length > 0 || state.workOrders.length > 0 ||
-    (state.sessionMonitoring.sessions ?? []).length > 0;
+    (state.sessionMonitoring.sessions ?? []).length > 0 ||
+    (state.sessionMonitoring.monitoringWorks ?? []).length > 0;
+}
+
+function renderNavigationFallback(fallback) {
+  return `
+    <section class="empty-console error-state navigation-recovery">
+      <span class="empty-symbol">!</span>
+      <h2>这个对象暂时不可用</h2>
+      <p>${escapeHtml(fallback.message || "对象已不可用，但当前工作模式仍已保留。")}</p>
+      <button class="secondary-button" id="recover-navigation" type="button">返回当前工作区</button>
+    </section>`;
+}
+
+function recoverNavigationFallback() {
+  const next = normalizeNavigationState({
+    ...state.navigation,
+    workObject: null,
+    rightSidebarCollapsed: true,
+  });
+  state.navigation = next;
+  state.navigationFallback = null;
+  state.monitoringSelectedKey = null;
+  state.monitoringSelectedWorkId = null;
+  state.inspector = clearContextInspector();
+  state.selected = null;
+  history.pushState({}, "", routeForNavigation(next));
+  void refreshConsole();
 }
 
 function renderFirstDiscoveryWorkspace() {
@@ -3601,7 +3744,12 @@ function renderResourceContext() {
   if (!selection) return renderUnavailableContext();
   if (selection.type === "resource-account") {
     const account = resources.codexAccounts?.find(({ identity }) => identity.id === selection.id);
-    if (!account) return renderUnavailableContext();
+    if (!account) {
+      return renderUnavailableContext(
+        "这个账号或额度窗口已不可用；你可以返回资源页重新读取本机状态。",
+        "账号状态不可用",
+      );
+    }
     const { identity, quota, backupLabel } = account;
     return `
       <section class="context-content">
@@ -3624,7 +3772,12 @@ function renderResourceContext() {
   }
   if (selection.type === "resource-work-order") {
     const resourceGoal = resources.workOrders.find((workOrder) => workOrder.id === selection.id);
-    if (!resourceGoal) return renderUnavailableContext();
+    if (!resourceGoal) {
+      return renderUnavailableContext(
+        "这个目标的资源记录已不可用；当前目标数据未被修改。",
+        "资源记录不可用",
+      );
+    }
     const goal = state.workOrders.find((workOrder) => workOrder.id === resourceGoal.id);
     const identityId = goal?.executionIdentityId ?? state.executionIdentities.defaultIdentityId;
     const identity = state.executionIdentities.identities.find((candidate) => candidate.id === identityId);
@@ -4336,6 +4489,9 @@ function renderContext(workOrder) {
   const selection = state.inspector.selection;
   if (!selection || selection.type === "goal") return renderGoalContext(workOrder);
   if (selection.type === "artifact") return renderArtifactContext(workOrder, selection.id);
+  if (selection.type === "navigation-fallback") {
+    return renderUnavailableContext("这个节点已不可用，当前目标仍保留。请关闭右栏后重新选择可用节点。", "节点不可用");
+  }
 
   const stages = state.draftStages ?? workOrder.plan?.stages ?? [];
   const selectedIndex = stages.findIndex((stage) => stage.id === selection.id);
@@ -4565,11 +4721,11 @@ function artifactSourceLabel(workOrder, reference) {
   return "目标成果";
 }
 
-function renderUnavailableContext() {
+function renderUnavailableContext(message = "这个对象已经不在当前目标中，请重新选择。", title = "内容已更新") {
   return `
     <section class="context-content context-empty">
-      <div class="context-heading"><div><p class="overline">补充信息</p><h2>内容已更新</h2></div>${renderContextCloseButton()}</div>
-      <p>这个对象已经不在当前目标中，请重新选择。</p>
+      <div class="context-heading"><div><p class="overline">补充信息</p><h2>${escapeHtml(title)}</h2></div>${renderContextCloseButton()}</div>
+      <p>${escapeHtml(message)}</p>
     </section>`;
 }
 
@@ -6271,6 +6427,7 @@ async function requestJson(url, options = {}) {
   const result = await response.json();
   if (!response.ok) {
     const error = new Error(result.error || "请求失败");
+    error.status = response.status;
     error.code = result.code;
     error.messageDescriptor = result.message ?? (result.code
       ? { code: result.code, params: result.params ?? {} }
