@@ -63,7 +63,7 @@ const state = {
   selectedStageIndex: 0,
   followCurrentStage: true,
   draftStages: null,
-  contextTab: "artifacts",
+  contextTab: "details",
   homeHistoryFilter: "7",
   primaryView: null,
   progressView: "map",
@@ -126,6 +126,7 @@ const state = {
   restorePreview: null,
   navigation: readStoredNavigation(),
   navigationInitialized: false,
+  narrowSidebarInitialized: false,
   quickNavigatorIndex: 0,
   quickNavigatorQuery: "",
   refreshTimer: null,
@@ -170,7 +171,7 @@ bindShellEvents();
 initializeLanguage().finally(refreshConsole);
 
 window.addEventListener("storage", (event) => {
-  if (event.key === "teamline-theme" && (event.newValue === "light" || event.newValue === "dark")) {
+  if (event.key === "teamline-theme" && ["system", "light", "dark"].includes(event.newValue)) {
     state.theme = event.newValue;
     applyTheme(state.theme);
     return;
@@ -182,6 +183,11 @@ window.addEventListener("storage", (event) => {
     applyLanguage(locale);
     renderConsole();
   }
+});
+
+const systemThemeMedia = matchMedia("(prefers-color-scheme: dark)");
+systemThemeMedia.addEventListener?.("change", () => {
+  if (state.theme === "system") applyTheme("system");
 });
 
 function bindShellEvents() {
@@ -197,35 +203,12 @@ function bindShellEvents() {
     void runArtifactAction(location, "quicklook");
   });
 
-  document.querySelector("#language-select").addEventListener("change", async (event) => {
-    const locale = normalizeLocale(event.currentTarget.value);
-    if (!locale) return;
-    state.locale = locale;
-    localStorage.setItem("teamline-language", locale);
-    applyLanguage(locale);
-    renderConsole();
-    try {
-      await requestJson("/api/preferences/language", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ language: locale }),
-      });
-    } catch (error) {
-      console.warn("Unable to save Teamline language", error);
-    }
-  });
-
-  document.querySelector("#theme-toggle").addEventListener("click", () => {
-    state.theme = state.theme === "dark" ? "light" : "dark";
-    localStorage.setItem("teamline-theme", state.theme);
-    applyTheme(state.theme);
-  });
-
   document.querySelector("#open-notifications").addEventListener("click", () => {
     renderNotificationShell();
     notificationDialog.showModal();
   });
   document.querySelector("#close-notifications").addEventListener("click", () => notificationDialog.close());
+  document.querySelector("#close-quick-navigator")?.addEventListener("click", () => quickNavigatorDialog.close());
   document.querySelector("#enable-notifications").addEventListener("click", enableNativeNotifications);
   for (const id of [
     "notification-needs-response",
@@ -437,7 +420,6 @@ function applyLanguage(locale) {
   homeHistoryFilters = state.locale === "zh-CN"
     ? [["current", "当前"], ["7", "7 天"], ["30", "30 天"], ["all", "全部"]]
     : [["current", "Current"], ["7", "7 days"], ["30", "30 days"], ["all", "All"]];
-  document.querySelector("#language-select").value = locale;
   applyStaticTranslations(document, locale);
   localizeTree(document.body, locale);
   applyTheme(state.theme);
@@ -492,13 +474,19 @@ function rememberNavigation() {
   const leftToggle = document.querySelector("#toggle-left-sidebar");
   leftToggle?.setAttribute(
     "aria-label",
-    state.navigation.leftSidebarCollapsed ? "展开项目栏" : "收起项目栏",
+    translateFixedText(
+      state.locale,
+      state.navigation.leftSidebarCollapsed ? "展开项目栏" : "收起项目栏",
+    ),
   );
   if (leftToggle) leftToggle.textContent = state.navigation.leftSidebarCollapsed ? "›" : "‹";
   const rightToggle = document.querySelector("#toggle-right-sidebar");
   rightToggle?.setAttribute(
     "aria-label",
-    state.navigation.rightSidebarCollapsed ? "打开检查栏" : "关闭检查栏",
+    translateFixedText(
+      state.locale,
+      state.navigation.rightSidebarCollapsed ? "打开检查栏" : "关闭检查栏",
+    ),
   );
   if (rightToggle) rightToggle.textContent = state.navigation.rightSidebarCollapsed ? "‹" : "›";
 }
@@ -531,7 +519,7 @@ function renderProjectNavigation() {
     id: project.id,
     name: project.name,
     count: isSessionMonitoringView()
-      ? (state.sessionMonitoring.sessions ?? []).filter((session) => session.projectId === project.id).length
+      ? monitoringWorksForProject(project.id).length
       : state.workOrders.filter((workOrder) => workOrder.projectId === project.id).length,
   }));
   if (projectHasUnclassifiedData()) {
@@ -539,7 +527,7 @@ function renderProjectNavigation() {
       id: "unclassified",
       name: "未归类",
       count: isSessionMonitoringView()
-        ? (state.sessionMonitoring.sessions ?? []).filter((session) => !session.projectId).length
+        ? monitoringWorksForProject("unclassified").length
         : state.workOrders.filter((workOrder) => !workOrder.projectId).length,
     });
   }
@@ -697,7 +685,7 @@ function resetGoalSelection() {
   state.draftStages = null;
   state.primaryView = null;
   state.progressView = "map";
-  state.contextTab = "artifacts";
+  state.contextTab = "details";
   state.inspector = clearContextInspector();
   state.artifactPreview = { key: null, status: "idle", data: null, error: "" };
 }
@@ -932,6 +920,9 @@ async function refreshConsole({
     if (initializeNavigationFromData()) {
       return refreshConsole({ polling: false, checkAutoRun: false });
     }
+    if (normalizeLegacyHomeRoute()) {
+      return refreshConsole({ polling: false, checkAutoRun: false });
+    }
     if (isSessionMonitoringView()) {
       if (
         !monitoringState.lastScannedAt &&
@@ -1111,12 +1102,16 @@ function initializeNavigationFromData() {
     state.navigationInitialized = true;
     return false;
   }
-  const next = chooseInitialNavigation({
+  const initial = chooseInitialNavigation({
     saved: state.navigation,
     projects: state.projects,
     workOrders: state.workOrders,
     monitoringSessions: state.sessionMonitoring.sessions ?? [],
     monitoringWorks: state.sessionMonitoring.monitoringWorks ?? [],
+  });
+  const next = normalizeNavigationState({
+    ...initial,
+    projectId: initial.projectId || "unclassified",
   });
   state.navigation = next;
   state.monitoringSelectedKey = next.workObject?.kind === "session" ? next.workObject.id : null;
@@ -1128,6 +1123,28 @@ function initializeNavigationFromData() {
   if (!hasData) return false;
   const nextRoute = routeForNavigation(next);
   const currentRoute = `${window.location.pathname}${window.location.search}`;
+  if (nextRoute === currentRoute) return false;
+  history.replaceState({}, "", nextRoute);
+  resetGoalSelection();
+  return true;
+}
+
+function normalizeLegacyHomeRoute() {
+  if (!isAllGoalsView() || !state.navigationInitialized) return false;
+  const projectIds = new Set(state.projects.map((project) => project.id));
+  const rememberedProjectId = state.navigation.projectId;
+  const projectId = rememberedProjectId &&
+      (rememberedProjectId === "unclassified" || projectIds.has(rememberedProjectId))
+    ? rememberedProjectId
+    : state.projects[0]?.id || "unclassified";
+  const next = normalizeNavigationState({
+    ...state.navigation,
+    projectId,
+    workObject: null,
+  });
+  const nextRoute = routeForNavigation(next);
+  const currentRoute = `${window.location.pathname}${window.location.search}`;
+  state.navigation = next;
   if (nextRoute === currentRoute) return false;
   history.replaceState({}, "", nextRoute);
   resetGoalSelection();
@@ -1393,6 +1410,11 @@ async function refreshResources({ checkAutoRun = false } = {}) {
 }
 
 function renderConsole(feedback = "") {
+  const narrowViewport = window.matchMedia("(max-width: 680px)").matches;
+  if (narrowViewport && !state.narrowSidebarInitialized) {
+    state.navigation = { ...state.navigation, leftSidebarCollapsed: true };
+    state.narrowSidebarInitialized = true;
+  }
   renderWorkOrderList();
   renderProjectNavigation();
   const shell = document.querySelector(".console-shell");
@@ -1402,6 +1424,7 @@ function renderConsole(feedback = "") {
     isProjectsView() ? "view-projects" : "",
     isResourceView() ? "view-resources" : "",
     isSessionMonitoringView() ? "view-session-monitoring" : "",
+    isSessionMonitoringView() ? "mode-monitoring" : "mode-execution",
     state.selected ? "view-goal" : "",
     state.inspector.open ? "context-open" : "",
     state.navigation.leftSidebarCollapsed ? "left-collapsed" : "",
@@ -1423,7 +1446,7 @@ function renderConsole(feedback = "") {
   shellAction?.toggleAttribute("hidden", isResourceView());
   if (shellAction) {
     shellAction.querySelector("span")?.replaceChildren(
-      document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "刷新会话" : "新建目标")),
+      document.createTextNode(translateFixedText(state.locale, isSessionMonitoringView() ? "添加会话" : "新建目标")),
     );
   }
   document.querySelector(".recent-goals-heading span")?.replaceChildren(
@@ -1543,15 +1566,13 @@ function renderFirstDiscoveryWorkspace() {
 function renderWorkOrderList() {
   if (isSessionMonitoringView()) {
     const sessions = sessionsForCurrentProject();
-    countElement.textContent = String(sessions.length);
-    listElement.innerHTML = sessions.length
-      ? renderMonitoringSidebar(sessions)
-      : '<p class="sidebar-empty">暂无本机会话</p>';
-    listElement.querySelectorAll("[data-monitoring-project]").forEach((button) => {
-      button.addEventListener("click", () => selectMonitoringProject(button.dataset.monitoringProject));
-    });
-    listElement.querySelectorAll("[data-monitoring-key]").forEach((button) => {
-      button.addEventListener("click", () => selectMonitoringSession(button.dataset.monitoringKey));
+    const works = currentMonitoringProjectWorks(sessions, state.sessionMonitoring.monitoringWorks ?? []);
+    countElement.textContent = String(works.length);
+    listElement.innerHTML = works.length
+      ? renderMonitoringSidebar(works)
+      : '<p class="sidebar-empty">暂无监控工作</p>';
+    listElement.querySelectorAll("[data-monitoring-work]").forEach((button) => {
+      button.addEventListener("click", () => selectMonitoringWork(button.dataset.monitoringWork));
     });
     return;
   }
@@ -1593,6 +1614,13 @@ function sessionsForCurrentProject() {
   return sessions.filter((session) => session.projectId === projectId);
 }
 
+function monitoringWorksForProject(projectId) {
+  const sessions = (state.sessionMonitoring.sessions ?? []).filter((session) =>
+    projectId === "unclassified" ? !session.projectId : session.projectId === projectId,
+  );
+  return currentMonitoringProjectWorks(sessions, state.sessionMonitoring.monitoringWorks ?? []);
+}
+
 function renderSidebarObjectGroups(items, projectIdFor, renderRow) {
   const projectIds = new Set(state.projects.map((project) => project.id));
   const grouped = new Map();
@@ -1612,29 +1640,56 @@ function renderSidebarObjectGroups(items, projectIdFor, renderRow) {
   return keys.flatMap((key) => grouped.get(key).map(renderRow)).join("");
 }
 
-function renderMonitoringSidebar(sessions) {
-  const entries = monitoringProjectEntriesForSelection(
-    sessions,
-    state.projects,
-    selectedMonitoringProjectId(),
-  );
-  return entries.flatMap((entry) => entry.sessions.map(renderSessionMonitoringSidebarRow)).join("");
+function renderMonitoringSidebar(works) {
+  return works.map(renderMonitoringWorkSidebarRow).join("");
 }
 
-function renderSessionMonitoringSidebarRow(session) {
-  const selected = state.monitoringSelectedKey === session.key;
-  const identity = session.executionIdentityLabel
-    ? ` · ${escapeHtml(session.executionIdentityLabel)}`
-    : "";
+function renderMonitoringWorkSidebarRow(work) {
+  const selected = state.monitoringSelectedWorkId === work.id;
+  const sourceCount = work.sourceSessionKeys?.length ?? work.sources?.length ?? 0;
+  const status = work.aggregateStatus ?? "unknown";
+  const statusClass = status === "failed" ? "response" : status === "ready" ? "running" : "queued";
+  const updatedAt = status === "failed"
+    ? monitoringWorkLastSuccessfulAt(work)
+    : work.aggregateUpdatedAt ?? work.updatedAt;
+  const statusLabel = translateFixedText(
+    state.locale,
+    status === "failed" ? "更新失败" : sessionOrganizationStatusLabel(status),
+  );
+  const sourceLabel = translateFixedText(state.locale, `${sourceCount} 个来源`);
   return `
-    <button class="order-row ${selected ? "selected" : ""}" data-monitoring-key="${escapeHtml(session.key)}" type="button">
-      <span class="status-dot ${session.monitoringEnabled ? "running" : "queued"}"></span>
+    <button class="order-row ${selected ? "selected" : ""}" data-monitoring-work="${escapeHtml(work.id)}" type="button">
+      <span class="status-dot ${statusClass}" aria-hidden="true"></span>
       <span class="order-row-copy">
-        <strong data-i18n-preserve>${escapeHtml(session.title)}${identity}</strong>
-        <small>${escapeHtml(session.sourceKind === "claude_code_session" ? "Claude Code" : "Codex")} · ${translateFixedText(state.locale, session.monitoringEnabled ? "监控中" : "未监控")}</small>
+        <strong data-i18n-preserve>${escapeHtml(work.name || "监控工作")}</strong>
+        <small>${escapeHtml(`${sourceLabel} · ${statusLabel}`)}</small>
       </span>
-      <time>${formatDate(session.lastActiveAt)}</time>
+      ${updatedAt ? `<time>${escapeHtml(formatDate(updatedAt))}</time>` : ""}
     </button>`;
+}
+
+function monitoringWorkLastSuccessfulAt(work) {
+  const sourceUpdatedAt = work?.aggregateSnapshot && typeof work.aggregateSnapshot === "object"
+    ? work.aggregateSnapshot.sourceUpdatedAt
+    : null;
+  const timestamps = sourceUpdatedAt && typeof sourceUpdatedAt === "object"
+    ? Object.values(sourceUpdatedAt).filter((value) => typeof value === "string" && Number.isFinite(Date.parse(value)))
+    : [];
+  return timestamps.sort((left, right) => Date.parse(left) - Date.parse(right)).at(-1) ?? null;
+}
+
+function monitoringWorkStatusMessage(work) {
+  if (work?.aggregateStatus === "failed") {
+    const lastSuccessfulAt = monitoringWorkLastSuccessfulAt(work);
+    return translateFixedText(
+      state.locale,
+      `更新失败 · 正在显示上次结果${lastSuccessfulAt ? ` · 最近成功 ${formatDate(lastSuccessfulAt)}` : ""}`,
+    );
+  }
+  return translateFixedText(
+    state.locale,
+    work?.aggregateMessage || (work?.aggregateStatus === "pending" ? "正在整理来源会话" : ""),
+  );
 }
 
 function renderAllGoalsWorkspace() {
@@ -1700,26 +1755,24 @@ function renderSessionMonitoringWorkspace() {
   return `
     <section class="workspace-content session-monitoring-workspace">
       <header class="overview-heading">
-        <div><p class="overline">会话监控 · 项目</p><h1 ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</h1><p class="workspace-lede">查看来源会话的关键进展。每条线路只保留有意义的节点，原始会话仍由对应工具负责。</p></div>
+        <div><p class="overline">会话监控</p><h1 ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</h1><p class="workspace-lede">查看项目内监控工作的关键进展。</p></div>
         <div class="overview-actions">
           <button class="secondary-button" id="refresh-session-monitoring" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>${state.sessionMonitoringRefreshInFlight ? "正在刷新…" : "手动刷新"}</button>
-          <button class="text-button" id="refresh-session-monitoring-deep" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>Deep</button>
+          <button class="text-button" id="refresh-session-monitoring-deep" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>深度整理</button>
         </div>
       </header>
       <section class="session-monitoring-toolbar">
-        <label><span>当前项目</span><select id="session-monitoring-project-filter"><option value="" disabled ${projectKey ? "" : "selected"}>选择项目</option>${projectEntries.map((entry) => `<option value="${escapeHtml(entry.key)}" ${entry.key === projectKey ? "selected" : ""} ${entry.key === "unclassified" ? "" : "data-i18n-preserve"}>${entry.key === "unclassified" ? translateFixedText(state.locale, "未归类") : escapeHtml(entry.name)}</option>`).join("")}</select></label>
         ${activeMonitoringProjectId() ? `<label class="monitoring-inline-toggle"><input id="project-monitoring-default" type="checkbox" ${monitoring.projectMonitoringDefaults?.[activeMonitoringProjectId()] ? "checked" : ""} /><span><strong>项目默认监控</strong><small>会话显式选择优先于此默认</small></span></label>` : ""}
-        <label class="monitoring-inline-toggle"><input id="session-monitoring-automatic-toggle" type="checkbox" ${monitoring.automaticRefreshEnabled !== false ? "checked" : ""} /><span><strong>自动更新</strong><small>只影响 automatic，保留手动和 Deep</small></span></label>
+        <label class="monitoring-inline-toggle"><input id="session-monitoring-automatic-toggle" type="checkbox" ${monitoring.automaticRefreshEnabled !== false ? "checked" : ""} /><span><strong>自动更新</strong><small>保留手动和深度整理</small></span></label>
         <span class="saved-state">${monitoring.lastScannedAt ? `${state.locale === "zh-CN" ? "上次发现于" : "Last discovered"} ${formatDate(monitoring.lastScannedAt)}` : translateFixedText(state.locale, "尚未扫描")}</span>
       </section>
       ${state.sessionMonitoringError ? `<p class="form-error" role="alert">${escapeHtml(state.sessionMonitoringError)}</p>` : ""}
       ${monitoring.message ? `<p class="session-monitoring-message" role="status">${escapeHtml(monitoring.message)}</p>` : ""}
-      ${renderMonitoringWorkSection(monitoring.monitoringWorks ?? [], projectKey, allSessions)}
       ${allSessions.length === 0
-        ? `<section class="session-monitoring-empty"><strong>还没有本机会话</strong><p>点击“手动刷新”读取 Codex 和 Claude Code 的本地会话。</p><button class="secondary-button" id="refresh-session-monitoring-empty" type="button">开始扫描</button></section>`
+        ? `<section class="session-monitoring-empty"><strong>还没有监控工作</strong><p>点击左栏“＋ 添加会话”开始导入。</p><button class="secondary-button" id="refresh-session-monitoring-empty" type="button">开始扫描</button></section>`
         : graph.lanes.length
           ? renderSessionMonitoringGraph(graph, projectName, preserveProjectName)
-          : `<section class="session-monitoring-empty"><strong>这个项目还没有受监控会话</strong><p>从左栏选择一个会话，在检查栏中启用监控。</p></section>`}
+          : `<section class="session-monitoring-empty"><strong>这个项目还没有监控工作</strong><p>从左栏选择一个监控工作，在右栏中管理来源会话。</p></section>`}
     </section>`;
 }
 
@@ -1729,7 +1782,7 @@ function renderSessionMonitoringOnboarding(monitoring) {
   return `
     <section class="workspace-content monitoring-onboarding" aria-labelledby="monitoring-onboarding-title">
       <header class="overview-heading">
-        <div><p class="overline">首次发现 · 会话监控</p><h1 id="monitoring-onboarding-title">选择要加入的本地工作</h1><p class="workspace-lede">Teamline 只读取本机 Codex 和 Claude Code 的会话引用。确认前不会创建项目、启用监控或调用整理模型。</p></div>
+        <div><p class="overline">首次发现 · 会话监控</p><h1 id="monitoring-onboarding-title">选择要加入的本地工作</h1><p class="workspace-lede">选择要加入的本地工作。</p></div>
         <div class="overview-actions"><button class="secondary-button" id="refresh-session-monitoring-onboarding" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>${state.sessionMonitoringRefreshInFlight ? "正在扫描…" : "重新扫描"}</button></div>
       </header>
       ${state.sessionMonitoringError ? `<p class="form-error" role="alert">${escapeHtml(state.sessionMonitoringError)}</p>` : ""}
@@ -1749,39 +1802,30 @@ function renderSessionMonitoringOnboarding(monitoring) {
                 return session ? `<label><input type="checkbox" data-onboarding-session="${escapeHtml(key)}" data-onboarding-candidate-session="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve>${escapeHtml(session.title)}</strong><small>${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)}</small></span></label>` : "";
               }).join("")}</div>
             </article>`).join("")}</div>
-          <p class="monitoring-onboarding-note">可以全部跳过；之后仍可从“＋ 添加会话”重新进入。</p>
+          <p class="monitoring-onboarding-note">可稍后从“＋ 添加会话”进入。</p>
           <div class="dialog-actions"><button type="button" class="secondary-button" id="skip-session-monitoring-onboarding">全部跳过</button><button type="submit" class="primary-button" id="confirm-session-monitoring-onboarding">加入 Teamline</button></div>
         </form>` : `<section class="session-monitoring-empty"><strong>没有发现可加入的本地会话</strong><p>确认 Codex 或 Claude Code 已在这台电脑上使用过。</p><button class="secondary-button" id="skip-session-monitoring-onboarding" type="button">稍后再选</button></section>`}
     </section>`;
 }
 
-function renderMonitoringWorkSection(works, projectKey, sessions) {
-  const projectWorks = (Array.isArray(works) ? works : []).filter((work) =>
-    projectKey === "unclassified" ? !work.projectId : projectKey ? work.projectId === projectKey : true,
-  );
-  const sourceKeys = new Set(sessions.map((session) => session.key));
-  const visibleWorks = projectWorks.filter((work) => work.sourceSessionKeys.some((key) => sourceKeys.has(key)));
-  return `
-    <section class="session-monitoring-works" aria-label="监控工作">
-      <div class="session-monitoring-works-heading"><div><p class="overline">监控工作</p><h2>工作横向轨道</h2><small>每条横向轨道代表一个监控工作；来源会话只作为证据入口。</small></div><button class="secondary-button" id="open-monitoring-work-editor" type="button">合并来源</button></div>
-      ${visibleWorks.length ? `<div class="session-monitoring-work-list">${visibleWorks.map((work) => `
-        <article class="session-monitoring-work-row ${state.monitoringSelectedWorkId === work.id ? "selected" : ""}">
-          <button type="button" class="session-monitoring-work-select" data-monitoring-work="${escapeHtml(work.id)}">
-            <span><strong data-i18n-preserve>${escapeHtml(work.name)}</strong><small>${work.sources?.length ?? work.sourceSessionKeys.length} 个来源 · ${work.sourceSessionKeys.length > 1 ? "用户已合并" : "单来源"}</small></span>
-            <span class="monitoring-work-status">${escapeHtml(sessionOrganizationStatusLabel(work.aggregateStatus))}</span>
-          </button>
-          <button type="button" class="text-button" data-edit-monitoring-work="${escapeHtml(work.id)}">编辑</button>
-        </article>`).join("")}</div>` : `<p class="session-monitoring-work-empty">选择来源后可创建监控工作。</p>`}
-    </section>`;
-}
-
 function renderSessionMonitoringGraph(graph, projectName, preserveProjectName) {
+  const failedWorks = graph.lanes
+    .map((lane) => lane.work)
+    .filter((work) => work?.aggregateStatus === "failed");
+  const lastSuccessfulAt = failedWorks
+    .map(monitoringWorkLastSuccessfulAt)
+    .filter(Boolean)
+    .sort((left, right) => Date.parse(left) - Date.parse(right))
+    .at(-1) ?? null;
+  const failedSummary = failedWorks.length
+    ? translateFixedText(state.locale, "更新失败 · 正在显示上次结果")
+    : "";
   return `
     <section class="session-monitoring-graph" data-session-monitoring-graph>
       <header class="session-monitoring-graph-heading">
         <div><p class="overline">工作图</p><h2><span ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</span> · ${translateFixedText(state.locale, "关键进展")}</h2></div>
         <div class="monitoring-graph-actions">
-          <div class="monitoring-overall-progress ${graph.overallProgress ? "known" : "unknown"}"><span>整体进度</span>${graph.overallProgress ? `<strong>${graph.overallProgress.percent}% · ${translateFixedText(state.locale, "估算")}</strong><small>${graph.overallProgress.completed}/${graph.overallProgress.total} ${state.locale === "zh-CN" ? "项" : "items"}</small>` : `<strong>${graph.lanes.some((lane) => lane.work?.aggregateStatus === "pending") ? "正在整理" : "进度未知"}</strong><small>没有足够的可枚举计划</small>`}</div>
+          <div class="monitoring-overall-progress ${failedSummary ? "unknown" : graph.overallProgress ? "known" : "unknown"}"><span>整体进度</span>${failedSummary ? `<strong>${escapeHtml(failedSummary)}</strong>${lastSuccessfulAt ? `<small>${escapeHtml(translateFixedText(state.locale, `最近成功 ${formatDate(lastSuccessfulAt)}`))}</small>` : ""}` : graph.overallProgress ? `<strong>${graph.overallProgress.percent}% · ${translateFixedText(state.locale, "估算")}</strong><small>${graph.overallProgress.completed}/${graph.overallProgress.total} ${state.locale === "zh-CN" ? "项" : "items"}</small>` : `<strong>${graph.lanes.some((lane) => lane.work?.aggregateStatus === "pending") ? "正在整理" : "进度未知"}</strong><small>没有足够的可枚举计划</small>`}</div>
           <div class="monitoring-graph-zoom" role="group" aria-label="工作图缩放"><button class="icon-button" type="button" data-monitoring-zoom="out" aria-label="缩小工作图">−</button><button class="monitoring-zoom-value" type="button" data-monitoring-zoom="reset" aria-label="重置工作图缩放">${Math.round(state.monitoringZoom * 100)}%</button><button class="icon-button" type="button" data-monitoring-zoom="in" aria-label="放大工作图">＋</button></div>
         </div>
       </header>
@@ -1796,39 +1840,76 @@ function renderSessionMonitoringGraph(graph, projectName, preserveProjectName) {
 }
 
 function renderSessionMonitoringLane(lane) {
+  if (lane.work) return renderMonitoringWorkLane(lane);
+  return renderMonitoringSourceLane(lane);
+}
+
+function renderMonitoringWorkLane(lane) {
   const session = lane.session;
-  const work = lane.work ?? null;
-  const selected = work
-    ? state.monitoringSelectedWorkId === work.id
-    : state.monitoringSelectedKey === session.key;
-  const collapsed = work ? state.monitoringCollapsedWorkIds.has(work.id) : false;
-  const account = session.executionIdentityLabel ? ` · ${session.executionIdentityLabel}` : "";
-  const sourceTitles = (lane.sources ?? []).map((source) => source.title).filter(Boolean);
-  const sourceSummary = work
-    ? `${sourceTitles.length} 个来源${sourceTitles.length ? ` · ${sourceTitles.slice(0, 2).join("、")}${sourceTitles.length > 2 ? "等" : ""}` : ""}`
-    : `${sourceKindLabel(session.sourceKind)}${escapeHtml(account)} · ${escapeHtml(session.projectLabel)}`;
-  const status = work ? work.aggregateStatus : session.organizationStatus;
-  const statusMessage = work?.aggregateMessage || (work ? "进度未知" : "");
+  const work = lane.work;
+  const selected = state.monitoringSelectedWorkId === work.id;
+  const collapsed = state.monitoringCollapsedWorkIds.has(work.id);
+  const sourceCount = lane.sources?.length ?? work.sourceSessionKeys?.length ?? 0;
+  const subLanes = [
+    ...(lane.sourceLanes ?? []).map((sourceLane) => renderMonitoringSourceSubLane(sourceLane)),
+    ...(lane.aggregateLane ? [renderMonitoringAggregateSubLane(lane.aggregateLane)] : []),
+  ].join("");
   return `
-    <article class="session-monitoring-lane ${selected ? "selected" : ""} ${work ? "monitoring-work-lane" : "monitoring-source-lane"}" data-session-monitoring-key="${escapeHtml(session.key)}" ${work ? `data-monitoring-work-lane="${escapeHtml(work.id)}"` : ""}>
+    <article class="session-monitoring-lane ${selected ? "selected" : ""} monitoring-work-lane" data-session-monitoring-key="${escapeHtml(session.key)}" data-monitoring-work-lane="${escapeHtml(work.id)}">
       <div class="session-monitoring-lane-heading">
-        <button class="session-monitoring-lane-select" type="button" data-${work ? "monitoring-work" : "monitoring-session"}="${escapeHtml(session.key)}">
+        <button class="session-monitoring-lane-select" type="button" data-monitoring-work="${escapeHtml(work.id)}">
         <span class="monitoring-lane-marker"></span>
-        <span><strong data-i18n-preserve>${escapeHtml(work?.name ?? session.title)}</strong><small>${escapeHtml(sourceSummary)}</small></span>
-        <span class="status-pill ${status === "failed" ? "response" : status === "pending" ? "planning" : status === "ready" ? "running" : "queued"}">${escapeHtml(sessionOrganizationStatusLabel(status))}</span>
+        <span><strong data-i18n-preserve>${escapeHtml(work.name)}</strong><small>${sourceCount} 个来源</small></span>
+        <span class="status-pill ${work.aggregateStatus === "failed" ? "response" : work.aggregateStatus === "pending" ? "planning" : work.aggregateStatus === "ready" ? "running" : "queued"}">${escapeHtml(monitoringWorkStatusLabel(work.aggregateStatus))}</span>
         </button>
-        ${work ? `<button class="icon-button monitoring-collapse-button" type="button" data-monitoring-collapse-work="${escapeHtml(work.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? "展开工作轨道" : "折叠工作轨道"}">${collapsed ? "＋" : "−"}</button>` : ""}
+        <button class="icon-button monitoring-collapse-button" type="button" data-monitoring-collapse-work="${escapeHtml(work.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? "展开监控工作" : "折叠监控工作"}">${collapsed ? "＋" : "−"}</button>
       </div>
-      ${statusMessage ? `<p class="monitoring-lane-status">${escapeHtml(statusMessage)}</p>` : ""}
-      <div class="session-monitoring-lane-track" ${collapsed ? "hidden" : ""}>
-        ${lane.nodes.length ? lane.nodes.map((node, index) => renderMonitoringNode(node, index > 0 && sharesMonitoringSource(lane.nodes[index - 1], node))).join("") : '<p class="monitoring-lane-empty">暂无可确认的关键进展</p>'}
+      ${monitoringWorkStatusMessage(work) ? `<p class="monitoring-lane-status">${escapeHtml(monitoringWorkStatusMessage(work))}</p>` : ""}
+      <div class="monitoring-work-sublanes" ${collapsed ? "hidden" : ""}>
+        ${subLanes || '<p class="monitoring-lane-empty">暂无可确认的关键进展</p>'}
       </div>
     </article>`;
 }
 
-function sharesMonitoringSource(left, right) {
-  const leftKeys = new Set(left.sourceSessionKeys ?? []);
-  return (right.sourceSessionKeys ?? []).some((key) => leftKeys.has(key));
+function renderMonitoringSourceLane(lane) {
+  const session = lane.session;
+  const selected = state.monitoringSelectedKey === session.key;
+  return `
+    <article class="session-monitoring-lane ${selected ? "selected" : ""} monitoring-source-lane" data-session-monitoring-key="${escapeHtml(session.key)}">
+      ${renderMonitoringSourceSubLane({ source: session, nodes: lane.nodes })}
+    </article>`;
+}
+
+function renderMonitoringSourceSubLane(sourceLane) {
+  const source = sourceLane.source;
+  const account = source.executionIdentityLabel ? ` · ${source.executionIdentityLabel}` : "";
+  const status = source.organizationStatus;
+  return `
+    <section class="monitoring-source-sub-lane">
+      <div class="session-monitoring-lane-heading">
+        <button class="session-monitoring-lane-select" type="button" data-monitoring-session="${escapeHtml(source.key)}">
+          <span class="monitoring-lane-marker"></span>
+          <span><strong data-i18n-preserve>${escapeHtml(source.title)}</strong><small>${escapeHtml(`${sourceKindLabel(source.sourceKind)}${account} · ${source.projectLabel}`)}</small></span>
+          <span class="status-pill ${status === "failed" ? "response" : status === "pending" ? "planning" : status === "ready" ? "running" : "queued"}">${escapeHtml(sessionOrganizationStatusLabel(status))}</span>
+        </button>
+      </div>
+      <div class="session-monitoring-lane-track">
+        ${sourceLane.nodes.length ? sourceLane.nodes.map((node, index) => renderMonitoringNode(node, index > 0)).join("") : '<p class="monitoring-lane-empty">暂无可确认的关键进展</p>'}
+      </div>
+    </section>`;
+}
+
+function renderMonitoringAggregateSubLane(aggregateLane) {
+  return `
+    <section class="monitoring-source-sub-lane monitoring-aggregate-sub-lane">
+      <div class="session-monitoring-lane-heading">
+        <span class="monitoring-lane-marker"></span>
+        <span><strong>共同节点</strong><small>不属于单一来源，不表示跨来源顺序</small></span>
+      </div>
+      <div class="session-monitoring-lane-track">
+        ${aggregateLane.nodes.map((node) => renderMonitoringNode(node, false)).join("")}
+      </div>
+    </section>`;
 }
 
 function renderMonitoringNode(node, hasPrevious) {
@@ -1878,9 +1959,12 @@ function relationNodeLabel(key) {
 function activeMonitoringProjectKey(sessions = state.sessionMonitoring.sessions ?? []) {
   const requested = selectedMonitoringProjectId();
   const entries = monitoringProjectEntriesForSelection(sessions, state.projects, requested);
-  return entries.some((entry) => entry.key === requested)
-    ? requested
-    : entries[0]?.key ?? "";
+  if (entries.some((entry) => entry.key === requested)) return requested;
+  const rememberedProjectId = state.navigation.mode === "monitoring"
+    ? state.navigation.projectId
+    : "";
+  if (entries.some((entry) => entry.key === rememberedProjectId)) return rememberedProjectId;
+  return entries[0]?.key ?? "";
 }
 
 function currentMonitoringProjectSessions() {
@@ -2247,9 +2331,12 @@ function renderMonitoringWorkContext(work) {
   });
   const activeTab = state.monitoringWorkTab === "sources" ? "sources" : "progress";
   const sources = work.sources ?? [];
-  const statusLabel = sessionOrganizationStatusLabel(work.aggregateStatus);
+  const failed = work.aggregateStatus === "failed";
+  const statusLabel = monitoringWorkStatusLabel(work.aggregateStatus);
   const estimate = work.aggregateSnapshot?.enumerablePlan ?? null;
-  const progress = estimate && Number.isInteger(estimate.completed) && Number.isInteger(estimate.total) && estimate.total > 0
+  const progress = failed
+    ? monitoringWorkStatusMessage(work)
+    : estimate && Number.isInteger(estimate.completed) && Number.isInteger(estimate.total) && estimate.total > 0
     ? `${Math.round((estimate.completed / estimate.total) * 100)}% · 估算`
     : "进度未知";
   return `
@@ -2271,7 +2358,7 @@ function renderMonitoringWorkContext(work) {
           <div><dt>来源数量</dt><dd>${sources.length} 个</dd></div>
           <div><dt>最近聚合</dt><dd>${formatDate(work.aggregateUpdatedAt ?? work.updatedAt)}</dd></div>
         </dl>
-        ${work.aggregateMessage ? `<p class="context-summary">${escapeHtml(work.aggregateMessage)}</p>` : ""}
+        ${monitoringWorkStatusMessage(work) && !failed ? `<p class="context-summary">${escapeHtml(monitoringWorkStatusMessage(work))}</p>` : ""}
         ${graph.currentState ? `<p class="context-summary" data-i18n-preserve>${escapeHtml(graph.currentState)}</p>` : ""}
         ${graph.nodes.length ? `<section class="context-section"><span>关键进展</span><div class="monitoring-context-reference-list">${graph.nodes.slice(0, 8).map((node) => `<button type="button" class="monitoring-context-node-link" data-monitoring-node="${escapeHtml(`${work.id}:${node.id}`)}"><strong data-i18n-preserve>${escapeHtml(node.outcome)}</strong><small>${node.status === "current" ? "当前" : node.status === "future" ? "后续 · 来源明确" : "历史"}</small></button>`).join("")}</div></section>` : `<p class="context-summary">暂无可确认的关键进展。</p>`}
       ` : `
@@ -2363,6 +2450,12 @@ function sessionOrganizationStatusLabel(status) {
     ready: "已整理",
     failed: "整理失败",
   }[status] ?? status);
+}
+
+function monitoringWorkStatusLabel(status) {
+  return status === "failed"
+    ? translateFixedText(state.locale, "更新失败")
+    : sessionOrganizationStatusLabel(status);
 }
 
 function renderHomeGoalRow(workOrder) {
@@ -2509,17 +2602,12 @@ function renderProjectsWorkspace() {
 
 function renderProjectDetailWorkspace(detail) {
   const { project, goals, materials, results } = detail;
-  const virtualProject = project.id === "unclassified";
   const completedGoals = state.workOrders.filter((goal) => goal.status === "delivered");
-  return `
-    <section class="workspace-content project-detail-workspace">
-      <button class="mobile-back-button project-back-button" id="back-to-projects" type="button">‹ 全部项目</button>
-      <header class="project-detail-heading">
-        <div><p class="overline">项目</p><h1 data-i18n-preserve>${escapeHtml(project.name)}</h1><p class="workspace-lede">按目标显示已确认计划与真实节点状态；项目本身不计算完成度。</p></div>
-        <button class="secondary-button" id="create-goal-in-project" type="button">新建目标</button>
-      </header>
-      ${renderProjectGoalGraph(goals)}
-      ${virtualProject ? `<section class="project-section project-virtual-section"><p class="overline">虚拟项目</p><p class="project-empty-copy">没有所属项目的目标会显示在这里。可以在目标详情中重新归入项目。</p></section>` : `<section class="project-section project-material-section">
+  const hasProjectContent = goals.length > 0 || materials.length > 0 || results.length > 0;
+  const showMaterialSection = project.id !== "unclassified";
+  const projectSections = hasProjectContent
+    ? `${goals.length ? renderProjectGoalGraph(goals) : ""}
+      ${showMaterialSection ? `<section class="project-section project-material-section">
         <div class="section-heading compact"><div><p class="overline">项目素材</p><h2>可供目标使用</h2></div><span class="subtle-label">${materials.length} 项</span></div>
         ${materials.length ? `<div class="project-material-grid">${materials.map(renderProjectMaterialCard).join("")}</div>` : '<p class="project-empty-copy">还没有素材，可以新建、引用或上传。</p>'}
         <details class="project-add-disclosure">
@@ -2539,11 +2627,22 @@ function renderProjectDetailWorkspace(detail) {
           </form>
           <p class="inline-feedback" id="project-material-feedback" role="status"></p>
         </details>
-      </section>`}
-      <section class="project-section">
+      </section>` : ""}
+      ${results.length ? `<section class="project-section">
         <div class="section-heading compact"><div><p class="overline">成果</p><h2>主要成果</h2></div></div>
-        ${results.length ? `<div class="project-result-list">${results.map(renderProjectResultCard).join("")}</div>` : '<p class="project-empty-copy">项目内目标产生成果后，会汇总在这里。</p>'}
-      </section>
+        <div class="project-result-list">${results.map(renderProjectResultCard).join("")}</div>
+      </section>` : ""}`
+    : `<section class="project-empty-state" aria-label="项目空状态">
+        <h2>还没有目标</h2>
+        <p>使用左栏“新建目标”开始。</p>
+      </section>`;
+  return `
+    <section class="workspace-content project-detail-workspace">
+      <button class="mobile-back-button project-back-button" id="back-to-projects" type="button">‹ 全部项目</button>
+      <header class="project-detail-heading">
+        <div><p class="overline">项目</p><h1 data-i18n-preserve>${escapeHtml(project.name)}</h1></div>
+      </header>
+      ${projectSections}
     </section>`;
 }
 
@@ -2666,11 +2765,13 @@ function selectedMonitoringProjectId() {
 }
 
 function currentProjectIdForModeSwitch() {
+  const shellProjectId = currentShellProjectId();
+  if (shellProjectId) return shellProjectId;
   if (isSessionMonitoringView()) {
     const activeProjectId = activeMonitoringProjectId();
     if (activeProjectId) return activeProjectId;
     const requestedProjectId = selectedMonitoringProjectId();
-    return requestedProjectId;
+    return requestedProjectId || "unclassified";
   }
   if (isProjectsView()) return selectedProjectIdFromPath() ?? "";
   return state.selected?.projectId ?? "";
@@ -3398,13 +3499,17 @@ function renderQuotaWindow(label, window, status = "available") {
 }
 
 function renderApiResourceCard(api, paidApi) {
-  const available = api.status === "available" && api.usage;
+  const status = api?.status;
+  const hasUsage = status === "available" && Boolean(api?.usage);
+  const explicitlyUnavailable = ["unavailable", "not_connected"].includes(status);
+  const displayStatus = hasUsage ? "available" : explicitlyUnavailable ? "unavailable" : "unknown";
+  const heading = hasUsage ? "账户用量" : explicitlyUnavailable ? "不可用" : "未知";
   return `
-    <article class="resource-card ${available ? "available" : "unavailable"}">
-      <div class="resource-card-heading"><div><p class="overline">OpenAI API</p><h2>${available ? "账户用量" : resourceStatusLabel(api.status)}</h2></div><span class="subtle-label">${paidApi?.available ? "可用于付费执行" : "仅显示用量"}</span></div>
-      ${available
+    <article class="resource-card ${displayStatus}">
+      <div class="resource-card-heading"><div><p class="overline">OpenAI API</p><h2>${heading}</h2></div><span class="subtle-label">${paidApi?.available ? "可用于付费执行" : "仅显示用量"}</span></div>
+      ${hasUsage
         ? `<strong class="account-usage">${formatUsage(api.usage)}</strong><p class="resource-message">${scopeLabel(api.scope)}账户用量</p>`
-        : `<p class="resource-message">${escapeHtml(api.message || "连接后可查看 API 用量和费用")}</p>`}
+        : `<p class="resource-message">${explicitlyUnavailable ? "当前来源未提供 API 用量" : "暂无 API 用量数据"}</p>`}
       ${paidApi?.budget?.monthlyBudgetUsd ? `<p class="resource-message compact">月度预算 ${formatUsage({ amount: paidApi.budget.monthlyBudgetUsd, unit: "usd" })}。用量可能延迟，达到限额后停止后续节点。</p>` : ""}
     </article>`;
 }
@@ -3416,33 +3521,41 @@ function renderResourceOrder(workOrder) {
     : escapeHtml(translateMessage(state.locale, workOrder.usage.messageDescriptor, workOrder.usage.message || "不可用"));
   return `
     <article class="resource-order-row">
-      <button class="resource-order-title inspector-selection-button" type="button" data-resource-work-order-id="${escapeHtml(workOrder.id)}"><span class="status-dot ${workOrder.status}"></span><span><strong data-i18n-preserve>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status}</small></span><i class="row-arrow" aria-hidden="true">›</i></button>
-      <dl>
-        ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
-          ["high", "优先推进"],
-          ["normal", "正常推进"],
-          ["background", "后台推进"],
-        ], workOrder.priority)}</select></dd></div>
-        <div><dt>执行节奏</dt><dd><select data-resource-pace data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
-          ["fast", "尽快完成"],
-          ["balanced", "均匀推进"],
-          ["saving", "节省额度"],
-        ], workOrder.pace)}</select></dd></div>
-        <div><dt>单轮上限</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>`}
-        <div><dt>当前用量</dt><dd>${usage}</dd></div>
-        <div><dt>运行建议</dt><dd>${escapeHtml(translateMessage(state.locale, workOrder.recommendationMessage, workOrder.recommendation))}</dd></div>
-      </dl>
-      ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : workOrder.status === "completed" ? '<p class="source-import-only">已完成目标保留当时的资源设置。</p>' : `<label class="auto-run-toggle">
-        <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} ${locked ? "disabled" : ""} />
-        <span><strong>额度充足时运行</strong><small>${escapeHtml(workOrder.autoRunReason || "每次只开始一轮，并受本轮时长限制")}</small></span>
-      </label>
-      <div class="paid-api-row">
-        <label class="auto-run-toggle compact">
-          <input type="checkbox" data-resource-paid-api data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.paidApiFallbackEnabled ? "checked" : ""} ${locked ? "disabled" : ""} />
-          <span><strong>订阅额度不足时使用付费 API</strong><small>默认关闭，只依据实际用量继续</small></span>
-        </label>
-        <label><span>目标限额（美元）</span><input data-resource-paid-limit data-work-order-id="${escapeHtml(workOrder.id)}" type="number" min="0.01" step="0.01" value="${workOrder.paidApiLimitUsd ?? ""}" placeholder="未设置" ${locked ? "disabled" : ""} /></label>
-      </div>`}
+      <details class="resource-order-disclosure">
+        <summary class="resource-order-summary">
+          <span><span class="status-dot ${workOrder.status}"></span><span><strong data-i18n-preserve>${escapeHtml(workOrder.title)}</strong><small>${visibleStatusLabels[workOrder.status] || workOrder.status} · ${escapeHtml(usage)}</small></span></span>
+          <i class="row-arrow" aria-hidden="true">›</i>
+        </summary>
+        <div class="resource-order-details">
+          <button class="text-button resource-order-inspector" type="button" data-resource-work-order-id="${escapeHtml(workOrder.id)}">打开目标详情</button>
+          <dl>
+            ${workOrder.importOnly ? "" : `<div><dt>优先级</dt><dd><select data-resource-priority data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
+              ["high", "优先推进"],
+              ["normal", "正常推进"],
+              ["background", "后台推进"],
+            ], workOrder.priority)}</select></dd></div>
+            <div><dt>执行节奏</dt><dd><select data-resource-pace data-work-order-id="${escapeHtml(workOrder.id)}" ${locked ? "disabled" : ""}>${resourceOptions([
+              ["fast", "尽快完成"],
+              ["balanced", "均匀推进"],
+              ["saving", "节省额度"],
+            ], workOrder.pace)}</select></dd></div>
+            <div><dt>单轮上限</dt><dd>${formatRunLimit(workOrder.maxRunMinutes)}</dd></div>`}
+            <div><dt>当前用量</dt><dd>${usage}</dd></div>
+            <div><dt>运行建议</dt><dd>${escapeHtml(translateMessage(state.locale, workOrder.recommendationMessage, workOrder.recommendation))}</dd></div>
+          </dl>
+          ${workOrder.importOnly ? '<p class="source-import-only">这个目标仅保留导入状态，不会自动运行。</p>' : workOrder.status === "completed" ? '<p class="source-import-only">已完成目标保留当时的资源设置。</p>' : `<label class="auto-run-toggle">
+            <input type="checkbox" data-resource-auto-run data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.runWhenQuotaAvailable ? "checked" : ""} ${locked ? "disabled" : ""} />
+            <span><strong>额度充足时运行</strong><small>${escapeHtml(workOrder.autoRunReason || "每次只开始一轮，并受本轮时长限制")}</small></span>
+          </label>
+          <div class="paid-api-row">
+            <label class="auto-run-toggle compact">
+              <input type="checkbox" data-resource-paid-api data-work-order-id="${escapeHtml(workOrder.id)}" ${workOrder.paidApiFallbackEnabled ? "checked" : ""} ${locked ? "disabled" : ""} />
+              <span><strong>订阅额度不足时使用付费 API</strong><small>默认关闭，只依据实际用量继续</small></span>
+            </label>
+            <label><span>目标限额（美元）</span><input data-resource-paid-limit data-work-order-id="${escapeHtml(workOrder.id)}" type="number" min="0.01" step="0.01" value="${workOrder.paidApiLimitUsd ?? ""}" placeholder="未设置" ${locked ? "disabled" : ""} /></label>
+          </div>`}
+        </div>
+      </details>
     </article>`;
 }
 
@@ -4083,12 +4196,16 @@ function renderExecutionMap(workOrder, stages) {
   const stageById = new Map(stages.map((stage, index) => [stage.id, { stage, index }]));
   const singleStage = stages.length === 1;
   const historicalStages = workOrder.importContext?.historicalStages ?? [];
-  const timeline = state.progressView === "timeline";
+  const hasTimeAnchors = stages.some((stage) => {
+    const progress = stageProgress(workOrder, stage);
+    return Boolean(progress.startedAt || progress.updatedAt);
+  });
+  const timeline = hasTimeAnchors && state.progressView === "timeline";
   return `
-    <div class="progress-view-switch" role="tablist" aria-label="执行进展展示方式">
+    ${hasTimeAnchors ? `<div class="progress-view-switch" role="tablist" aria-label="执行进展展示方式">
       <button type="button" data-progress-view="timeline" role="tab" aria-selected="${timeline}" class="${timeline ? "active" : ""}">时间线</button>
       <button type="button" data-progress-view="map" role="tab" aria-selected="${!timeline}" class="${timeline ? "" : "active"}">节点图</button>
-    </div>
+    </div>` : ""}
     ${historicalStages.length ? renderHistoricalProgress(historicalStages, workOrder) : ""}
     ${historicalStages.length ? '<div class="history-execution-boundary"><span>从这里开始由 Teamline 推进</span></div>' : ""}
     ${timeline
@@ -4192,15 +4309,17 @@ function stageProgress(workOrder, stage) {
   const completionSummary = completionSummaryForStage(workOrder, stage);
   return {
     summary: latest?.message || completionSummary || stage.statusReason || stage.scope,
-    timeLabel: stageTimeLabel(startedAt, finishedAt),
+    timeLabel: stageTimeLabel(startedAt, finishedAt, stage.status),
     artifactCount: directArtifacts + localArtifactReferences(completionSummary).length,
     startedAt,
     updatedAt: latest?.createdAt ?? finishedAt ?? null,
   };
 }
 
-function stageTimeLabel(startedAt, finishedAt) {
-  if (!startedAt && !finishedAt) return "尚未开始";
+function stageTimeLabel(startedAt, finishedAt, status = "planning") {
+  if (!startedAt && !finishedAt) {
+    return status === "completed" ? "已完成" : "尚未开始";
+  }
   if (!startedAt) return `完成于 ${formatDate(finishedAt)}`;
   if (!finishedAt) return `开始于 ${formatDate(startedAt)}`;
   return `${formatDate(startedAt)} — ${formatDate(finishedAt)}`;
@@ -4376,10 +4495,7 @@ function renderResultPanel(workOrder) {
           <ul data-i18n-preserve>${resultData.incomplete.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </section>` : ""}
       <section class="result-section result-acceptance">
-        <div class="result-acceptance-heading"><div><h3>验收</h3><p>${historical ? "这是上一轮成果，当前目标仍以最新计划为准。" : workOrder.status === "review" ? "检查成果与验证后，由你确认目标是否完成。" : "这个目标已由你确认完成。"}</p></div>
-        ${!historical && workOrder.status === "review"
-          ? '<button class="primary-button" id="deliver-work-order-result" type="button">确认完成</button>'
-          : ""}</div>
+        <div class="result-acceptance-heading"><div><h3>验收</h3><p>${historical ? "这是上一轮成果，当前目标仍以最新计划为准。" : workOrder.status === "review" ? "检查成果与验证后，在右侧确认完成。" : "这个目标已由你确认完成。"}</p></div></div>
       </section>
       ${workOrder.status === "review" ? `
         <details class="result-revision">
@@ -4579,7 +4695,7 @@ function renderGoalMonitoringWorkSourceContext(work, sessions) {
         ${focusNodeId ? `<div><dt>${translateFixedText(state.locale, "聚焦节点")}</dt><dd><code>${escapeHtml(focusNodeId)}</code></dd></div>` : ""}
         ${work.aggregateSnapshotRef ? `<div><dt>${translateFixedText(state.locale, "聚合快照引用")}</dt><dd><code>${escapeHtml(work.aggregateSnapshotRef)}</code></dd></div>` : ""}
       </dl>
-      ${work.aggregateMessage ? `<p class="context-summary">${escapeHtml(work.aggregateMessage)}</p>` : ""}
+      ${monitoringWorkStatusMessage(work) ? `<p class="context-summary">${escapeHtml(monitoringWorkStatusMessage(work))}</p>` : ""}
       ${graph?.currentState ? `<p class="source-context-snapshot-state"><span>创建时聚合状态</span><strong data-i18n-preserve>${escapeHtml(graph.currentState)}</strong></p>` : ""}
       ${nodes.length ? `<details class="source-context-snapshot" open><summary>聚合关键节点 · ${nodes.length} 项</summary><ol>${nodes.map((node) => { const focused = Boolean(focusNodeId && (node.id === focusNodeId || `${work.id}:${node.id}` === focusNodeId)); return `<li class="${focused ? "source-context-focus" : ""}"><strong data-i18n-preserve>${escapeHtml(node.outcome)}</strong>${focused ? `<em>${escapeHtml(focusLabel)}</em>` : ""}${node.summary ? `<span data-i18n-preserve>${escapeHtml(node.summary)}</span>` : ""}<small>${escapeHtml(node.sourceSessionKeys.map((key) => sourceNames.get(key) ?? key).join("、"))}</small></li>`; }).join("")}</ol></details>` : ""}
       ${artifacts.length ? `<details class="source-context-snapshot"><summary>聚合成果引用 · ${artifacts.length} 项</summary><ol>${artifacts.map((artifact) => `<li><strong data-i18n-preserve>${escapeHtml(artifact.label)}</strong><code>${escapeHtml(artifact.location)}</code><small>${escapeHtml(artifact.sourceSessionKeys.map((key) => sourceNames.get(key) ?? key).join("、"))}</small></li>`).join("")}</ol></details>` : ""}
@@ -4889,8 +5005,8 @@ function renderContextSupport(workOrder) {
 
 function renderContextTabs() {
   const tabs = [
-    ["artifacts", "成果与验证"],
     ["details", "详情"],
+    ["artifacts", "成果与验证"],
     ["materials", "素材"],
   ];
   return `
@@ -4957,22 +5073,30 @@ function renderContextTabContent(workOrder, stage) {
     <div class="context-stage context-tab-panel" role="tabpanel">
       <h3 data-i18n-preserve>${escapeHtml(stage.outcome)}</h3>
       <p class="node-status-line"><span class="status-dot ${escapeHtml(stage.status)}"></span>${escapeHtml(formatVisibleStatus(stage.status, stage.statusReason))}</p>
-      <dl class="context-list">
-        <div><dt>影响范围</dt><dd data-i18n-preserve>${escapeHtml(stage.scope)}</dd></div>
-        <div><dt>执行方式</dt><dd>${escapeHtml(executionMethodLabel(stage.executionMethod))}</dd></div>
-        <div><dt>${stage.executionMethod === "external" ? "成果位置" : "工作空间"}</dt><dd><code>${escapeHtml(stage.executionMethod === "external" ? "保留在原位置" : resolvedWorkspacePath(workOrder, stage))}</code></dd></div>
-        <div><dt>验证方式</dt><dd data-i18n-preserve>${escapeHtml(stage.verification)}</dd></div>
-        ${stage.executionMethod === "external" ? "" : `<div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>`}
-        <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
-        <div><dt>补充上下文</dt><dd>${stage.contextNotes?.length ? stage.contextNotes.map(escapeHtml).join("；") : "暂无"}</dd></div>
-        <div><dt>开始时间</dt><dd>${progress.startedAt ? escapeHtml(formatDate(progress.startedAt)) : "尚未开始"}</dd></div>
-        <div><dt>最近更新</dt><dd>${progress.updatedAt ? escapeHtml(formatDate(progress.updatedAt)) : "暂无运行记录"}</dd></div>
-        <div><dt>当前摘要</dt><dd data-i18n-preserve>${escapeHtml(progress.summary)}</dd></div>
-        <div><dt>成果</dt><dd>${progress.artifactCount ? `${progress.artifactCount} 项，可在“成果”中查看` : "暂无"}</dd></div>
-        <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
-      </dl>
+      <section class="context-section">
+        <span>基本信息</span>
+        <dl class="context-list">
+          <div><dt>影响范围</dt><dd data-i18n-preserve>${escapeHtml(stage.scope)}</dd></div>
+          <div><dt>执行方式</dt><dd>${escapeHtml(executionMethodLabel(stage.executionMethod))}</dd></div>
+          <div><dt>${stage.executionMethod === "external" ? "成果位置" : "工作空间"}</dt><dd><code>${escapeHtml(stage.executionMethod === "external" ? "保留在原位置" : resolvedWorkspacePath(workOrder, stage))}</code></dd></div>
+          <div><dt>验证方式</dt><dd data-i18n-preserve>${escapeHtml(stage.verification)}</dd></div>
+          ${stage.executionMethod === "external" ? "" : `<div><dt>验证命令</dt><dd><code>${escapeHtml(stage.verificationCommand || "未配置")}</code></dd></div>`}
+          <div><dt>依赖</dt><dd>${stage.dependsOn?.length ? `${stage.dependsOn.length} 个前置节点` : "无，可独立开始"}</dd></div>
+          ${stage.contextNotes?.length ? `<div><dt>补充上下文</dt><dd>${stage.contextNotes.map(escapeHtml).join("；")}</dd></div>` : ""}
+        </dl>
+      </section>
+      <section class="context-section">
+        <span>运行</span>
+        <dl class="context-list">
+          <div><dt>开始时间</dt><dd>${progress.startedAt ? escapeHtml(formatDate(progress.startedAt)) : stage.status === "completed" ? "已完成" : "尚未开始"}</dd></div>
+          <div><dt>最近更新</dt><dd>${progress.updatedAt ? escapeHtml(formatDate(progress.updatedAt)) : "暂无运行记录"}</dd></div>
+          <div><dt>当前摘要</dt><dd data-i18n-preserve>${escapeHtml(progress.summary)}</dd></div>
+          <div><dt>成果</dt><dd>${progress.artifactCount ? `${progress.artifactCount} 项，可在“成果”中查看` : "暂无"}</dd></div>
+          <div><dt>累计运行</dt><dd>${formatDuration(workOrder.runtimeMs)}</dd></div>
+        </dl>
+      </section>
       <details class="node-source-details">
-        <summary>来源会话</summary>
+        <summary>来源</summary>
         <dl class="context-list">
           <div><dt>来源会话</dt><dd>${escapeHtml(
             (workOrder.sourceSessions ?? (workOrder.importSource ? [workOrder.importSource] : []))
@@ -5600,7 +5724,6 @@ function bindRenderedEvents() {
   bindAction("#continue-work-order", "正在继续…", "继续当前现场", "continue", "正在从现有进度继续推进目标。");
   bindAction("#reexecute-work-order", "正在恢复…", "从最近节点重新执行", "reexecute", "正在恢复最近完整位置并启动新的运行。");
   bindAction("#deliver-work-order", "正在确认…", "确认完成", "deliver", "");
-  bindAction("#deliver-work-order-result", "正在确认…", "确认完成", "deliver", "");
 
   document.querySelector("#workspace-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -5862,7 +5985,7 @@ async function selectWorkOrder(id, stageId = null) {
   if (id !== state.selected?.id || stageId) {
     state.selectedStageIndex = 0;
     state.followCurrentStage = !stageId;
-    state.contextTab = "artifacts";
+    state.contextTab = "details";
     state.primaryView = null;
     state.inspector = clearContextInspector();
     const query = stageId ? `?stage=${encodeURIComponent(stageId)}` : "";
@@ -6216,19 +6339,15 @@ function emptyStage() {
 
 function readTheme() {
   const saved = localStorage.getItem("teamline-theme");
-  if (saved === "light" || saved === "dark") return saved;
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return ["system", "light", "dark"].includes(saved) ? saved : "system";
 }
 
-function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  document.querySelector("#theme-toggle")?.setAttribute(
-    "aria-label",
-    translateFixedText(
-      state.locale,
-      theme === "dark" ? "切换到亮色主题" : "切换到深色主题",
-    ),
-  );
+function applyTheme(preference) {
+  const normalized = ["system", "light", "dark"].includes(preference) ? preference : "system";
+  document.documentElement.dataset.themePreference = normalized;
+  document.documentElement.dataset.theme = normalized === "system"
+    ? matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+    : normalized;
 }
 
 function setBusy(button, label) {

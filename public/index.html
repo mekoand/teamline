@@ -8,10 +8,11 @@
     <script>
       (() => {
         const saved = localStorage.getItem("teamline-theme");
-        const theme = saved === "dark" || saved === "light"
-          ? saved
-          : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-        document.documentElement.dataset.theme = theme;
+        const preference = ["system", "light", "dark"].includes(saved) ? saved : "system";
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.dataset.theme = preference === "system"
+          ? matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+          : preference;
       })();
     </script>
     <link rel="stylesheet" href="/styles.css" />
@@ -21,10 +22,9 @@
       <aside class="order-sidebar project-sidebar" aria-label="项目导航">
         <div class="sidebar-brand-row">
           <a class="brand" href="/" aria-label="Teamline">
-            <span class="brand-wordmark" aria-hidden="true">Teamline</span>
-            <span class="brand-rule" aria-hidden="true"></span>
+            <img class="brand-logo" src="/teamline-logo.png" alt="Teamline" />
           </a>
-          <button class="icon-button" id="toggle-left-sidebar" type="button" aria-label="收起项目栏" aria-pressed="false">‹</button>
+          <button class="icon-button" id="toggle-left-sidebar" type="button" data-i18n-preserve aria-label="收起项目栏" aria-pressed="false">‹</button>
         </div>
         <nav class="mode-switch" role="tablist" aria-label="工作模式">
           <button class="mode-switch-button selected" id="open-execution-mode" data-mode="execution" role="tab" aria-selected="true" type="button">目标执行</button>
@@ -68,21 +68,11 @@
             <span class="local-status"><i></i> 本地运行</span>
           </div>
           <div class="topbar-status" aria-label="本地服务状态">
-            <label class="language-control">
-              <span data-i18n="language.label">Language</span>
-              <select id="language-select" aria-label="Language" data-i18n-aria-label="language.label">
-                <option value="en" data-i18n="language.en">English</option>
-                <option value="zh-CN" data-i18n="language.zh-CN">简体中文</option>
-              </select>
-            </label>
             <button class="notification-button" id="open-notifications" type="button" aria-label="Notifications" data-i18n-aria-label="nav.notifications">
               <span data-i18n="nav.notifications">Notifications</span>
               <strong id="notification-count" hidden>0</strong>
             </button>
-            <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅色主题">
-              <span aria-hidden="true">◐</span>
-            </button>
-            <button class="icon-button" id="toggle-right-sidebar" type="button" aria-label="打开检查栏" aria-pressed="false">›</button>
+            <button class="icon-button" id="toggle-right-sidebar" type="button" data-i18n-preserve aria-label="打开检查栏" aria-pressed="false">›</button>
           </div>
         </header>
         <main id="work-order-workspace" class="work-order-workspace" aria-live="polite">
@@ -168,6 +158,10 @@
 
     <dialog id="quick-navigator" class="quick-navigator">
       <form method="dialog" class="quick-navigator-form">
+        <div class="dialog-heading quick-navigator-heading">
+          <div><p class="overline">快速定位</p><h2>打开工作对象</h2></div>
+          <button type="button" class="icon-button" id="close-quick-navigator" aria-label="关闭">×</button>
+        </div>
         <label class="quick-navigator-input">
           <span class="sr-only">快速定位</span>
           <input id="quick-navigator-search" type="search" placeholder="定位项目、监控工作或目标" autocomplete="off" />
@@ -283,7 +277,7 @@
           </div>
           <button type="button" class="icon-button" id="close-monitoring-work" aria-label="关闭">×</button>
         </div>
-        <p class="dialog-description">只有你明确选择的来源会进入同一监控工作；Teamline 不会自动分组，也不生成跨来源聚合进展。</p>
+        <p class="dialog-description">选择来源会话。</p>
         <label><span>监控工作名称</span><input name="name" id="monitoring-work-name" required autocomplete="off" /></label>
         <div id="monitoring-work-sources" class="monitoring-work-source-list"></div>
         <p class="form-error" id="monitoring-work-error" role="alert"></p>

@@ -134,7 +134,38 @@ describe("session monitoring work graph", () => {
 
     expect(graph.lanes.map((lane) => lane.session.key)).toEqual(["work-a"]);
     expect(graph.lanes[0].nodes.map((node) => node.sourceSessionKeys[0])).toEqual(["source-a", "source-b"]);
+    expect(graph.lanes[0].sourceLanes.map((lane) => [lane.source.key, lane.nodes.length])).toEqual([
+      ["source-a", 1],
+      ["source-b", 1],
+    ]);
+    expect(graph.lanes[0].aggregateLane).toBeNull();
     expect(graph.overallProgress).toEqual({ completed: 2, total: 4, percent: 50 });
+  });
+
+  test("keeps multiple shared nodes in an unconnected aggregate lane", () => {
+    const sessions = [
+      monitoredSession("source-a", "会话 A", null),
+      monitoredSession("source-b", "会话 B", null),
+    ];
+    const graph = buildMonitoringProjectGraph(sessions, [{
+      id: "work-a",
+      name: "合并工作",
+      sourceSessionKeys: ["source-a", "source-b"],
+      aggregateStatus: "ready",
+      aggregateSnapshot: {
+        nodes: [
+          { id: "shared-1", outcome: "共同节点一", sourceSessionKeys: ["source-a", "source-b"] },
+          { id: "shared-2", outcome: "共同节点二", sourceSessionKeys: ["source-a", "source-b"] },
+        ],
+      },
+      projectId: "project-a",
+    }]);
+
+    expect(graph.lanes[0].aggregateLane?.nodes.map((node) => node.outcome)).toEqual([
+      "共同节点一",
+      "共同节点二",
+    ]);
+    expect(graph.lanes[0].aggregateLane?.nodes).toHaveLength(2);
   });
 
   test("keeps sessions grouped by the selected project without inventing a project", () => {

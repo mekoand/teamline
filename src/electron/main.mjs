@@ -252,9 +252,48 @@ function showMainWindow() {
   createMainWindow();
 }
 
+function createTemplateTrayImage() {
+  const logo = nativeImage.createFromPath(resolve(sourceRoot, "public/teamline-logo.png"));
+  const { width, height } = logo.getSize();
+  const crop = logo.crop({
+    // The source wordmark has no separate icon. Keep only the complete
+    // official first letter; never feed a partial neighbouring letter to Tray.
+    x: Math.round(width * 0.025),
+    y: Math.round(height * 0.06),
+    width: Math.round(width * 0.155),
+    height: Math.round(height * 0.88),
+  });
+  const cropSize = crop.getSize();
+  const bitmap = crop.toBitmap();
+
+  // The official logo has a white matte. Convert the compact mark to a
+  // monochrome alpha mask so macOS can tint it as a template image.
+  for (let offset = 0; offset < bitmap.length; offset += 4) {
+    const blue = bitmap[offset];
+    const green = bitmap[offset + 1];
+    const red = bitmap[offset + 2];
+    const luminance = 0.0722 * blue + 0.7152 * green + 0.2126 * red;
+    bitmap[offset] = 0;
+    bitmap[offset + 1] = 0;
+    bitmap[offset + 2] = 0;
+    bitmap[offset + 3] = Math.max(0, Math.min(255, Math.round(255 - luminance)));
+  }
+
+  const resized = nativeImage
+    .createFromBuffer(bitmap, { width: cropSize.width, height: cropSize.height })
+    .resize({ width: 32, height: 36, quality: "best" });
+  const template = nativeImage.createFromBuffer(resized.toBitmap(), {
+    width: 32,
+    height: 36,
+    scaleFactor: 2,
+  });
+  template.setTemplateImage(true);
+  return template;
+}
+
 function createTray() {
   if (tray || !coreConnection) return;
-  const icon = nativeImage.createFromPath(resolve(sourceRoot, "public/teamline-logo.png"));
+  const icon = createTemplateTrayImage();
   tray = new Tray(icon);
   tray.setToolTip("Teamline");
   tray.setContextMenu(

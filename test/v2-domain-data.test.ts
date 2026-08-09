@@ -631,12 +631,16 @@ describe("V2 domain data", () => {
     const page = await (
       await app.fetch(new Request("http://teamline.local/"))
     ).text();
+    const settingsPage = await (
+      await app.fetch(new Request("http://teamline.local/settings"))
+    ).text();
     const script = await (
       await app.fetch(new Request("http://teamline.local/app.js"))
     ).text();
 
     expect(page).toContain('data-i18n="shell.goals">目标</h1>');
-    expect(page).toContain('id="language-select"');
+    expect(page).not.toContain('id="language-select"');
+    expect(settingsPage).toContain('id="settings-language"');
     expect(page).toContain('name="name"');
     expect(page).toContain('name="description"');
     expect(script).toContain("visibleStatusLabels");
