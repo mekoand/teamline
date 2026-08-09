@@ -72,6 +72,9 @@ import type { DiscoveredSession, SessionProvider } from "./session-discovery";
 import type { SessionOrganizer } from "./session-organizer";
 import {
   sessionMonitoringKey,
+  sessionMonitoringRefreshModes,
+  type SessionMonitoringRefreshMode,
+  type SessionMonitoringWork,
   type SessionMonitoringRecord,
   type SessionMonitoringUpdate,
 } from "./session-monitoring";
@@ -128,6 +131,7 @@ type AppDependencies = {
   sessionMonitoringScheduler?: (callback: () => void, delayMs: number) => () => void;
   sessionMonitoringIntervalMs?: number;
   sessionMonitoringConcurrency?: number;
+  sessionMonitoringNow?: () => number;
   dataDirectory?: string;
   executionIdentityEnvironment?: ExecutionIdentityEnvironment;
   openLocalArtifact?: (path: string, reveal: boolean) => Promise<void>;
@@ -151,6 +155,8 @@ type NextStageRun = {
 };
 
 class PlanGenerationTimeoutError extends Error {}
+
+const SESSION_MONITORING_AUTOMATIC_COOLDOWN_MS = 5 * 60_000;
 
 const staticFiles: Record<string, { path: string; type: string }> = {
   "/": { path: "public/index.html", type: "text/html; charset=utf-8" },
@@ -209,6 +215,7 @@ export function createApp({
   sessionMonitoringScheduler = scheduleTimeout,
   sessionMonitoringIntervalMs = 60_000,
   sessionMonitoringConcurrency = 2,
+  sessionMonitoringNow = Date.now,
   dataDirectory = join(projectRoot, ".teamline"),
   executionIdentityEnvironment,
   openLocalArtifact = openLocalArtifactWithSystem,
@@ -224,6 +231,7 @@ export function createApp({
   type SessionMonitoringQueueEntry = {
     run: () => Promise<void>;
     onError?: (error: unknown) => void;
+    mode: SessionMonitoringRefreshMode | "initial";
   };
   const monitoringPending = new Map<string, SessionMonitoringQueueEntry>();
   const monitoringDeferred = new Map<string, SessionMonitoringQueueEntry>();
@@ -233,6 +241,14 @@ export function createApp({
   let monitoringActiveCount = 0;
   let sessionMonitoringDiscoveryInFlight: Promise<unknown> | null = null;
   let sessionMonitoringDiscoveryController: AbortController | null = null;
+  type SessionMonitoringPreview = {
+    record: SessionMonitoringRecord;
+    candidateKey: string;
+  };
+  let sessionMonitoringPreview: Map<string, SessionMonitoringPreview> | null = null;
+  let sessionMonitoringPreviewAt: string | null = null;
+  let sessionMonitoringPreviewForAdd = false;
+  let sessionMonitoringOnboardingDismissed = false;
   let closed = false;
   const startingWorkspacePaths = new Map<string, string>();
   const startingExecutionIdentityIds = new Map<string, string>();
@@ -348,6 +364,41 @@ export function createApp({
       claudeResult,
     ];
     if (closed) return sessionMonitoringState();
+    if (
+      !sessionMonitoringOnboardingDismissed &&
+      (sessionMonitoringPreviewForAdd ||
+        (previousRecords.size === 0 &&
+          store.listProjects().length === 0 &&
+          store.list().length === 0))
+    ) {
+      sessionMonitoringPreview = new Map();
+      for (const result of sourceResults) {
+        for (const session of result.sessions) {
+          if (
+            result.sourceKind === "codex_session" &&
+            isTeamlineExecutionSession(store.list(), result.executionIdentityId, session.id)
+          ) {
+            continue;
+          }
+          const key = sessionMonitoringKey(
+            result.sourceKind,
+            result.executionIdentityId,
+            session.id,
+          );
+          sessionMonitoringPreview.set(key, {
+            candidateKey: monitoringCandidateKey(session),
+            record: previewSessionMonitoringRecord(
+              key,
+              result,
+              session,
+              discoveredAt,
+            ),
+          });
+        }
+      }
+      sessionMonitoringPreviewAt = discoveredAt;
+      return sessionMonitoringOnboardingState(sourceResults);
+    }
     const workOrders = store.list();
     const seenKeys = new Set<string>();
     let excludedCount = 0;
@@ -452,7 +503,14 @@ export function createApp({
       }
     }
     store.saveSessionMonitoringDiscoveryAt(discoveredAt);
+    const pendingWorkIdsBeforeDiscovery = new Set(
+      store
+        .listSessionMonitoringWorks()
+        .filter((work) => work.pendingRefreshIntent)
+        .map((work) => work.id),
+    );
     queueSessionMonitoringUpdates(previousRecords, sourceResults);
+    queuePendingSessionMonitoringUpdates(sourceResults, pendingWorkIdsBeforeDiscovery);
     const sessions = visibleSessionMonitoring();
     const statuses = sourceResults.map((result) => result.status);
     const status = statuses.every((value) => value === "unavailable")
@@ -467,6 +525,14 @@ export function createApp({
       excludedCount,
       projects: store.listProjects(),
       sessions: sessions.map(presentSessionMonitoring),
+      monitoringWorks: presentSessionMonitoringWorks(
+        store.listSessionMonitoringWorks(),
+        store.listSessionMonitoring(),
+      ),
+      projectMonitoringDefaults: store.listProjectMonitoringDefaults(),
+      automaticRefreshEnabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
+      onboarding: false,
+      onboardingDismissed: sessionMonitoringOnboardingDismissed,
     };
   };
 
@@ -486,7 +552,45 @@ export function createApp({
     return task;
   };
 
+  const sessionMonitoringOnboardingState = (
+    sourceResults: SessionMonitoringSourceResult[],
+  ) => {
+    const previewRecords = [...(sessionMonitoringPreview?.values() ?? [])]
+      .map(({ record }) => record);
+    const sourceLabels = new Map(
+      sourceResults.map((result) => [
+        `${result.sourceKind}:${result.executionIdentityId ?? "none"}`,
+        result.sourceKind === "claude_code_session"
+          ? "Claude Code"
+          : result.executionIdentityLabel || "Codex",
+      ]),
+    );
+    const tools = presentSessionMonitoringOnboardingTools(previewRecords, sourceLabels);
+    return {
+      status: previewRecords.length ? "available" : "unavailable",
+      message: previewRecords.length
+        ? "请选择要加入 Teamline 的本地工作"
+        : "没有发现可加入的本地会话",
+      lastScannedAt: sessionMonitoringPreviewAt,
+      projects: store.listProjects(),
+      sessions: previewRecords.map(presentSessionMonitoring),
+      candidates: presentSessionMonitoringOnboardingCandidates(previewRecords, tools),
+      tools,
+      monitoringWorks: presentSessionMonitoringWorks(
+        store.listSessionMonitoringWorks(),
+        store.listSessionMonitoring(),
+      ),
+      projectMonitoringDefaults: store.listProjectMonitoringDefaults(),
+      automaticRefreshEnabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
+      onboarding: true,
+      onboardingDismissed: false,
+    };
+  };
+
   const sessionMonitoringState = () => {
+    if (sessionMonitoringPreview && !sessionMonitoringOnboardingDismissed) {
+      return sessionMonitoringOnboardingState([]);
+    }
     const sessions = visibleSessionMonitoring();
     return {
       status: sessions.length ? "available" : "unavailable",
@@ -494,7 +598,51 @@ export function createApp({
       lastScannedAt: store.getLastSessionMonitoringDiscoveryAt(),
       projects: store.listProjects(),
       sessions: sessions.map(presentSessionMonitoring),
+      monitoringWorks: presentSessionMonitoringWorks(
+        store.listSessionMonitoringWorks(),
+        store.listSessionMonitoring(),
+      ),
+      projectMonitoringDefaults: store.listProjectMonitoringDefaults(),
+      automaticRefreshEnabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
+      onboarding: false,
+      onboardingDismissed: sessionMonitoringOnboardingDismissed,
     };
+  };
+
+  const materializePreviewSession = (
+    key: string,
+    update: SessionMonitoringUpdate = {},
+  ): SessionMonitoringRecord => {
+    const existing = store.getSessionMonitoring(key);
+    if (existing) return existing;
+    const preview = sessionMonitoringPreview?.get(key);
+    if (!preview) throw new Error("找不到所选来源会话");
+    const projectId = update.projectId !== undefined ? update.projectId : null;
+    const monitoringOverride = update.monitoringOverride !== undefined
+      ? update.monitoringOverride
+      : update.monitoringEnabled !== undefined
+        ? Boolean(update.monitoringEnabled)
+        : null;
+    store.upsertDiscoveredSession({
+      key: preview.record.key,
+      sourceKind: preview.record.sourceKind,
+      executionIdentityId: preview.record.executionIdentityId,
+      executionIdentityLabel: preview.record.executionIdentityLabel,
+      id: preview.record.id,
+      title: preview.record.title,
+      workspacePath: preview.record.workspacePath,
+      projectLabel: preview.record.projectLabel,
+      lastActiveAt: preview.record.lastActiveAt,
+      sourcePath: preview.record.sourcePath,
+      sourcePosition: preview.record.sourcePosition,
+      sourceModifiedAt: preview.record.sourceModifiedAt,
+      availability: preview.record.availability,
+      message: preview.record.message,
+      lastDiscoveredAt: preview.record.lastDiscoveredAt,
+      projectId,
+      monitoringOverride,
+    });
+    return store.getSessionMonitoring(key)!;
   };
 
   const updateSessionMonitoringSelections = (body: unknown) => {
@@ -517,6 +665,7 @@ export function createApp({
         id?: unknown;
         projectId?: unknown;
         monitoringEnabled?: unknown;
+        monitoringOverride?: unknown;
         lastReadPosition?: unknown;
         lastReadAt?: unknown;
         organizationStatus?: unknown;
@@ -556,6 +705,15 @@ export function createApp({
         }
         update.monitoringEnabled = selection.monitoringEnabled;
       }
+      if (selection.monitoringOverride !== undefined) {
+        if (
+          selection.monitoringOverride !== null &&
+          typeof selection.monitoringOverride !== "boolean"
+        ) {
+          throw new Error("会话显式覆盖格式无效");
+        }
+        update.monitoringOverride = selection.monitoringOverride;
+      }
       if (selection.lastReadPosition !== undefined) {
         if (
           selection.lastReadPosition !== null &&
@@ -584,18 +742,145 @@ export function createApp({
       if (selection.workGraphSnapshot !== undefined) {
         update.workGraphSnapshot = selection.workGraphSnapshot;
       }
+      materializePreviewSession(key, update);
       const updated = store.updateSessionMonitoring(key, update);
       if (update.monitoringEnabled === false) {
         monitoringControllers.get(key)?.abort();
       }
       return updated;
     });
+    if (sessionMonitoringPreview) {
+      const discoveredAt = sessionMonitoringPreviewAt ?? new Date().toISOString();
+      sessionMonitoringPreview = null;
+      sessionMonitoringPreviewAt = null;
+      sessionMonitoringPreviewForAdd = false;
+      sessionMonitoringOnboardingDismissed = true;
+      store.saveSessionMonitoringDiscoveryAt(discoveredAt);
+    }
     scheduleSessionMonitoringScan(0);
     const visibleSessions = visibleSessionMonitoring();
     return {
       sessions: visibleSessions.map(presentSessionMonitoring),
       projects: store.listProjects(),
     };
+  };
+
+  const confirmSessionMonitoringOnboarding = (body: unknown) => {
+    if (!sessionMonitoringPreview) throw new Error("首次发现已经过期，请重新扫描");
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("首次发现选择格式无效");
+    }
+    const input = body as Record<string, unknown>;
+    if (input.skip === true || input.outcome === "skipped") {
+      store.saveSessionMonitoringDiscoveryAt(
+        sessionMonitoringPreviewAt ?? new Date().toISOString(),
+      );
+      sessionMonitoringPreview = null;
+      sessionMonitoringPreviewAt = null;
+      sessionMonitoringPreviewForAdd = false;
+      sessionMonitoringOnboardingDismissed = true;
+      return { outcome: "skipped" as const, ...sessionMonitoringState() };
+    }
+    const rawProjects = input.projects ?? input.candidateProjects;
+    if (!Array.isArray(rawProjects) || rawProjects.length > 200) {
+      throw new Error("请选择要加入的候选项目");
+    }
+    const explicitSessionKeys = Array.isArray(input.selectedSessionKeys)
+      ? input.selectedSessionKeys
+      : Array.isArray(input.sessionKeys)
+        ? input.sessionKeys
+        : null;
+    const allowedSessionKeys = explicitSessionKeys
+      ? new Set(explicitSessionKeys.filter((key): key is string => typeof key === "string"))
+      : null;
+    const previewEntries = [...sessionMonitoringPreview.values()];
+    const selectedRecords: Array<{
+      key: string;
+      candidateKey: string;
+      projectName: string;
+      monitoringEnabled: boolean;
+      workspacePath: string | null;
+    }> = [];
+    for (const value of rawProjects) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("候选项目选择格式无效");
+      }
+      const project = value as Record<string, unknown>;
+      const candidateKey = typeof (project.candidateKey ?? project.key) === "string"
+        ? String(project.candidateKey ?? project.key).trim()
+        : "";
+      if (!candidateKey) throw new Error("候选项目选择格式无效");
+      if (project.selected === false) continue;
+      const selectedToolKeys = Array.isArray(project.toolKeys)
+        ? new Set(project.toolKeys.filter((key): key is string => typeof key === "string"))
+        : null;
+      const candidateEntries = previewEntries.filter((entry) =>
+        entry.candidateKey === candidateKey &&
+        (!allowedSessionKeys || allowedSessionKeys.has(entry.record.key)) &&
+        (!selectedToolKeys || selectedToolKeys.has(monitoringToolKey(entry.record))),
+      );
+      if (!previewEntries.some((entry) => entry.candidateKey === candidateKey)) {
+        throw new Error("找不到所选候选项目");
+      }
+      if (candidateEntries.length === 0) continue;
+      const projectName = typeof project.name === "string" && project.name.trim()
+        ? project.name.trim()
+        : candidateEntries[0]!.record.projectLabel || "未命名项目";
+      const monitoringEnabled = typeof project.monitoringEnabled === "boolean"
+        ? project.monitoringEnabled
+        : typeof project.monitoringDefault === "boolean"
+          ? project.monitoringDefault
+          : false;
+      for (const entry of candidateEntries) {
+        selectedRecords.push({
+          key: entry.record.key,
+          candidateKey,
+          projectName,
+          monitoringEnabled,
+          workspacePath: entry.record.workspacePath,
+        });
+      }
+    }
+    if (selectedRecords.length === 0) {
+      sessionMonitoringPreview = null;
+      sessionMonitoringPreviewAt = null;
+      sessionMonitoringPreviewForAdd = false;
+      sessionMonitoringOnboardingDismissed = true;
+      return { outcome: "skipped" as const, ...sessionMonitoringState() };
+    }
+    const projectByCandidate = new Map<string, { id: string }>();
+    for (const selected of selectedRecords) {
+      let project = projectByCandidate.get(selected.candidateKey);
+      if (!project) {
+        const existingProjectId = selected.workspacePath
+          ? store.findProjectForMonitoringWorkspace(selected.workspacePath)
+          : null;
+        const created = existingProjectId
+          ? store.getProject(existingProjectId)!
+          : store.createProject(selected.projectName);
+        store.setProjectMonitoringDefault(created.id, selected.monitoringEnabled);
+        project = { id: created.id };
+        projectByCandidate.set(selected.candidateKey, project);
+      }
+      const record = materializePreviewSession(selected.key, {
+        projectId: project.id,
+        monitoringOverride: null,
+      });
+      if (record.workspacePath) {
+        store.bindProjectMonitoringWorkspace(project.id, record.workspacePath);
+      }
+      store.updateSessionMonitoring(selected.key, {
+        projectId: project.id,
+        monitoringOverride: null,
+      });
+    }
+    sessionMonitoringPreview = null;
+    sessionMonitoringPreviewAt = null;
+    sessionMonitoringPreviewForAdd = false;
+    sessionMonitoringOnboardingDismissed = true;
+    store.saveSessionMonitoringDiscoveryAt(new Date().toISOString());
+    scheduleSessionMonitoringScan(0);
+    return { outcome: "confirmed" as const, ...sessionMonitoringState() };
   };
 
   const createGoalFromSessionMonitoring = (body: unknown) => {
@@ -693,7 +978,7 @@ export function createApp({
   const pumpSessionMonitoring = () => {
     while (!closed && monitoringActiveCount < monitoringConcurrency && monitoringPending.size > 0) {
       const next = monitoringPending.entries().next().value as
-        | [string, { run: () => Promise<void>; onError?: (error: unknown) => void }]
+        | [string, SessionMonitoringQueueEntry]
         | undefined;
       if (!next) return;
       const [key, entry] = next;
@@ -715,6 +1000,17 @@ export function createApp({
           monitoringPending.set(key, deferred);
         } else {
           monitoringDeferred.delete(key);
+          const work = store.findSessionMonitoringWorkBySourceKey(key);
+          const anotherSourceActive = work?.sourceSessionKeys.some((sourceKey) =>
+            sourceKey !== key && (
+              monitoringKeys.has(sourceKey) ||
+              monitoringPending.has(sourceKey) ||
+              monitoringDeferred.has(sourceKey)
+            )
+          ) ?? false;
+          if (work && !anotherSourceActive) {
+            store.clearSessionMonitoringWorkPendingRefresh(work.id);
+          }
           monitoringKeys.delete(key);
         }
         monitoringActiveCount -= 1;
@@ -749,15 +1045,45 @@ export function createApp({
     candidate: DiscoveredSession,
     sourceProvider: SessionProvider,
     forceFromStart = false,
-  ) => {
+    mode: SessionMonitoringRefreshMode | "initial" = "automatic",
+  ): boolean => {
+    const work = store.ensureSessionMonitoringWork(record);
+    if (mode === "automatic") {
+      if (!store.getSessionMonitoringAutomaticRefreshEnabled()) return false;
+      const completedAt = work.lastAutomaticCompletedAt
+        ? Date.parse(work.lastAutomaticCompletedAt)
+        : Number.NaN;
+      const cooldownUntil = Number.isFinite(completedAt)
+        ? completedAt + SESSION_MONITORING_AUTOMATIC_COOLDOWN_MS
+        : null;
+      if (cooldownUntil !== null && sessionMonitoringNow() < cooldownUntil) {
+        store.setSessionMonitoringWorkPendingRefresh(
+          work.id,
+          mode,
+          new Date(sessionMonitoringNow()).toISOString(),
+        );
+        scheduleSessionMonitoringScan(Math.max(0, cooldownUntil - sessionMonitoringNow()));
+        return false;
+      }
+    }
+    if (mode !== "initial") {
+      store.setSessionMonitoringWorkPendingRefresh(
+        work.id,
+        mode,
+        new Date(sessionMonitoringNow()).toISOString(),
+      );
+    }
     enqueueSessionMonitoring(record.key, {
+      mode,
       run: () => monitorSessionFromSource(
         record,
         candidate,
         sourceProvider,
         forceFromStart,
+        mode,
       ),
     });
+    return true;
   };
 
   const queueSessionMonitoringUpdates = (
@@ -775,17 +1101,52 @@ export function createApp({
         const current = store.getSessionMonitoring(key);
         if (!current?.monitoringEnabled) continue;
         const previous = previousRecords.get(key);
-        if (
-          !previous ||
-          sessionMonitoringSourceChanged(previous, candidate)
-        ) {
+        if (!previous || sessionMonitoringSourceChanged(previous, candidate)) {
+          const mode = !previous ||
+            (current.lastReadPosition === null && current.organizationStatus === "not_started")
+            ? "initial" as const
+            : "automatic" as const;
           queueSessionMonitoringAttempt(
             current,
             candidate,
             result.provider,
             Boolean(previous && sessionMonitoringSourceNeedsFullRead(previous, candidate)),
+            mode,
           );
         }
+      }
+    }
+  };
+
+  const queuePendingSessionMonitoringUpdates = (
+    sourceResults: SessionMonitoringSourceResult[],
+    pendingWorkIds: Set<string>,
+  ) => {
+    const candidates = new Map<string, { candidate: DiscoveredSession; provider: SessionProvider }>();
+    for (const result of sourceResults) {
+      if (!result.provider) continue;
+      for (const candidate of result.sessions) {
+        candidates.set(
+          sessionMonitoringKey(result.sourceKind, result.executionIdentityId, candidate.id),
+          { candidate, provider: result.provider },
+        );
+      }
+    }
+    for (const work of store.listSessionMonitoringWorks()) {
+      if (!pendingWorkIds.has(work.id)) continue;
+      const mode = work.pendingRefreshIntent?.mode;
+      if (!mode) continue;
+      for (const key of work.sourceSessionKeys) {
+        const record = store.getSessionMonitoring(key);
+        const source = candidates.get(key);
+        if (!record?.monitoringEnabled || !source) continue;
+        queueSessionMonitoringAttempt(
+          record,
+          source.candidate,
+          source.provider,
+          sessionMonitoringSourceNeedsFullRead(record, source.candidate),
+          mode,
+        );
       }
     }
   };
@@ -843,7 +1204,7 @@ export function createApp({
       message: candidate.message,
       lastDiscoveredAt: new Date().toISOString(),
     });
-    await monitorSessionFromSource(refreshed, candidate, sourceProvider, forceFromStart);
+    await monitorSessionFromSource(refreshed, candidate, sourceProvider, forceFromStart, "manual");
   };
 
   const queueSessionMonitoringRetry = (key: string) => {
@@ -851,6 +1212,7 @@ export function createApp({
     const controller = new AbortController();
     monitoringControllers.set(key, controller);
     const queued = enqueueSessionMonitoring(key, {
+      mode: "manual",
       run: () => runSessionMonitoringRetry(key, controller),
       onError: (error) => {
         if (!closed && store.getSessionMonitoring(key)) {
@@ -863,6 +1225,60 @@ export function createApp({
     });
     if (!queued) monitoringControllers.delete(key);
     return queued;
+  };
+
+  const requestSessionMonitoringRefresh = async (body: unknown) => {
+    const input = body && typeof body === "object" && !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : {};
+    const mode = input.mode === undefined ? "manual" : input.mode;
+    if (!sessionMonitoringRefreshModes.includes(mode as SessionMonitoringRefreshMode)) {
+      throw new Error("刷新方式无效");
+    }
+    const refreshMode = mode as SessionMonitoringRefreshMode;
+    const rawKeys = input.sessionKeys ?? input.sourceSessionKeys;
+    let keys: string[];
+    if (Array.isArray(rawKeys)) {
+      keys = normalizeMonitoringSessionKeys(rawKeys);
+    } else if (typeof input.workId === "string" && input.workId.trim()) {
+      const work = store.getSessionMonitoringWork(input.workId.trim());
+      if (!work) throw new Error("找不到这个监控工作");
+      keys = work.sourceSessionKeys;
+    } else {
+      keys = store.listSessionMonitoring()
+        .filter((record) => record.monitoringEnabled)
+        .map((record) => record.key);
+    }
+    const queuedKeys: string[] = [];
+    for (const key of keys) {
+      const record = store.getSessionMonitoring(key);
+      if (!record) throw new Error("找不到所选来源会话");
+      if (!record.monitoringEnabled) continue;
+      let provider: SessionProvider | undefined;
+      try {
+        provider = sessionProviderForSource(record.sourceKind, record.executionIdentityId);
+      } catch {
+        provider = undefined;
+      }
+      if (!provider) continue;
+      const candidate = sessionMonitoringCandidateFromRecord(record);
+      if (!candidate) continue;
+      if (queueSessionMonitoringAttempt(
+        record,
+        candidate,
+        provider,
+        sessionMonitoringSourceNeedsFullRead(record, candidate),
+        refreshMode,
+      )) {
+        queuedKeys.push(key);
+      }
+    }
+    return {
+      outcome: "pending" as const,
+      mode: refreshMode,
+      queuedKeys,
+      ...sessionMonitoringState(),
+    };
   };
 
   scheduleSessionMonitoringScan = (delayMs = 0) => {
@@ -900,9 +1316,11 @@ export function createApp({
     candidate: DiscoveredSession,
     sourceProvider: SessionProvider,
     forceFromStart = false,
+    refreshMode: SessionMonitoringRefreshMode | "initial" = "automatic",
   ) => {
     const current = store.getSessionMonitoring(record.key);
     if (closed || !current?.monitoringEnabled) return;
+    if (refreshMode === "automatic" && !store.getSessionMonitoringAutomaticRefreshEnabled()) return;
     const controller = new AbortController();
     monitoringControllers.set(record.key, controller);
     let usageId: string | null = null;
@@ -959,7 +1377,7 @@ export function createApp({
           sessionKey: record.key,
           sourceKind: record.sourceKind,
           accountId: record.executionIdentityId,
-          preference: "low_cost",
+          preference: refreshMode === "deep" ? "high_quality" : "low_cost",
         }, signal),
         sessionOrganizationTimeoutMs,
         "快速整理资源暂时不可用，请重试",
@@ -1005,6 +1423,21 @@ export function createApp({
         workGraphSnapshot: organization,
         message: sourceMessage,
       });
+      const work = store.findSessionMonitoringWorkBySourceKey(record.key);
+      if (work) {
+        if (refreshMode === "automatic") {
+          store.markSessionMonitoringAutomaticCompleted(
+            work.id,
+            new Date(sessionMonitoringNow()).toISOString(),
+          );
+        }
+        if (work.sourceSessionKeys.length === 1) {
+          store.updateSessionMonitoringWorkSnapshotRef(
+            work.id,
+            `session-monitoring:${record.key}:${new Date().toISOString()}`,
+          );
+        }
+      }
       store.finishSessionMonitoringResourceUsage(usage.id, "succeeded");
     } catch (error) {
       const message = controller.signal.aborted
@@ -2512,10 +2945,170 @@ export function createApp({
           : Response.json(sessionMonitoringState());
       }
 
+      if (request.method === "GET" && url.pathname === "/api/session-monitoring/automatic") {
+        return Response.json({
+          enabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
+        });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/api/session-monitoring/automatic") {
+        try {
+          const body = (await request.json()) as { enabled?: unknown };
+          if (typeof body.enabled !== "boolean") throw new Error("自动更新开关格式无效");
+          const enabled = store.saveSessionMonitoringAutomaticRefreshEnabled(body.enabled);
+          if (enabled) scheduleSessionMonitoringScan(0);
+          else {
+            cancelSessionMonitoringTimer?.();
+            cancelSessionMonitoringTimer = null;
+          }
+          return Response.json({ enabled });
+        } catch (error) {
+          return Response.json(
+            { code: "INVALID_SESSION_MONITORING_SETTING", error: error instanceof Error ? error.message : "无法保存自动更新设置" },
+            { status: 400 },
+          );
+        }
+      }
+
+      const projectMonitoringDefaultMatch = url.pathname.match(
+        /^\/api\/projects\/([^/]+)\/session-monitoring-default$/,
+      );
+      if (
+        projectMonitoringDefaultMatch &&
+        (request.method === "GET" || request.method === "PUT")
+      ) {
+        try {
+          const projectId = decodeURIComponent(projectMonitoringDefaultMatch[1]);
+          if (request.method === "GET") {
+            return Response.json({
+              projectId,
+              enabled: store.getProjectMonitoringDefault(projectId),
+            });
+          }
+          const body = (await request.json()) as { enabled?: unknown };
+          if (typeof body.enabled !== "boolean") throw new Error("项目监控默认格式无效");
+          const setting = store.setProjectMonitoringDefault(projectId, body.enabled);
+          if (body.enabled) scheduleSessionMonitoringScan(0);
+          return Response.json(setting);
+        } catch (error) {
+          return Response.json(
+            { code: "INVALID_PROJECT_MONITORING_DEFAULT", error: error instanceof Error ? error.message : "无法保存项目监控默认" },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/session-monitoring/works") {
+        return Response.json({
+          works: presentSessionMonitoringWorks(
+            store.listSessionMonitoringWorks(),
+            store.listSessionMonitoring(),
+          ),
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/session-monitoring/works") {
+        try {
+          const body = (await request.json()) as {
+            name?: string;
+            projectId?: string | null;
+            sourceSessionKeys?: string[];
+            sessionKeys?: string[];
+          };
+          const work = store.createSessionMonitoringWork({
+            name: body.name ?? "",
+            projectId: body.projectId,
+            sourceSessionKeys: body.sourceSessionKeys ?? body.sessionKeys ?? [],
+          });
+          return Response.json({ work: presentSessionMonitoringWorks(
+            [work],
+            store.listSessionMonitoring(),
+          )[0] }, { status: 201 });
+        } catch (error) {
+          return Response.json(
+            { code: "INVALID_SESSION_MONITORING_WORK", error: error instanceof Error ? error.message : "无法创建监控工作" },
+            { status: 400 },
+          );
+        }
+      }
+
+      const sessionMonitoringWorkMatch = url.pathname.match(
+        /^\/api\/session-monitoring\/works\/([^/]+)$/,
+      );
+      if (request.method === "PATCH" && sessionMonitoringWorkMatch) {
+        try {
+          const body = (await request.json()) as {
+            name?: string;
+            projectId?: string | null;
+            sourceSessionKeys?: string[];
+            sessionKeys?: string[];
+          };
+          const work = store.updateSessionMonitoringWork(
+            decodeURIComponent(sessionMonitoringWorkMatch[1]),
+            {
+              name: body.name,
+              projectId: body.projectId,
+              sourceSessionKeys: body.sourceSessionKeys ?? body.sessionKeys,
+            },
+          );
+          return Response.json({ work: presentSessionMonitoringWorks(
+            [work],
+            store.listSessionMonitoring(),
+          )[0] });
+        } catch (error) {
+          return Response.json(
+            { code: "INVALID_SESSION_MONITORING_WORK", error: error instanceof Error ? error.message : "无法修改监控工作" },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/session-monitoring/onboarding") {
+        try {
+          return Response.json(confirmSessionMonitoringOnboarding(await request.json()));
+        } catch (error) {
+          return Response.json(
+            { code: "INVALID_SESSION_MONITORING_ONBOARDING", error: error instanceof Error ? error.message : "无法保存首次发现选择" },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/session-monitoring/refresh") {
+        try {
+          return Response.json(await requestSessionMonitoringRefresh(await request.json()));
+        } catch (error) {
+          return Response.json(
+            { code: "INVALID_SESSION_MONITORING_REFRESH", error: error instanceof Error ? error.message : "无法安排会话刷新" },
+            { status: 400 },
+          );
+        }
+      }
+
       if (
         request.method === "POST" &&
-        ["/api/session-monitoring", "/api/session-monitoring/discover", "/api/session-monitoring/refresh"].includes(url.pathname)
+        ["/api/session-monitoring", "/api/session-monitoring/discover"].includes(url.pathname)
       ) {
+        if (
+          url.pathname === "/api/session-monitoring/discover" &&
+          store.listSessionMonitoring().length === 0 &&
+          store.listProjects().length === 0 &&
+          store.list().length === 0
+        ) {
+          sessionMonitoringOnboardingDismissed = false;
+          sessionMonitoringPreview = null;
+          sessionMonitoringPreviewAt = null;
+          sessionMonitoringPreviewForAdd = url.searchParams.get("preview") === "1" ||
+            url.searchParams.get("preview") === "true";
+        } else if (
+          url.pathname === "/api/session-monitoring/discover" &&
+          (url.searchParams.get("preview") === "1" || url.searchParams.get("preview") === "true")
+        ) {
+          sessionMonitoringOnboardingDismissed = false;
+          sessionMonitoringPreview = null;
+          sessionMonitoringPreviewAt = null;
+          sessionMonitoringPreviewForAdd = true;
+        }
         if (url.pathname === "/api/session-monitoring") {
           let body: unknown = null;
           try {
@@ -2621,7 +3214,7 @@ export function createApp({
       );
       if (request.method === "POST" && openSessionSourceMatch) {
         const key = decodeURIComponent(openSessionSourceMatch[1]);
-        const record = store.getSessionMonitoring(key);
+        const record = store.getSessionMonitoring(key) ?? sessionMonitoringPreview?.get(key)?.record ?? null;
         if (!record) {
           return Response.json(
             { code: "SESSION_MONITORING_NOT_FOUND", error: "找不到这个本机会话" },
@@ -2661,6 +3254,7 @@ export function createApp({
             projectId?: string | null;
             monitoringEnabled?: boolean;
             enabled?: boolean;
+            monitoringOverride?: boolean | null;
             lastReadPosition?: number | null;
             lastReadAt?: string | null;
             organizationStatus?: "not_started" | "pending" | "ready" | "failed";
@@ -2670,6 +3264,9 @@ export function createApp({
             ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
             ...(body.monitoringEnabled !== undefined || body.enabled !== undefined
               ? { monitoringEnabled: body.monitoringEnabled ?? body.enabled }
+              : {}),
+            ...(body.monitoringOverride !== undefined
+              ? { monitoringOverride: body.monitoringOverride }
               : {}),
             ...(body.lastReadPosition !== undefined
               ? { lastReadPosition: body.lastReadPosition }
@@ -2682,6 +3279,7 @@ export function createApp({
               ? { workGraphSnapshot: body.workGraphSnapshot }
               : {}),
           };
+          materializePreviewSession(key, update);
           const updated = store.updateSessionMonitoring(key, update);
           if (update.monitoringEnabled === false) {
             monitoringControllers.get(key)?.abort();
@@ -5619,6 +6217,15 @@ type PresentedSessionMonitoring = Omit<SessionMonitoringRecord, "sourcePath"> & 
   sourceAvailable: boolean;
 };
 
+type PresentedSessionMonitoringWork = SessionMonitoringWork & {
+  sources: Array<{
+    key: string;
+    id: string;
+    title: string;
+    sourceKind: SessionMonitoringRecord["sourceKind"];
+  }>;
+};
+
 function presentSessionMonitoring(
   session: SessionMonitoringRecord,
 ): PresentedSessionMonitoring {
@@ -5627,6 +6234,126 @@ function presentSessionMonitoring(
     ...publicSession,
     sourceAvailable: Boolean(sourcePath && existsSync(sourcePath)),
   };
+}
+
+function presentSessionMonitoringWorks(
+  works: SessionMonitoringWork[],
+  records: SessionMonitoringRecord[],
+): PresentedSessionMonitoringWork[] {
+  const byKey = new Map(records.map((record) => [record.key, record]));
+  return works.map((work) => ({
+    ...work,
+    sources: work.sourceSessionKeys.flatMap((key) => {
+      const source = byKey.get(key);
+      return source
+        ? [{ key, id: source.id, title: source.title, sourceKind: source.sourceKind }]
+        : [];
+    }),
+  }));
+}
+
+function monitoringToolKey(
+  session: Pick<SessionMonitoringRecord, "sourceKind" | "executionIdentityId">,
+): string {
+  return `${session.sourceKind}:${session.executionIdentityId ?? "none"}`;
+}
+
+function monitoringCandidateKey(
+  session: Pick<SessionMonitoringRecord, "workspacePath" | "sourceKind" | "executionIdentityId" | "id">,
+): string {
+  return session.workspacePath
+    ? `workspace:${session.workspacePath}`
+    : `session:${monitoringToolKey(session)}:${session.id}`;
+}
+
+function previewSessionMonitoringRecord(
+  key: string,
+  source: Pick<SessionMonitoringSourceResult, "sourceKind" | "executionIdentityId" | "executionIdentityLabel">,
+  session: DiscoveredSession,
+  discoveredAt: string,
+): SessionMonitoringRecord {
+  return {
+    key,
+    sourceKind: source.sourceKind,
+    executionIdentityId: source.executionIdentityId,
+    executionIdentityLabel: source.executionIdentityLabel,
+    id: session.id,
+    title: session.title,
+    workspacePath: session.workspacePath,
+    projectLabel: session.projectLabel,
+    lastActiveAt: session.lastActiveAt,
+    sourcePath: session.sourcePath,
+    sourcePosition: session.sourcePosition ?? null,
+    sourceModifiedAt: session.sourceModifiedAt ?? null,
+    availability: session.availability,
+    message: session.message,
+    projectId: null,
+    monitoringEnabled: false,
+    monitoringOverride: null,
+    lastDiscoveredAt: discoveredAt,
+    lastReadPosition: null,
+    lastReadAt: null,
+    organizationStatus: "not_started",
+    workGraphSnapshot: null,
+    createdAt: discoveredAt,
+    updatedAt: discoveredAt,
+  };
+}
+
+function presentSessionMonitoringOnboardingCandidates(
+  records: SessionMonitoringRecord[],
+  tools: Array<{ key: string; label: string; sessionKeys: string[] }>,
+): Array<{
+  key: string;
+  name: string;
+  workspacePath: string | null;
+  sessionKeys: string[];
+  tools: Array<{ key: string; label: string; sessionKeys: string[] }>;
+}> {
+  const groups = new Map<string, SessionMonitoringRecord[]>();
+  for (const record of records) {
+    const key = monitoringCandidateKey(record);
+    const group = groups.get(key) ?? [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  return [...groups.entries()].map(([key, group]) => {
+    const workspacePath = group[0]?.workspacePath ?? null;
+    const name = workspacePath?.split(/[\\/]/).filter(Boolean).at(-1) ||
+      group[0]?.projectLabel || "未归类工作";
+    const sessionKeys = group.map((record) => record.key);
+    return {
+      key,
+      name,
+      workspacePath,
+      sessionKeys,
+      tools: tools
+        .map((tool) => ({
+          ...tool,
+          sessionKeys: tool.sessionKeys.filter((sessionKey) => sessionKeys.includes(sessionKey)),
+        }))
+        .filter((tool) => tool.sessionKeys.length > 0),
+    };
+  });
+}
+
+function presentSessionMonitoringOnboardingTools(
+  records: SessionMonitoringRecord[],
+  sourceLabels: Map<string, string>,
+): Array<{ key: string; label: string; sessionKeys: string[] }> {
+  const groups = new Map<string, string[]>();
+  for (const record of records) {
+    const key = monitoringToolKey(record);
+    const sessionKeys = groups.get(key) ?? [];
+    sessionKeys.push(record.key);
+    groups.set(key, sessionKeys);
+  }
+  return [...groups.entries()].map(([key, sessionKeys]) => ({
+    key,
+    label: sourceLabels.get(key) ??
+      (key.startsWith("claude_code_session:") ? "Claude Code" : "Codex"),
+    sessionKeys,
+  }));
 }
 
 function sessionMonitoringSourceChanged(

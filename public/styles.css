@@ -6453,3 +6453,160 @@ button {
     display: none;
   }
 }
+
+/* Teamline 3.1 session onboarding and explicit monitoring-work boundaries. */
+.monitoring-onboarding .workspace-lede {
+  max-width: 720px;
+  text-wrap: balance;
+}
+
+.monitoring-onboarding-form,
+.monitoring-onboarding-candidate,
+.session-monitoring-works {
+  display: grid;
+  gap: 16px;
+}
+
+.monitoring-onboarding-tools,
+.monitoring-onboarding-candidate,
+.session-monitoring-works {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  padding: 18px;
+}
+
+.monitoring-onboarding-tool-list,
+.monitoring-onboarding-sessions,
+.session-monitoring-work-list,
+.monitoring-work-source-list {
+  display: grid;
+  gap: 8px;
+}
+
+.monitoring-onboarding-tool,
+.monitoring-onboarding-candidate-heading,
+.monitoring-onboarding-default,
+.monitoring-onboarding-sessions label,
+.monitoring-work-source,
+.monitoring-inline-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.monitoring-onboarding-tool span,
+.monitoring-onboarding-candidate-heading span,
+.monitoring-onboarding-default span,
+.monitoring-onboarding-sessions span,
+.monitoring-work-source span,
+.monitoring-inline-toggle span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.monitoring-onboarding-tool small,
+.monitoring-onboarding-candidate-heading small,
+.monitoring-onboarding-default small,
+.monitoring-onboarding-sessions small,
+.monitoring-work-source small,
+.monitoring-inline-toggle small,
+.session-monitoring-works-heading small,
+.session-monitoring-work-row small {
+  color: var(--muted);
+  line-height: 1.45;
+  text-wrap: balance;
+}
+
+.monitoring-onboarding-candidate {
+  gap: 12px;
+}
+
+.monitoring-onboarding-candidate-heading {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.monitoring-onboarding-default {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.monitoring-onboarding-sessions {
+  padding-left: 28px;
+}
+
+.monitoring-onboarding-note,
+.session-monitoring-work-empty {
+  color: var(--muted);
+  text-wrap: balance;
+}
+
+.session-monitoring-toolbar {
+  align-items: end;
+}
+
+.monitoring-inline-toggle {
+  min-width: 180px;
+  padding-bottom: 2px;
+}
+
+.session-monitoring-works {
+  margin-top: 18px;
+  gap: 12px;
+}
+
+.session-monitoring-works-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.session-monitoring-works-heading h2 {
+  margin: 3px 0 5px;
+  font-size: 17px;
+}
+
+.session-monitoring-work-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  color: var(--text);
+  text-align: left;
+}
+
+.session-monitoring-work-row:hover,
+.session-monitoring-work-row:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+}
+
+.session-monitoring-work-row > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.session-monitoring-work-row > span:last-child {
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .monitoring-onboarding-sessions {
+    padding-left: 8px;
+  }
+
+  .session-monitoring-works-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

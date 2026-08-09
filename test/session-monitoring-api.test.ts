@@ -502,6 +502,17 @@ describe("session monitoring catalog", () => {
       { method: "POST" },
     )).then((response) => response.json());
     expect(discovered.sessions).toHaveLength(1);
+    await app.fetch(new Request(
+      "http://teamline.local/api/session-monitoring/onboarding",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projects: [{ candidateKey: discovered.candidates[0].key, monitoringEnabled: false }],
+          selectedSessionKeys: [discovered.sessions[0].key],
+        }),
+      },
+    ));
 
     const goal = store.create({
       name: "占用会话的目标",
@@ -971,9 +982,20 @@ describe("session monitoring catalog", () => {
     });
 
     try {
-      await app.fetch(new Request(
+      const first = await app.fetch(new Request(
         "http://teamline.local/api/session-monitoring/discover",
         { method: "POST" },
+      )).then((response) => response.json());
+      await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/onboarding",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            projects: [{ candidateKey: first.candidates[0].key, monitoringEnabled: false }],
+            selectedSessionKeys: [first.sessions[0].key],
+          }),
+        },
       ));
       complete = false;
       await app.fetch(new Request(

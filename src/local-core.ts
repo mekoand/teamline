@@ -72,6 +72,8 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
   );
   const sessionOrganizationModel =
     environment.TEAMLINE_SESSION_ORGANIZER_MODEL?.trim() || "gpt-5.6-luna";
+  const sessionOrganizationDeepModel =
+    environment.TEAMLINE_SESSION_ORGANIZER_DEEP_MODEL?.trim() || sessionOrganizationModel;
   const sessionOrganizationResourceSelector: SessionOrganizationResourceSelector = {
     async select(request) {
       const identityId = request.accountId ??
@@ -88,7 +90,9 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
       }
       return {
         tool: "codex",
-        model: sessionOrganizationModel,
+        model: request.preference === "high_quality"
+          ? sessionOrganizationDeepModel
+          : sessionOrganizationModel,
         accountId: identity.id,
         accountLabel: identity.label,
       };

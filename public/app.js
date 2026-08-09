@@ -78,6 +78,13 @@ const state = {
     lastScannedAt: null,
     projects: [],
     sessions: [],
+    candidates: [],
+    tools: [],
+    monitoringWorks: [],
+    projectMonitoringDefaults: {},
+    automaticRefreshEnabled: true,
+    onboarding: false,
+    onboardingDismissed: false,
   },
   sessionMonitoringError: "",
   sessionMonitoringRefreshInFlight: false,
@@ -122,6 +129,9 @@ const monitoringGoalDialog = document.querySelector("#monitoring-goal-dialog");
 const monitoringGoalForm = document.querySelector("#monitoring-goal-form");
 const monitoringGoalError = document.querySelector("#monitoring-goal-error");
 const monitoringGoalSubmit = document.querySelector("#submit-monitoring-goal");
+const monitoringWorkDialog = document.querySelector("#monitoring-work-dialog");
+const monitoringWorkForm = document.querySelector("#monitoring-work-form");
+const monitoringWorkSubmit = document.querySelector("#submit-monitoring-work");
 const notificationDialog = document.querySelector("#notification-dialog");
 const localStateDialog = document.querySelector("#local-state-dialog");
 
@@ -171,7 +181,7 @@ function bindShellEvents() {
 
   document.querySelector("#open-create")?.addEventListener("click", () => {
     if (isSessionMonitoringView()) {
-      void refreshSessionMonitoring();
+      void openSessionDiscovery();
       return;
     }
     openCreateDialog();
@@ -211,6 +221,9 @@ function bindShellEvents() {
   document.querySelector("#close-monitoring-goal")?.addEventListener("click", () => closeMonitoringGoal());
   document.querySelector("#cancel-monitoring-goal")?.addEventListener("click", () => closeMonitoringGoal());
   monitoringGoalForm.addEventListener("submit", createGoalFromMonitoring);
+  document.querySelector("#close-monitoring-work")?.addEventListener("click", () => closeMonitoringWork());
+  document.querySelector("#cancel-monitoring-work")?.addEventListener("click", () => closeMonitoringWork());
+  monitoringWorkForm.addEventListener("submit", saveMonitoringWork);
   bindDismissibleDialog(notificationDialog, () => notificationDialog.close());
   bindDismissibleDialog(localStateDialog, closeLocalState, localStateDialogBusy);
   bindDismissibleDialog(createDialog, closeCreateDialog, () => createButton.dataset.busy === "true");
@@ -219,6 +232,9 @@ function bindShellEvents() {
   );
   bindDismissibleDialog(monitoringGoalDialog, closeMonitoringGoal, () =>
     monitoringGoalSubmit.dataset.busy === "true",
+  );
+  bindDismissibleDialog(monitoringWorkDialog, closeMonitoringWork, () =>
+    monitoringWorkSubmit.dataset.busy === "true",
   );
   document.querySelector("#session-search").addEventListener("input", (event) => {
     state.sessionSearch = event.currentTarget.value;
@@ -798,7 +814,11 @@ async function refreshConsole({
       return refreshConsole({ polling: false, checkAutoRun: false });
     }
     if (isSessionMonitoringView()) {
-      if (!monitoringState.lastScannedAt && !state.sessionMonitoringRefreshInFlight) {
+      if (
+        !monitoringState.lastScannedAt &&
+        !monitoringState.onboardingDismissed &&
+        !state.sessionMonitoringRefreshInFlight
+      ) {
         state.sessionMonitoringRefreshInFlight = true;
         try {
           state.sessionMonitoring = await requestJson("/api/session-monitoring/discover", {
@@ -1380,6 +1400,7 @@ function renderAllGoalsWorkspace() {
 
 function renderSessionMonitoringWorkspace() {
   const monitoring = state.sessionMonitoring;
+  if (monitoring.onboarding) return renderSessionMonitoringOnboarding(monitoring);
   const allSessions = monitoring.sessions ?? [];
   const projectKey = activeMonitoringProjectKey(allSessions);
   const projectEntries = monitoringProjectEntriesForSelection(
@@ -1399,20 +1420,69 @@ function renderSessionMonitoringWorkspace() {
       <header class="overview-heading">
         <div><p class="overline">会话监控 · 项目</p><h1 ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</h1><p class="workspace-lede">查看来源会话的关键进展。每条线路只保留有意义的节点，原始会话仍由对应工具负责。</p></div>
         <div class="overview-actions">
-          <button class="secondary-button" id="refresh-session-monitoring" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>${state.sessionMonitoringRefreshInFlight ? "正在扫描…" : "手动刷新"}</button>
+          <button class="secondary-button" id="refresh-session-monitoring" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>${state.sessionMonitoringRefreshInFlight ? "正在刷新…" : "手动刷新"}</button>
+          <button class="text-button" id="refresh-session-monitoring-deep" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>Deep</button>
         </div>
       </header>
       <section class="session-monitoring-toolbar">
         <label><span>当前项目</span><select id="session-monitoring-project-filter"><option value="" disabled ${projectKey ? "" : "selected"}>选择项目</option>${projectEntries.map((entry) => `<option value="${escapeHtml(entry.key)}" ${entry.key === projectKey ? "selected" : ""} ${entry.key === "unclassified" ? "" : "data-i18n-preserve"}>${entry.key === "unclassified" ? translateFixedText(state.locale, "未归类") : escapeHtml(entry.name)}</option>`).join("")}</select></label>
+        ${activeMonitoringProjectId() ? `<label class="monitoring-inline-toggle"><input id="project-monitoring-default" type="checkbox" ${monitoring.projectMonitoringDefaults?.[activeMonitoringProjectId()] ? "checked" : ""} /><span><strong>项目默认监控</strong><small>会话显式选择优先于此默认</small></span></label>` : ""}
+        <label class="monitoring-inline-toggle"><input id="session-monitoring-automatic-toggle" type="checkbox" ${monitoring.automaticRefreshEnabled !== false ? "checked" : ""} /><span><strong>自动更新</strong><small>只影响 automatic，保留手动和 Deep</small></span></label>
         <span class="saved-state">${monitoring.lastScannedAt ? `${state.locale === "zh-CN" ? "上次发现于" : "Last discovered"} ${formatDate(monitoring.lastScannedAt)}` : translateFixedText(state.locale, "尚未扫描")}</span>
       </section>
       ${state.sessionMonitoringError ? `<p class="form-error" role="alert">${escapeHtml(state.sessionMonitoringError)}</p>` : ""}
       ${monitoring.message ? `<p class="session-monitoring-message" role="status">${escapeHtml(monitoring.message)}</p>` : ""}
+      ${renderMonitoringWorkSection(monitoring.monitoringWorks ?? [], projectKey, allSessions)}
       ${allSessions.length === 0
         ? `<section class="session-monitoring-empty"><strong>还没有本机会话</strong><p>点击“手动刷新”读取 Codex 和 Claude Code 的本地会话。</p><button class="secondary-button" id="refresh-session-monitoring-empty" type="button">开始扫描</button></section>`
         : graph.lanes.length
           ? renderSessionMonitoringGraph(graph, projectName, preserveProjectName)
           : `<section class="session-monitoring-empty"><strong>这个项目还没有受监控会话</strong><p>从左栏选择一个会话，在检查栏中启用监控。</p></section>`}
+    </section>`;
+}
+
+function renderSessionMonitoringOnboarding(monitoring) {
+  const candidates = Array.isArray(monitoring.candidates) ? monitoring.candidates : [];
+  const tools = Array.isArray(monitoring.tools) ? monitoring.tools : [];
+  return `
+    <section class="workspace-content monitoring-onboarding" aria-labelledby="monitoring-onboarding-title">
+      <header class="overview-heading">
+        <div><p class="overline">首次发现 · 会话监控</p><h1 id="monitoring-onboarding-title">选择要加入的本地工作</h1><p class="workspace-lede">Teamline 只读取本机 Codex 和 Claude Code 的会话引用。确认前不会创建项目、启用监控或调用整理模型。</p></div>
+        <div class="overview-actions"><button class="secondary-button" id="refresh-session-monitoring-onboarding" type="button" ${state.sessionMonitoringRefreshInFlight ? "disabled" : ""}>${state.sessionMonitoringRefreshInFlight ? "正在扫描…" : "重新扫描"}</button></div>
+      </header>
+      ${state.sessionMonitoringError ? `<p class="form-error" role="alert">${escapeHtml(state.sessionMonitoringError)}</p>` : ""}
+      ${candidates.length ? `
+        <form id="session-monitoring-onboarding-form" class="monitoring-onboarding-form">
+          <section class="monitoring-onboarding-tools" aria-label="来源工具">
+            <div class="section-heading compact"><div><span class="overline">来源工具</span><h2>先按工具筛选</h2></div></div>
+            <div class="monitoring-onboarding-tool-list">${tools.map((tool) => `
+              <label class="monitoring-onboarding-tool"><input type="checkbox" data-onboarding-tool="${escapeHtml(tool.key)}" checked /><span><strong>${escapeHtml(tool.label)}</strong><small>${tool.sessionKeys.length} 个来源会话</small></span></label>`).join("")}</div>
+          </section>
+          <div class="monitoring-onboarding-candidates">${candidates.map((candidate) => `
+            <article class="monitoring-onboarding-candidate" data-onboarding-candidate-card="${escapeHtml(candidate.key)}">
+              <label class="monitoring-onboarding-candidate-heading"><input type="checkbox" data-onboarding-project="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.workspacePath || "未提供工作文件夹")} · ${candidate.sessionKeys.length} 个来源会话</small></span></label>
+              <label class="monitoring-onboarding-default"><input type="checkbox" data-onboarding-default="${escapeHtml(candidate.key)}" /><span><strong>默认开启监控</strong><small>当前及以后同一工作文件夹的来源会话继承此设置</small></span></label>
+              <div class="monitoring-onboarding-sessions">${candidate.sessionKeys.map((key) => {
+                const session = (monitoring.sessions ?? []).find((item) => item.key === key);
+                return session ? `<label><input type="checkbox" data-onboarding-session="${escapeHtml(key)}" data-onboarding-candidate-session="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve>${escapeHtml(session.title)}</strong><small>${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)}</small></span></label>` : "";
+              }).join("")}</div>
+            </article>`).join("")}</div>
+          <p class="monitoring-onboarding-note">可以全部跳过；之后仍可从“＋ 添加会话”重新进入。</p>
+          <div class="dialog-actions"><button type="button" class="secondary-button" id="skip-session-monitoring-onboarding">全部跳过</button><button type="submit" class="primary-button" id="confirm-session-monitoring-onboarding">加入 Teamline</button></div>
+        </form>` : `<section class="session-monitoring-empty"><strong>没有发现可加入的本地会话</strong><p>确认 Codex 或 Claude Code 已在这台电脑上使用过。</p><button class="secondary-button" id="skip-session-monitoring-onboarding" type="button">稍后再选</button></section>`}
+    </section>`;
+}
+
+function renderMonitoringWorkSection(works, projectKey, sessions) {
+  const projectWorks = (Array.isArray(works) ? works : []).filter((work) =>
+    projectKey === "unclassified" ? !work.projectId : projectKey ? work.projectId === projectKey : true,
+  );
+  const sourceKeys = new Set(sessions.map((session) => session.key));
+  const visibleWorks = projectWorks.filter((work) => work.sourceSessionKeys.some((key) => sourceKeys.has(key)));
+  return `
+    <section class="session-monitoring-works" aria-label="监控工作">
+      <div class="session-monitoring-works-heading"><div><p class="overline">监控工作</p><h2>来源边界</h2><small>默认一条来源会话一个工作；多来源只在你明确合并后显示为同一组。</small></div><button class="secondary-button" id="open-monitoring-work-editor" type="button">合并来源</button></div>
+      ${visibleWorks.length ? `<div class="session-monitoring-work-list">${visibleWorks.map((work) => `<button type="button" class="session-monitoring-work-row" data-edit-monitoring-work="${escapeHtml(work.id)}"><span><strong data-i18n-preserve>${escapeHtml(work.name)}</strong><small>${work.sources?.length ?? work.sourceSessionKeys.length} 个来源 · ${work.sourceSessionKeys.length > 1 ? "用户已合并" : "单来源"}</small></span><span>编辑</span></button>`).join("")}</div>` : `<p class="session-monitoring-work-empty">选择来源后可创建监控工作。</p>`}
     </section>`;
 }
 
@@ -1709,6 +1779,14 @@ function renderMonitoringSessionContext(session) {
     state.locale,
     session.sourceAvailable === false ? "不可用" : "可打开",
   );
+  const projectDefault = session.projectId
+    ? state.sessionMonitoring.projectMonitoringDefaults?.[session.projectId] === true
+    : false;
+  const monitoringChoice = session.monitoringOverride === null || session.monitoringOverride === undefined
+    ? `继承项目默认（${projectDefault ? "开启" : "关闭"}）`
+    : session.monitoringOverride
+      ? "会话显式开启"
+      : "会话显式关闭";
   return `
     <section class="context-content monitoring-context">
       <div class="context-heading">
@@ -1723,11 +1801,12 @@ function renderMonitoringSessionContext(session) {
         <div><dt>来源记录</dt><dd>${sourceAvailability}</dd></div>
         <div><dt>最近活动</dt><dd>${formatDate(session.lastActiveAt)}</dd></div>
         <div><dt>整理状态</dt><dd>${escapeHtml(sessionOrganizationStatusLabel(session.organizationStatus))}</dd></div>
+        <div><dt>监控选择</dt><dd>${escapeHtml(monitoringChoice)}</dd></div>
       </dl>
       <section class="context-section monitoring-session-settings">
         <span>会话设置</span>
         <label><span>归入项目</span><select data-session-project="${escapeHtml(session.key)}">${projectOptions}</select></label>
-        <label class="auto-run-toggle compact"><input type="checkbox" data-session-monitoring-toggle="${escapeHtml(session.key)}" ${session.monitoringEnabled ? "checked" : ""} /><span><strong>启用会话监控</strong><small>只读取来源记录，不会接管会话</small></span></label>
+        <label class="auto-run-toggle compact"><input type="checkbox" data-session-monitoring-toggle="${escapeHtml(session.key)}" ${session.monitoringEnabled ? "checked" : ""} /><span><strong>会话显式选择</strong><small>只读取来源记录，不会接管会话；会覆盖项目默认</small></span></label>
       </section>
       ${session.message ? `<p class="form-error" role="alert">${escapeHtml(session.message)}</p>` : ""}
       ${session.organizationStatus === "failed" && session.monitoringEnabled ? `<button class="secondary-button full-button" type="button" data-session-monitoring-retry="${escapeHtml(session.key)}">重试整理</button>` : ""}
@@ -2077,8 +2156,40 @@ function openExecutionMode() {
 
 function bindSessionMonitoringEvents() {
   document.querySelector("#refresh-session-monitoring")?.addEventListener("click", refreshSessionMonitoring);
-  document.querySelector("#refresh-session-monitoring-empty")?.addEventListener("click", refreshSessionMonitoring);
+  document.querySelector("#refresh-session-monitoring-empty")?.addEventListener("click", openSessionDiscovery);
+  document.querySelector("#refresh-session-monitoring-onboarding")?.addEventListener("click", openSessionDiscovery);
+  document.querySelector("#skip-session-monitoring-onboarding")?.addEventListener("click", skipSessionMonitoringOnboarding);
+  document.querySelector("#session-monitoring-onboarding-form")?.addEventListener("submit", confirmSessionMonitoringOnboarding);
+  document.querySelectorAll("[data-onboarding-project]").forEach((control) => {
+    control.addEventListener("change", () => {
+      const key = control.dataset.onboardingProject;
+      document.querySelectorAll(`[data-onboarding-candidate-session="${CSS.escape(key)}"]`).forEach((session) => {
+        session.checked = control.checked;
+        session.disabled = !control.checked;
+      });
+    });
+  });
+  document.querySelectorAll("[data-onboarding-tool]").forEach((control) => {
+    control.addEventListener("change", () => {
+      const tool = state.sessionMonitoring.tools?.find((candidate) => candidate.key === control.dataset.onboardingTool);
+      for (const key of tool?.sessionKeys ?? []) {
+        const session = document.querySelector(`[data-onboarding-session="${CSS.escape(key)}"]`);
+        if (session) {
+          session.checked = control.checked;
+          session.disabled = !control.checked;
+        }
+      }
+    });
+  });
   document.querySelector("#open-monitoring-goal")?.addEventListener("click", openMonitoringGoalDialog);
+  document.querySelector("#refresh-session-monitoring-manual")?.addEventListener("click", () => refreshSessionMonitoring("manual"));
+  document.querySelector("#refresh-session-monitoring-deep")?.addEventListener("click", () => refreshSessionMonitoring("deep"));
+  document.querySelector("#session-monitoring-automatic-toggle")?.addEventListener("change", saveAutomaticSessionMonitoringSetting);
+  document.querySelector("#project-monitoring-default")?.addEventListener("change", saveProjectMonitoringDefault);
+  document.querySelector("#open-monitoring-work-editor")?.addEventListener("click", () => openMonitoringWorkEditor());
+  document.querySelectorAll("[data-edit-monitoring-work]").forEach((button) => {
+    button.addEventListener("click", () => openMonitoringWorkEditor(button.dataset.editMonitoringWork));
+  });
   document.querySelector("#session-monitoring-project-filter")?.addEventListener("change", (event) => {
     selectMonitoringProject(event.currentTarget.value);
   });
@@ -2119,13 +2230,15 @@ async function openSessionSource(key, button) {
   }
 }
 
-async function refreshSessionMonitoring() {
+async function openSessionDiscovery() {
   if (state.sessionMonitoringRefreshInFlight) return;
   state.sessionMonitoringRefreshInFlight = true;
   state.sessionMonitoringError = "";
+  state.sessionMonitoring.onboarding = true;
+  state.sessionMonitoring.onboardingDismissed = false;
   renderConsole();
   try {
-    state.sessionMonitoring = await requestJson("/api/session-monitoring/discover", {
+    state.sessionMonitoring = await requestJson("/api/session-monitoring/discover?preview=1", {
       method: "POST",
     });
     state.sessionMonitoringSelectionKeys = new Set();
@@ -2134,6 +2247,163 @@ async function refreshSessionMonitoring() {
   } finally {
     state.sessionMonitoringRefreshInFlight = false;
     renderConsole();
+  }
+}
+
+async function refreshSessionMonitoring(mode = "manual") {
+  if (state.sessionMonitoringRefreshInFlight) return;
+  state.sessionMonitoringRefreshInFlight = true;
+  state.sessionMonitoringError = "";
+  renderConsole();
+  try {
+    state.sessionMonitoring = mode === "manual" || mode === "deep"
+      ? await requestJson("/api/session-monitoring/refresh", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode }),
+        })
+      : await requestJson("/api/session-monitoring/discover", { method: "POST" });
+    state.sessionMonitoringSelectionKeys = new Set();
+  } catch (error) {
+    state.sessionMonitoringError = messageFrom(error, "无法扫描本机会话");
+  } finally {
+    state.sessionMonitoringRefreshInFlight = false;
+    renderConsole();
+  }
+}
+
+async function skipSessionMonitoringOnboarding() {
+  try {
+    state.sessionMonitoring = await requestJson("/api/session-monitoring/onboarding", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ skip: true }),
+    });
+    renderConsole();
+  } catch (error) {
+    state.sessionMonitoringError = messageFrom(error, "无法跳过首次发现");
+    renderConsole();
+  }
+}
+
+async function confirmSessionMonitoringOnboarding(event) {
+  event.preventDefault();
+  const projects = [...document.querySelectorAll("[data-onboarding-project]")].map((control) => ({
+    candidateKey: control.dataset.onboardingProject,
+    selected: control.checked,
+    monitoringEnabled: Boolean(document.querySelector(`[data-onboarding-default="${CSS.escape(control.dataset.onboardingProject)}"]`)?.checked),
+  }));
+  const selectedSessionKeys = [...document.querySelectorAll("[data-onboarding-session]:checked")]
+    .map((control) => control.dataset.onboardingSession)
+    .filter(Boolean);
+  const button = document.querySelector("#confirm-session-monitoring-onboarding");
+  setBusy(button, "正在保存…");
+  try {
+    state.sessionMonitoring = await requestJson("/api/session-monitoring/onboarding", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projects, selectedSessionKeys }),
+    });
+    state.sessionMonitoringError = "";
+    renderConsole();
+  } catch (error) {
+    state.sessionMonitoringError = messageFrom(error, "无法保存首次发现选择");
+    renderConsole();
+  } finally {
+    resetBusy(button, "加入 Teamline");
+  }
+}
+
+async function saveAutomaticSessionMonitoringSetting(event) {
+  const enabled = Boolean(event.currentTarget.checked);
+  try {
+    const result = await requestJson("/api/session-monitoring/automatic", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    state.sessionMonitoring.automaticRefreshEnabled = result.enabled;
+    renderConsole();
+  } catch (error) {
+    event.currentTarget.checked = !enabled;
+    state.sessionMonitoringError = messageFrom(error, "无法保存自动更新设置");
+    renderConsole();
+  }
+}
+
+async function saveProjectMonitoringDefault(event) {
+  const projectId = activeMonitoringProjectId();
+  if (!projectId) return;
+  const enabled = Boolean(event.currentTarget.checked);
+  try {
+    const result = await requestJson(`/api/projects/${encodeURIComponent(projectId)}/session-monitoring-default`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    state.sessionMonitoring.projectMonitoringDefaults[projectId] = result.enabled;
+    await refreshConsole({ polling: true, checkAutoRun: false });
+  } catch (error) {
+    event.currentTarget.checked = !enabled;
+    state.sessionMonitoringError = messageFrom(error, "无法保存项目监控默认");
+    renderConsole();
+  }
+}
+
+function openMonitoringWorkEditor(workId = "") {
+  const work = (state.sessionMonitoring.monitoringWorks ?? []).find((candidate) => candidate.id === workId);
+  const sessions = currentMonitoringProjectSessions();
+  monitoringWorkForm.dataset.workId = work?.id ?? "";
+  document.querySelector("#monitoring-work-name").value = work?.name ?? "新的监控工作";
+  document.querySelector("#monitoring-work-sources").innerHTML = sessions.map((session) => `
+    <label class="monitoring-work-source"><input type="checkbox" name="sourceSessionKey" value="${escapeHtml(session.key)}" ${work?.sourceSessionKeys.includes(session.key) ? "checked" : work ? "" : session.monitoringEnabled ? "checked" : ""} /><span><strong data-i18n-preserve>${escapeHtml(session.title)}</strong><small>${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)}</small></span></label>`).join("");
+  document.querySelector("#monitoring-work-error").textContent = "";
+  monitoringWorkDialog.showModal();
+  document.querySelector("#monitoring-work-name").focus();
+}
+
+function closeMonitoringWork(force = false) {
+  if (!force && monitoringWorkSubmit.dataset.busy === "true") return;
+  monitoringWorkDialog.close();
+  monitoringWorkForm.reset();
+  monitoringWorkForm.dataset.workId = "";
+  document.querySelector("#monitoring-work-sources").innerHTML = "";
+  document.querySelector("#monitoring-work-error").textContent = "";
+  resetBusy(monitoringWorkSubmit, "保存监控工作");
+}
+
+async function saveMonitoringWork(event) {
+  event.preventDefault();
+  const data = new FormData(monitoringWorkForm);
+  const sourceSessionKeys = data.getAll("sourceSessionKey").map((value) => String(value));
+  if (!sourceSessionKeys.length) {
+    document.querySelector("#monitoring-work-error").textContent = "请选择至少一个来源会话";
+    return;
+  }
+  setBusy(monitoringWorkSubmit, "正在保存…");
+  try {
+    const workId = monitoringWorkForm.dataset.workId;
+    const url = workId
+      ? `/api/session-monitoring/works/${encodeURIComponent(workId)}`
+      : "/api/session-monitoring/works";
+    const result = await requestJson(url, {
+      method: workId ? "PATCH" : "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: data.get("name"),
+        projectId: activeMonitoringProjectId(),
+        sourceSessionKeys,
+      }),
+    });
+    const works = state.sessionMonitoring.monitoringWorks ?? [];
+    state.sessionMonitoring.monitoringWorks = workId
+      ? works.map((candidate) => candidate.id === workId ? result.work : candidate)
+      : [result.work, ...works];
+    closeMonitoringWork(true);
+    renderConsole();
+  } catch (error) {
+    resetBusy(monitoringWorkSubmit, "保存监控工作");
+    document.querySelector("#monitoring-work-error").textContent = messageFrom(error, "无法保存监控工作");
   }
 }
 
@@ -2148,6 +2418,7 @@ async function persistSessionMonitoringRow(key) {
       body: JSON.stringify({
         projectId: project?.value || null,
         monitoringEnabled: Boolean(toggle?.checked),
+        monitoringOverride: Boolean(toggle?.checked),
       }),
     });
     state.sessionMonitoring.sessions = state.sessionMonitoring.sessions.map((session) =>
