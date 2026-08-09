@@ -33,6 +33,68 @@
         "required": ["id", "outcome", "summary", "status", "sourceSessionIds"]
       }
     },
+    "futureStages": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "outcome": { "type": "string" },
+          "summary": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["unknown", "in_progress"]
+          },
+          "sourceSessionIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "explicit": { "const": true }
+        },
+        "required": ["id", "outcome", "summary", "status", "sourceSessionIds", "explicit"]
+      }
+    },
+    "currentProgressPercent": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "enumerablePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "completed": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["completed", "total"]
+    },
+    "inferredRelations": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "label": { "type": "string" }
+        },
+        "required": ["id", "from", "to", "label"]
+      }
+    },
+    "toolCalls": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string" }
+    },
+    "logs": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string" }
+    },
     "artifacts": {
       "type": "array",
       "items": {

@@ -1,0 +1,122 @@
+import { describe, expect, test } from "bun:test";
+import {
+  buildMonitoringProjectGraph,
+  normalizeSessionMonitoringGraph,
+  monitoringProjectEntries,
+} from "../public/session-monitoring-graph.js";
+
+function monitoredSession(key: string, title: string, snapshot: unknown, projectId = "project-a") {
+  return {
+    key,
+    id: key,
+    title,
+    projectId,
+    monitoringEnabled: true,
+    sourceKind: "codex_session",
+    executionIdentityLabel: "个人账号",
+    projectLabel: "teamline",
+    workGraphSnapshot: snapshot,
+  };
+}
+
+describe("session monitoring work graph", () => {
+  test("treats a missing organization snapshot as an empty graph", () => {
+    for (const snapshot of [null, undefined]) {
+      expect(normalizeSessionMonitoringGraph(snapshot, { id: "source-empty" })).toMatchObject({
+        nodes: [],
+        inferredRelations: [],
+        artifacts: [],
+        activities: { toolCalls: [], logs: [] },
+        enumerablePlan: null,
+      });
+    }
+  });
+
+  test("keeps meaningful history and current state, and only admits explicit future steps", () => {
+    const graph = normalizeSessionMonitoringGraph({
+      historicalStages: [{ id: "history", outcome: "完成会话发现", status: "completed" }],
+      currentState: "正在整理项目进展",
+      currentProgressPercent: 42,
+      nextAction: "继续观察新的来源变化",
+      futureStages: [
+        { id: "future", outcome: "核对移动端布局", status: "in_progress", explicit: true },
+        { id: "unconfirmed", outcome: "未经确认的后续步骤", status: "unknown" },
+      ],
+      toolCalls: ["读取会话记录"],
+      logs: ["已完成一次增量整理"],
+    }, { id: "source-a" });
+
+    expect(graph.nodes.map((node) => [node.id, node.status, node.outcome])).toEqual([
+      ["history", "historical", "完成会话发现"],
+      ["current-state", "current", "正在整理项目进展"],
+      ["future", "future", "核对移动端布局"],
+    ]);
+    expect(graph.nodes.find((node) => node.status === "current")?.estimatedProgress).toBe(42);
+    expect(graph.nodes.some((node) => node.outcome === "继续观察新的来源变化")).toBe(false);
+    expect(graph.nodes.some((node) => node.outcome === "未经确认的后续步骤")).toBe(false);
+    expect(graph.nodes.find((node) => node.id === "future")).toMatchObject({
+      status: "future",
+      explicit: true,
+    });
+    expect(graph.activities.toolCalls.map((item) => item.label)).toEqual(["读取会话记录"]);
+    expect(graph.activities.logs.map((item) => item.label)).toEqual(["已完成一次增量整理"]);
+  });
+
+  test("renders independent source lanes and keeps inferred links separate", () => {
+    const sessions = [
+      monitoredSession("source-a", "设计会话", {
+        nodes: [{ id: "a-history", outcome: "确认界面边界", status: "historical" }],
+        inferredRelations: [{ from: "a-history", to: "b-current", label: "可能影响实现" }],
+      }),
+      monitoredSession("source-b", "实现会话", {
+        nodes: [{ id: "b-current", outcome: "完成工作图骨架", status: "current" }],
+      }),
+    ];
+
+    const graph = buildMonitoringProjectGraph(sessions);
+
+    expect(graph.lanes.map((lane) => lane.session.key)).toEqual(["source-a", "source-b"]);
+    expect(graph.lanes[0].nodes.map((node) => node.key)).toEqual(["source-a:a-history"]);
+    expect(graph.lanes[1].nodes.map((node) => node.key)).toEqual(["source-b:b-current"]);
+    expect(graph.inferredRelations).toEqual([
+      expect.objectContaining({
+        fromKey: "source-a:a-history",
+        toKey: "source-b:b-current",
+        label: "可能影响实现",
+      }),
+    ]);
+    expect(graph.overallProgress).toBeNull();
+  });
+
+  test("shows an overall estimate only when every monitored lane has an enumerable plan", () => {
+    const sessions = [
+      monitoredSession("source-a", "会话 A", {
+        enumerablePlan: { completed: 1, total: 2 },
+        currentState: "进行中",
+      }),
+      monitoredSession("source-b", "会话 B", {
+        enumerablePlan: { completed: 2, total: 4 },
+        currentState: "进行中",
+      }),
+      { ...monitoredSession("source-c", "未监控", null), monitoringEnabled: false },
+    ];
+
+    expect(buildMonitoringProjectGraph(sessions).overallProgress).toEqual({
+      completed: 3,
+      total: 6,
+      percent: 50,
+    });
+  });
+
+  test("keeps sessions grouped by the selected project without inventing a project", () => {
+    const entries = monitoringProjectEntries([
+      monitoredSession("source-a", "会话 A", null, "project-a"),
+      monitoredSession("source-b", "会话 B", null, "missing-project"),
+    ], [{ id: "project-a", name: "Teamline" }]);
+
+    expect(entries).toEqual([
+      { key: "project-a", name: "Teamline", sessions: [expect.objectContaining({ key: "source-a" })] },
+      { key: "unclassified", name: "未归类", sessions: [expect.objectContaining({ key: "source-b" })] },
+    ]);
+  });
+});

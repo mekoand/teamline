@@ -169,6 +169,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     path: "public/result-artifacts.js",
     type: "text/javascript; charset=utf-8",
   },
+  "/session-monitoring-graph.js": {
+    path: "public/session-monitoring-graph.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/styles.css": { path: "public/styles.css", type: "text/css; charset=utf-8" },
   "/teamline-logo.png": { path: "public/teamline-logo.png", type: "image/png" },
 };
@@ -2514,6 +2518,38 @@ export function createApp({
           { outcome: "pending", session: presentSessionMonitoring(record) },
           { status: 202 },
         );
+      }
+
+      const openSessionSourceMatch = url.pathname.match(
+        /^\/api\/session-monitoring\/([^/]+)\/source\/open$/,
+      );
+      if (request.method === "POST" && openSessionSourceMatch) {
+        const key = decodeURIComponent(openSessionSourceMatch[1]);
+        const record = store.getSessionMonitoring(key);
+        if (!record) {
+          return Response.json(
+            { code: "SESSION_MONITORING_NOT_FOUND", error: "找不到这个本机会话" },
+            { status: 404 },
+          );
+        }
+        if (!record.sourcePath || !existsSync(record.sourcePath)) {
+          return Response.json(
+            { code: "SESSION_SOURCE_UNAVAILABLE", error: "来源记录当前不可用" },
+            { status: 409 },
+          );
+        }
+        try {
+          await openLocalArtifact(record.sourcePath, false);
+          return Response.json({ opened: true });
+        } catch (error) {
+          return Response.json(
+            {
+              code: "SESSION_SOURCE_OPEN_FAILED",
+              error: error instanceof Error ? error.message : "无法打开来源记录",
+            },
+            { status: 500 },
+          );
+        }
       }
 
       const sessionMonitoringMatch = url.pathname.match(
@@ -5327,7 +5363,9 @@ async function discoverSessionProvider(
   }
 }
 
-type PresentedSessionMonitoring = Omit<SessionMonitoringRecord, "sourcePath">;
+type PresentedSessionMonitoring = Omit<SessionMonitoringRecord, "sourcePath"> & {
+  sourceAvailable: boolean;
+};
 
 function groupSessionMonitoring(sessions: SessionMonitoringRecord[]) {
   const publicSessions = sessions.map(presentSessionMonitoring);
@@ -5354,8 +5392,11 @@ function groupSessionMonitoring(sessions: SessionMonitoringRecord[]) {
 function presentSessionMonitoring(
   session: SessionMonitoringRecord,
 ): PresentedSessionMonitoring {
-  const { sourcePath: _sourcePath, ...publicSession } = session;
-  return publicSession;
+  const { sourcePath, ...publicSession } = session;
+  return {
+    ...publicSession,
+    sourceAvailable: Boolean(sourcePath && existsSync(sourcePath)),
+  };
 }
 
 function sessionMonitoringSourceChanged(

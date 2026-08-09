@@ -4965,3 +4965,499 @@ button {
     align-self: flex-start;
   }
 }
+
+/* Session monitoring work graph */
+.sidebar-project-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--text-soft);
+  background: transparent;
+  text-align: left;
+}
+
+.sidebar-project-row:hover,
+.sidebar-project-row.selected {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.sidebar-project-row strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-project-row span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.sidebar-project-sessions {
+  display: grid;
+  gap: 1px;
+  padding-left: 5px;
+}
+
+.session-monitoring-graph {
+  display: grid;
+  gap: 18px;
+}
+
+.session-monitoring-graph-heading,
+.monitoring-inferred-heading,
+.monitoring-artifact-strip,
+.session-monitoring-lane-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.session-monitoring-graph-heading h2 {
+  margin-top: 5px;
+  font-size: 18px;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+  word-break: auto-phrase;
+}
+
+.monitoring-overall-progress {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.monitoring-overall-progress span,
+.monitoring-overall-progress small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-overall-progress strong {
+  color: var(--accent);
+  font-size: 17px;
+}
+
+.session-monitoring-lanes {
+  display: grid;
+  gap: 12px;
+}
+
+.session-monitoring-lane {
+  min-width: 0;
+  padding: 15px 16px 17px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 10px 32px rgba(32, 34, 31, 0.025);
+}
+
+.session-monitoring-lane.selected {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.session-monitoring-lane-heading {
+  width: 100%;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.session-monitoring-lane-heading > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+}
+
+.session-monitoring-lane-heading strong,
+.session-monitoring-lane-heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-monitoring-lane-heading strong {
+  font-size: 13px;
+}
+
+.session-monitoring-lane-heading small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-lane-marker {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.session-monitoring-lane-track {
+  display: grid;
+  gap: 0;
+  margin-top: 15px;
+  padding-left: 3px;
+}
+
+.monitoring-node-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  padding: 7px 0 7px 19px;
+}
+
+.monitoring-node-wrap::before {
+  position: absolute;
+  z-index: 1;
+  top: 19px;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--line-strong);
+  box-shadow: 0 0 0 1px var(--line-strong);
+  content: "";
+}
+
+.monitoring-node-wrap:has(.monitoring-node.current)::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft);
+}
+
+.monitoring-node-wrap:has(.monitoring-node.future)::before {
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.monitoring-node {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--panel-soft);
+  text-align: left;
+}
+
+.monitoring-node:hover {
+  border-color: var(--line-strong);
+  background: var(--panel);
+}
+
+.monitoring-node.current {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 44%, var(--panel-soft));
+}
+
+.monitoring-node.future {
+  border-style: dashed;
+}
+
+.monitoring-node-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-node strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: balance;
+  word-break: auto-phrase;
+}
+
+.monitoring-node small {
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  text-wrap: balance;
+  word-break: auto-phrase;
+}
+
+.monitoring-node-progress {
+  color: var(--accent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.monitoring-edge.source-order {
+  position: absolute;
+  top: -7px;
+  bottom: 50%;
+  left: 4px;
+  width: 2px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.monitoring-lane-empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.monitoring-inferred-relations {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 72%, var(--bg));
+}
+
+.monitoring-inferred-heading {
+  justify-content: flex-start;
+}
+
+.monitoring-inferred-heading strong {
+  font-size: 12px;
+}
+
+.monitoring-inferred-heading small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-edge-key.inferred {
+  width: 24px;
+  border-top: 2px dashed var(--muted);
+}
+
+.monitoring-inferred-relation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--line);
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.monitoring-inferred-relation .monitoring-edge.inferred {
+  width: 23px;
+  border-top: 2px dashed var(--muted);
+}
+
+.monitoring-inferred-relation button,
+.monitoring-artifact {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text-soft);
+  background: var(--panel);
+  text-align: left;
+}
+
+.monitoring-inferred-relation button:hover,
+.monitoring-artifact:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.monitoring-relation-label {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-inferred-relation small {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-artifact-strip {
+  align-items: flex-start;
+  padding-top: 4px;
+}
+
+.monitoring-artifact-strip h3 {
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.monitoring-artifact-list {
+  display: flex;
+  max-width: 66%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.monitoring-artifact {
+  display: grid;
+  gap: 3px;
+}
+
+.monitoring-artifact span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.monitoring-artifact strong {
+  max-width: 210px;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitoring-context .context-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.monitoring-context .context-summary {
+  margin-top: 14px;
+}
+
+.monitoring-session-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.monitoring-session-settings > span,
+.monitoring-activity-section > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.monitoring-session-settings label {
+  display: grid;
+  gap: 6px;
+}
+
+.monitoring-session-settings label > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.monitoring-session-settings select {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel-soft);
+}
+
+.monitoring-activity-section {
+  display: grid;
+  gap: 13px;
+}
+
+.monitoring-activity-section > div {
+  display: grid;
+  gap: 7px;
+}
+
+.monitoring-activity-section small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.monitoring-activity-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.monitoring-activity-list li {
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text-soft);
+  background: var(--panel-soft);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.monitoring-context-reference-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+@media (max-width: 680px) {
+  body:has(.console-shell.view-session-monitoring:not(.context-open)) {
+    overflow: auto;
+  }
+
+  .console-shell.view-session-monitoring:not(.context-open) {
+    display: block;
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .console-shell.view-session-monitoring:not(.context-open) .order-sidebar {
+    display: block;
+    min-height: 0;
+    max-height: 246px;
+    overflow: auto;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .console-shell.view-session-monitoring:not(.context-open) .work-order-workspace {
+    display: block;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .console-shell.view-session-monitoring:not(.context-open) .work-order-list {
+    max-height: 142px;
+    overflow: auto;
+  }
+
+  .session-monitoring-graph-heading,
+  .monitoring-artifact-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .monitoring-overall-progress {
+    justify-items: start;
+  }
+
+  .monitoring-artifact-list {
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+
+  .monitoring-inferred-relation {
+    align-items: flex-start;
+  }
+}
