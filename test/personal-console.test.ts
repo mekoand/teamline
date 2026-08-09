@@ -249,6 +249,19 @@ describe("personal console", () => {
     expect(script).toContain("生成计划通常需要 30–90 秒");
   });
 
+  test("keeps result file actions local and keyboard reachable", async () => {
+    const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
+    const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
+    expect(script).toContain("/artifacts/preview?");
+    expect(script).toContain("双击打开");
+    expect(script).toContain("Quick Look");
+    expect(script).toContain("复制路径");
+    expect(script).toContain("navigator.clipboard.writeText");
+    expect(script).toContain("data-artifact-codex-session");
+    expect(script).toContain("source.openInCodex === true");
+    expect(script).toContain("成果位置已记录，当前无法直接打开");
+  });
+
   test("keeps the topbar controls aligned and Chinese headings phrase-aware", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
     const styles = await (await app.fetch(new Request("http://teamline.local/styles.css"))).text();

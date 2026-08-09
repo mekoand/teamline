@@ -2,10 +2,13 @@ import {
   app,
   BrowserWindow,
   dialog,
+  ipcMain,
   Menu,
   nativeImage,
   Tray,
 } from "electron";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureLocalCore } from "./local-core-client.mjs";
@@ -21,6 +24,111 @@ let tray = null;
 let quitting = false;
 let stoppingCore = false;
 let coreConnection = null;
+
+const artifactActions = new Set(["open", "reveal", "quicklook"]);
+
+function installArtifactActionBridge() {
+  ipcMain.handle("teamline:artifact-action", async (_event, request) => {
+    const workOrderId = request?.workOrderId;
+    const path = request?.path;
+    const action = request?.action;
+    if (
+      typeof workOrderId !== "string" ||
+      !workOrderId.trim() ||
+      typeof path !== "string" ||
+      !path.trim() ||
+      typeof action !== "string" ||
+      !artifactActions.has(action)
+    ) {
+      throw new Error("成果操作请求无效");
+    }
+    if (!coreConnection) throw new Error("Local Core 尚未连接");
+
+    const response = await fetch(
+      new URL(`/api/work-orders/${encodeURIComponent(workOrderId)}/artifacts/open`, coreConnection.url),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, delegate: true, path }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || "无法确认这个成果路径");
+    }
+    if (
+      payload.action !== action ||
+      typeof payload.authorizedPath !== "string" ||
+      !payload.authorizedPath.startsWith("/")
+    ) {
+      throw new Error("Local Core 没有返回可用的成果路径");
+    }
+    await executeArtifactAction(payload.authorizedPath, action);
+    return { opened: true };
+  });
+}
+
+async function executeArtifactAction(path, action) {
+  if (action === "quicklook") {
+    if (process.platform !== "darwin" || !existsSync("/usr/bin/qlmanage")) {
+      throw new Error("Quick Look 当前不可用");
+    }
+    const child = spawn("/usr/bin/qlmanage", ["-p", path], {
+      detached: true,
+      stdio: "ignore",
+    });
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let launchTimer;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        if (launchTimer) clearTimeout(launchTimer);
+        reject(error);
+      };
+      child.once("spawn", () => {
+        launchTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.unref();
+          resolve();
+        }, 250);
+      });
+      child.once("close", (code) => {
+        if (settled) return;
+        if (launchTimer) clearTimeout(launchTimer);
+        if (code === 0) {
+          settled = true;
+          resolve();
+          return;
+        }
+        fail(new Error("Quick Look 无法打开这个成果"));
+      });
+      child.once("error", fail);
+    });
+    return;
+  }
+
+  if (process.platform !== "darwin") {
+    throw new Error("系统文件操作当前仅支持 macOS");
+  }
+  const args = action === "reveal" ? ["-R", path] : [path];
+  await new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/open", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(stderr.trim() || "无法执行这个成果操作"));
+    });
+  });
+}
 
 function createMainWindow() {
   if (mainWindow) {
@@ -41,6 +149,7 @@ function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: resolve(sourceRoot, "src/electron/preload.cjs"),
       sandbox: true,
     },
   });
@@ -201,6 +310,7 @@ app.whenReady().then(async () => {
         resolve(sourceRoot, "src/server.ts"),
     });
     installApplicationMenu();
+    installArtifactActionBridge();
     createTray();
     createMainWindow();
   } catch (error) {

@@ -1953,7 +1953,10 @@ textarea {
 }
 
 .result-artifact-card small {
+  display: block;
   color: var(--accent);
+  line-height: 1.45;
+  text-wrap: balance;
 }
 
 .artifact-actions {
@@ -1976,6 +1979,131 @@ textarea {
 .artifact-actions button:hover {
   border-color: var(--line-strong);
   color: var(--text);
+}
+
+.artifact-preview {
+  min-width: 0;
+}
+
+.artifact-preview > h3,
+.artifact-preview-heading {
+  margin-bottom: 10px;
+}
+
+.artifact-preview-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.artifact-preview-heading h3 {
+  margin: 0;
+}
+
+.artifact-preview-heading span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.artifact-text-preview {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-soft);
+  background: var(--panel-soft);
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.artifact-image-preview,
+.artifact-pdf-preview {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.artifact-image-preview {
+  max-height: 260px;
+  object-fit: contain;
+}
+
+.artifact-pdf-preview {
+  height: 300px;
+}
+
+.artifact-file-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.artifact-file-facts div {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 7px;
+  background: var(--panel-soft);
+}
+
+.artifact-file-facts dt,
+.artifact-file-facts dd {
+  margin: 0;
+}
+
+.artifact-file-facts dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.artifact-file-facts dd {
+  margin-top: 3px;
+  color: var(--text-soft);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.artifact-context-menu {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  min-width: 172px;
+  gap: 3px;
+  padding: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.artifact-context-menu strong {
+  padding: 4px 8px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.artifact-context-menu button {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: transparent;
+  text-align: left;
+  font-size: 11px;
+}
+
+.artifact-context-menu button:hover,
+.artifact-context-menu button:focus-visible {
+  color: var(--text);
+  background: var(--accent-soft);
+  outline: none;
 }
 
 .completion-reference p {
@@ -2957,6 +3085,14 @@ dialog::backdrop {
   .result-summary-list,
   .result-artifact-grid {
     grid-template-columns: 1fr;
+  }
+
+  .artifact-file-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .artifact-pdf-preview {
+    height: 240px;
   }
 
   .order-sidebar {
