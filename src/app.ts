@@ -34,6 +34,8 @@ import {
   type WorkOrderWorkspace,
   type WorkOrder,
   type WorkOrderResult,
+  type WorkOrderSourceContext,
+  type WorkOrderImportContext,
 } from "./work-order";
 import {
   PlanLockedError,
@@ -595,6 +597,72 @@ export function createApp({
       groups: groupSessionMonitoring(visibleSessions),
     };
   };
+
+  const createGoalFromSessionMonitoring = (body: unknown) => {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("监控目标创建格式无效");
+    }
+    const input = body as Record<string, unknown>;
+    const rawKeys = input.sessionKeys ?? input.sourceSessionKeys ?? input.selectedSessionKeys;
+    const sessionKeys = normalizeMonitoringSessionKeys(rawKeys);
+    const records = sessionKeys.map((key) => {
+      const record = store.getSessionMonitoring(key);
+      if (!record) throw new Error("找不到所选来源会话");
+      if (!record.monitoringEnabled) throw new Error("只能从已启用监控的会话创建目标");
+      return record;
+    });
+    const projectIds = new Set(records.map((record) => record.projectId));
+    if (projectIds.size !== 1) throw new Error("所选来源会话必须属于同一个项目");
+    const projectId = records[0]!.projectId;
+    if (input.projectId !== undefined) {
+      const requestedProjectId = input.projectId === null
+        ? null
+        : typeof input.projectId === "string"
+          ? input.projectId.trim() || null
+          : "invalid";
+      if (requestedProjectId === "invalid" || requestedProjectId !== projectId) {
+        throw new Error("目标必须归入来源会话所在的项目");
+      }
+    }
+    const createdAt = new Date().toISOString();
+    const sourceContext = createSessionMonitoringSourceContext(records, createdAt);
+    const importContext = createSessionMonitoringImportContext(sourceContext);
+    const name = typeof input.name === "string" ? input.name.trim() : "";
+    if (!name) throw new Error("请填写目标名称");
+    const requestedDescription = typeof input.description === "string"
+      ? input.description.trim()
+      : typeof input.goal === "string"
+        ? input.goal.trim()
+        : "";
+    const description = requestedDescription || monitoringGoalDescription(sourceContext);
+    const acceptance = typeof input.acceptance === "string"
+      ? input.acceptance.trim() || undefined
+      : undefined;
+    const workspacePath = commonMonitoringWorkspace(records);
+    const sharedSourceIdentityId = records[0]?.executionIdentityId && records.every(
+      (record) => record.executionIdentityId === records[0]!.executionIdentityId,
+    )
+      ? records[0]!.executionIdentityId
+      : null;
+    const workOrder = store.create({
+      name,
+      description,
+      acceptance,
+      projectId,
+      workspace: workspacePath
+        ? {
+            kind: isGitRepository(workspacePath) ? "git" : "directory",
+            path: workspacePath,
+          }
+        : null,
+      sourceContext,
+      importContext,
+      // A mixed-account monitoring graph is reference context, not an account
+      // binding. Reuse an account only when every selected Codex source agrees.
+      executionIdentityId: sharedSourceIdentityId,
+    });
+    return { outcome: "created" as const, workOrder };
+  };
   let autoRunCheckInFlight:
     | Promise<{ startedWorkOrderId: string | null; reason: string | null }>
     | null = null;
@@ -1048,6 +1116,9 @@ export function createApp({
   };
   const organizeImportedWorkOrder = async (id: string) => {
     let workOrder = store.get(id);
+    if (workOrder?.sourceContext) {
+      throw new Error("监控来源上下文是创建时快照，不能重新整理");
+    }
     if (!workOrder?.importContext || workOrder.sourceSessions.length === 0) {
       throw new Error("这个目标没有可整理的来源会话");
     }
@@ -2484,6 +2555,28 @@ export function createApp({
             {
               code: "INVALID_SESSION_MONITORING_SELECTION",
               error: error instanceof Error ? error.message : "无法保存会话选择",
+            },
+            { status: 400 },
+          );
+        }
+      }
+
+      if (
+        request.method === "POST" &&
+        ["/api/session-monitoring/create-goal", "/api/session-monitoring/goals"].includes(
+          url.pathname,
+        )
+      ) {
+        try {
+          return Response.json(
+            createGoalFromSessionMonitoring(await request.json()),
+            { status: 201 },
+          );
+        } catch (error) {
+          return Response.json(
+            {
+              code: "INVALID_SESSION_MONITORING_GOAL",
+              error: error instanceof Error ? error.message : "无法从监控进展创建目标",
             },
             { status: 400 },
           );
@@ -5219,6 +5312,162 @@ function normalizeSessionIds(sessionIds: string[] | undefined): string[] {
   return normalized;
 }
 
+function normalizeMonitoringSessionKeys(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error("请选择至少一个来源会话");
+  return normalizeSessionIds(value as string[]);
+}
+
+function createSessionMonitoringSourceContext(
+  records: SessionMonitoringRecord[],
+  createdAt: string,
+): WorkOrderSourceContext {
+  return {
+    kind: "session_monitoring",
+    version: 1,
+    createdAt,
+    projectId: records[0]?.projectId ?? null,
+    sessions: records.map((record) => ({
+      key: record.key,
+      source: {
+        kind: record.sourceKind,
+        id: record.id,
+        lastActiveAt: record.lastActiveAt,
+        lastReadAt: record.lastReadAt,
+        ...(record.executionIdentityId
+          ? { executionIdentityId: record.executionIdentityId }
+          : {}),
+        version: 1 as const,
+      },
+      title: record.title,
+      projectLabel: record.projectLabel,
+      lastActiveAt: record.lastActiveAt,
+      monitoringEnabled: record.monitoringEnabled,
+      organizationStatus: record.organizationStatus,
+      lastReadPosition: record.lastReadPosition,
+      lastReadAt: record.lastReadAt,
+      workGraphSnapshot: record.workGraphSnapshot,
+    })),
+  };
+}
+
+function createSessionMonitoringImportContext(
+  sourceContext: WorkOrderSourceContext,
+): WorkOrderImportContext {
+  const snapshots = sourceContext.sessions.map((session) =>
+    monitoringSnapshotRecord(session.workGraphSnapshot),
+  );
+  const historicalStages = monitoringHistoricalStages(sourceContext);
+  const summaries = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.summary));
+  const currentStates = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.currentState));
+  const nextActions = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.nextAction));
+  const summary = summaries.join("；") || "已保存创建时工作图快照";
+  const currentState = currentStates.join("；") || "已保存创建时工作图快照";
+  return {
+    status: "ready",
+    summary,
+    currentState,
+    completedHighlights: historicalStages
+      .filter((stage) => stage.status === "completed")
+      .map((stage) => stage.outcome)
+      .slice(0, 3),
+    nextAction: nextActions.join("；") || currentState,
+    historicalStages,
+    artifacts: [],
+    organizedAt: sourceContext.createdAt,
+    error: null,
+  };
+}
+
+function monitoringGoalDescription(sourceContext: WorkOrderSourceContext): string {
+  const snapshots = sourceContext.sessions.map((session) =>
+    monitoringSnapshotRecord(session.workGraphSnapshot),
+  );
+  const currentState = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.currentState));
+  const nextAction = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.nextAction));
+  const sourceNames = sourceContext.sessions.map((session) => session.title).join("、");
+  const details = [
+    `从${sourceNames}的当前监控进展继续推进`,
+    currentState.length ? `当前状态：${currentState.join("；")}` : "",
+    nextAction.length ? `来源提出的下一步：${nextAction.join("；")}` : "",
+  ].filter(Boolean);
+  return details.join("。") + "。";
+}
+
+function commonMonitoringWorkspace(records: SessionMonitoringRecord[]): string | null {
+  if (records.length === 0 || records.some((record) => !record.workspacePath)) return null;
+  const paths = new Set(records.map((record) => record.workspacePath));
+  return paths.size === 1 ? records[0]!.workspacePath : null;
+}
+
+function monitoringSnapshotRecord(value: unknown): {
+  summary: string;
+  currentState: string;
+  nextAction: string;
+  historicalStages: unknown[];
+  nodes: unknown[];
+} {
+  const root = monitoringSnapshotObject(value);
+  const graph = monitoringSnapshotObject(root?.graph) ?? root;
+  return {
+    summary: monitoringSnapshotText(graph?.summary),
+    currentState: monitoringSnapshotText(graph?.currentState),
+    nextAction: monitoringSnapshotText(graph?.nextAction),
+    historicalStages: Array.isArray(graph?.historicalStages) ? graph.historicalStages : [],
+    nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
+  };
+}
+
+function monitoringHistoricalStages(
+  sourceContext: WorkOrderSourceContext,
+): WorkOrderImportContext["historicalStages"] {
+  const stages: WorkOrderImportContext["historicalStages"] = [];
+  const seenIds = new Set<string>();
+  for (const session of sourceContext.sessions) {
+    const snapshot = monitoringSnapshotRecord(session.workGraphSnapshot);
+    const rawStages = snapshot.historicalStages.length ? snapshot.historicalStages : snapshot.nodes;
+    for (const raw of rawStages) {
+      const item = monitoringSnapshotObject(raw);
+      const outcome = monitoringSnapshotText(item?.outcome ?? item?.title ?? item?.label);
+      if (!outcome) continue;
+      const rawStatus = monitoringSnapshotText(item?.status ?? item?.kind).toLowerCase();
+      if (["future", "proposed", "queued", "next"].includes(rawStatus)) continue;
+      const baseId = monitoringSnapshotText(item?.id) || `monitoring-stage-${stages.length + 1}`;
+      let id = baseId;
+      let suffix = 2;
+      while (seenIds.has(id)) id = `${baseId}-${suffix++}`;
+      seenIds.add(id);
+      stages.push({
+        id,
+        outcome,
+        summary:
+          monitoringSnapshotText(item?.summary ?? item?.description) || "来源工作图中的关键进展",
+        status: ["current", "in_progress", "running", "active"].includes(rawStatus)
+          ? "in_progress"
+          : rawStatus === "completed" || rawStatus === "historical"
+            ? "completed"
+            : "unknown",
+        sourceSessionIds: [session.source.id],
+      });
+      if (stages.length >= 8) return stages;
+    }
+  }
+  return stages;
+}
+
+function monitoringSnapshotObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function monitoringSnapshotText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function uniqueMonitoringText(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 function sharedSessionWorkspace(sessions: DiscoveredSession[]): string | null {
   if (sessions.length === 0 || sessions.some((session) => !session.workspacePath)) return null;
   const paths = new Set(sessions.map((session) => session.workspacePath));
@@ -5506,7 +5755,7 @@ function sourceKindLabel(kind: WorkOrderImportSource["kind"]): string {
 }
 
 function isImportOnlyWorkOrder(workOrder: WorkOrder): boolean {
-  return workOrder.sourceSessions[0]?.kind === "claude_code_session";
+  return !workOrder.sourceContext && workOrder.sourceSessions[0]?.kind === "claude_code_session";
 }
 
 function executionIdentityForRun(

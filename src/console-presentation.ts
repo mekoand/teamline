@@ -54,7 +54,7 @@ function presentStatus(
   if (workOrder.pendingClarification) {
     return presented("response", "待补充关键信息", "status.awaiting_clarification");
   }
-  if (workOrder.importContext && !workOrder.plan) {
+  if (workOrder.importContext && !workOrder.sourceContext && !workOrder.plan) {
     if (workOrder.importContext.status === "pending") {
       return presented("planning", "正在整理历史", "status.organizing_history");
     }

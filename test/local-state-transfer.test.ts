@@ -228,6 +228,7 @@ describe("local Teamline state transfer", () => {
     delete bundle.workOrders[0].projectId;
     delete bundle.workOrders[0].projectMaterialSelectionConfirmed;
     delete bundle.workOrders[0].sourceSessions;
+    delete bundle.workOrders[0].sourceContext;
     delete bundle.workOrders[0].importContext;
     delete bundle.workOrders[0].currentSessionId;
     delete bundle.workOrders[0].executionIdentityId;
@@ -258,6 +259,44 @@ describe("local Teamline state transfer", () => {
     });
   });
 
+  test("restores a version 2 bundle when sourceContext is absent", async () => {
+    const source = sourceState();
+    const bundle = await (
+      await createApp({ store: source.store }).fetch(request("/api/local-state/export"))
+    ).json();
+    bundle.version = 2;
+    delete bundle.projectMaterials;
+    delete bundle.executionIdentities;
+    for (const workOrder of bundle.workOrders) {
+      delete workOrder.projectMaterialSelectionConfirmed;
+      delete workOrder.sourceContext;
+      delete workOrder.importContext;
+      delete workOrder.executionIdentityId;
+      delete workOrder.sessionIdentityId;
+      delete workOrder.sessionHandoff;
+      delete workOrder.result;
+    }
+
+    const targetStore = new WorkOrderStore(new Database(":memory:"));
+    const targetApp = createApp({ store: targetStore });
+    const previewResponse = await targetApp.fetch(
+      request("/api/local-state/restore/preview", { bundle }),
+    );
+    const preview = await previewResponse.json();
+    const confirmResponse = await targetApp.fetch(
+      request("/api/local-state/restore/confirm", { previewId: preview.previewId }),
+    );
+
+    expect(previewResponse.status).toBe(200);
+    expect(confirmResponse.status).toBe(201);
+    expect(targetStore.get(source.id)).toMatchObject({
+      projectId: null,
+      sourceSessions: [bundle.workOrders[0].sourceSessions[0]],
+      sourceContext: null,
+      importContext: null,
+    });
+  });
+
   test("restores a version 3 bundle without identity and result fields", async () => {
     const source = sourceState();
     const bundle = await (
@@ -270,6 +309,7 @@ describe("local Teamline state transfer", () => {
       delete workOrder.sessionIdentityId;
       delete workOrder.sessionHandoff;
       delete workOrder.result;
+      delete workOrder.sourceContext;
       for (const sourceSession of workOrder.sourceSessions) {
         delete sourceSession.executionIdentityId;
       }
@@ -319,6 +359,7 @@ describe("local Teamline state transfer", () => {
       delete workOrder.projectId;
       delete workOrder.projectMaterialSelectionConfirmed;
       delete workOrder.sourceSessions;
+      delete workOrder.sourceContext;
       delete workOrder.importContext;
       delete workOrder.currentSessionId;
       delete workOrder.executionIdentityId;

@@ -105,6 +105,7 @@ describe("session monitoring catalog", () => {
     expect(monitoringPage.status).toBe(200);
     expect(page).toContain('id="open-execution-mode"');
     expect(page).toContain('id="open-monitoring-mode"');
+    expect(page).toContain('id="monitoring-goal-dialog"');
     expect(script).toContain('"/api/session-monitoring/discover"');
     expect(script).toContain("currentProjectIdForModeSwitch");
     expect(script).toContain('"/session-monitoring"');
@@ -119,6 +120,15 @@ describe("session monitoring catalog", () => {
     expect(script).toContain("估算");
     expect(script).toContain('if (isSessionMonitoringView()) {\n    state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 30_000);');
     expect(script).toContain("未归类");
+    expect(script).toContain("event.target === monitoringGoalDialog");
+    expect(script).toContain('monitoringGoalSubmit.dataset.busy === "true"');
+    expect(script).toContain("closeMonitoringGoal(true)");
+    expect(script).toContain('<details class="context-disclosure source-context-trace">');
+    expect(script).not.toContain("创建于 ${formatDate(context.createdAt)}");
+    expect(styles).toContain(".monitoring-goal-dialog #submit-monitoring-goal");
+    expect(styles).toContain("color: var(--accent)");
+    expect(styles).toContain("background: var(--accent-soft)");
+    expect(styles).toContain("border-color: color-mix(in srgb, var(--accent) 32%, var(--line))");
     expect(styles).toContain(".sidebar-bottom");
     expect(styles).toContain(".session-monitoring-card");
     expect(styles).toContain(".session-monitoring-lane");

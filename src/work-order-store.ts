@@ -41,6 +41,8 @@ import {
   type WorkOrderResourcePlan,
   type WorkOrderImportSource,
   type WorkOrderImportContext,
+  normalizeWorkOrderSourceContext,
+  type WorkOrderSourceContext,
   type SessionHandoff,
   type WorkOrderWorkspace,
   workOrderPaces,
@@ -77,6 +79,7 @@ type WorkOrderRow = {
   materials_json: string | null;
   source_sessions_json: string | null;
   import_context_json: string | null;
+  source_context_json: string | null;
   import_source_json: string | null;
   resource_plan_json: string | null;
   goal: string;
@@ -386,6 +389,7 @@ export class WorkOrderStore {
     this.addClarificationColumnToExistingDatabase();
     this.addV2DomainColumnsToExistingDatabase();
     this.addImportContextColumnToExistingDatabase();
+    this.addSourceContextColumnToExistingDatabase();
     this.migrateDeliveredStatus();
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS run_events (
@@ -1902,6 +1906,9 @@ export class WorkOrderStore {
       throw new Error("找不到来源会话对应的 Codex 账号");
     }
     workOrder.executionIdentityId ??= sourceIdentityId;
+    if (workOrder.executionIdentityId && !this.getExecutionIdentity(workOrder.executionIdentityId)) {
+      throw new Error("找不到目标绑定的 Codex 账号");
+    }
     if (workOrder.projectId && !this.getProject(workOrder.projectId)) {
       throw new Error("找不到所选项目");
     }
@@ -1921,9 +1928,10 @@ export class WorkOrderStore {
           id, title, project_id, project_materials_confirmed,
           repository_path, workspace_kind, materials_json,
           source_sessions_json, import_source_json, import_context_json,
+          source_context_json,
           execution_identity_id, goal, acceptance, status, current_summary,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         workOrder.id,
@@ -1936,6 +1944,7 @@ export class WorkOrderStore {
         JSON.stringify(workOrder.sourceSessions),
         workOrder.importSource ? JSON.stringify(workOrder.importSource) : null,
         workOrder.importContext ? JSON.stringify(workOrder.importContext) : null,
+        workOrder.sourceContext ? JSON.stringify(workOrder.sourceContext) : null,
         workOrder.executionIdentityId,
         workOrder.goal,
         workOrder.acceptance,
@@ -3842,6 +3851,18 @@ export class WorkOrderStore {
     }
   }
 
+  private addSourceContextColumnToExistingDatabase(): void {
+    const columns = new Set(
+      this.database
+        .query<{ name: string }, []>("PRAGMA table_info(work_orders)")
+        .all()
+        .map((column) => column.name),
+    );
+    if (!columns.has("source_context_json")) {
+      this.database.exec("ALTER TABLE work_orders ADD COLUMN source_context_json TEXT");
+    }
+  }
+
   private migrateDeliveredStatus(): void {
     this.database.exec(`
       UPDATE work_orders
@@ -4063,6 +4084,7 @@ function mapRow(
     materials: row.materials_json ? JSON.parse(row.materials_json) : [],
     sourceSessions,
     importContext: normalizeImportContext(row.import_context_json),
+    sourceContext: normalizeWorkOrderSourceContextFromJson(row.source_context_json),
     currentSessionId: row.session_id,
     executionIdentityId: row.execution_identity_id,
     sessionIdentityId: row.session_identity_id,
@@ -4321,6 +4343,17 @@ function normalizeImportContext(value: string | null): WorkOrderImportContext | 
         : null,
       error: stored.error ?? null,
     };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeWorkOrderSourceContextFromJson(
+  value: string | null,
+): WorkOrderSourceContext | null {
+  if (!value) return null;
+  try {
+    return normalizeWorkOrderSourceContext(JSON.parse(value));
   } catch {
     return null;
   }

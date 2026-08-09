@@ -457,6 +457,7 @@ describe("project page and project materials", () => {
           sessionIdentityId: _sessionIdentityId,
           sessionHandoff: _sessionHandoff,
           result: _result,
+          sourceContext: _sourceContext,
           ...workOrder
         }) => ({
           ...workOrder,
