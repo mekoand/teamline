@@ -3,6 +3,7 @@ import {
   buildMonitoringProjectGraph,
   normalizeSessionMonitoringGraph,
   monitoringProjectEntries,
+  monitoringProjectEntriesForSelection,
 } from "../public/session-monitoring-graph.js";
 
 function monitoredSession(key: string, title: string, snapshot: unknown, projectId = "project-a") {
@@ -118,5 +119,21 @@ describe("session monitoring work graph", () => {
       { key: "project-a", name: "Teamline", sessions: [expect.objectContaining({ key: "source-a" })] },
       { key: "unclassified", name: "未归类", sessions: [expect.objectContaining({ key: "source-b" })] },
     ]);
+  });
+
+  test("keeps a known empty project selected without inventing an unknown project", () => {
+    expect(monitoringProjectEntriesForSelection(
+      [monitoredSession("source-b", "会话 B", null, "project-b")],
+      [{ id: "project-a", name: "Teamline" }, { id: "project-b", name: "发布" }],
+      "project-a",
+    )).toEqual([
+      { key: "project-a", name: "Teamline", sessions: [] },
+      { key: "project-b", name: "发布", sessions: [expect.objectContaining({ key: "source-b" })] },
+    ]);
+    expect(monitoringProjectEntriesForSelection(
+      [],
+      [{ id: "project-a", name: "Teamline" }],
+      "missing-project",
+    )).toEqual([]);
   });
 });

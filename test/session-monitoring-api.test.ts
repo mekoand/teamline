@@ -105,6 +105,8 @@ describe("session monitoring catalog", () => {
     expect(monitoringPage.status).toBe(200);
     expect(page).toContain('id="open-execution-mode"');
     expect(page).toContain('id="open-monitoring-mode"');
+    expect(page.indexOf('class="mode-switch"')).toBeGreaterThan(page.indexOf('class="brand"'));
+    expect(page).not.toContain('class="sidebar-mode-switch"');
     expect(page).toContain('id="monitoring-goal-dialog"');
     expect(script).toContain('"/api/session-monitoring/discover"');
     expect(script).toContain("currentProjectIdForModeSwitch");
@@ -123,6 +125,8 @@ describe("session monitoring catalog", () => {
     expect(script).toContain("event.target === monitoringGoalDialog");
     expect(script).toContain('monitoringGoalSubmit.dataset.busy === "true"');
     expect(script).toContain("closeMonitoringGoal(true)");
+    expect(script).toContain('executionModeButton?.setAttribute("aria-selected"');
+    expect(script).toContain('activeMonitoringProjectId()');
     expect(script).toContain('<details class="context-disclosure source-context-trace">');
     expect(script).not.toContain("创建于 ${formatDate(context.createdAt)}");
     expect(styles).toContain(".monitoring-goal-dialog #submit-monitoring-goal");
@@ -134,6 +138,9 @@ describe("session monitoring catalog", () => {
     expect(styles).toContain(".session-monitoring-lane");
     expect(styles).toContain(".monitoring-edge.source-order");
     expect(styles).toContain(".monitoring-edge.inferred");
+    expect(styles).toContain(".mode-switch-button[data-mode=\"execution\"].selected");
+    expect(styles).toContain(".mode-switch-button[data-mode=\"monitoring\"].selected");
+    expect(styles).toContain("color 200ms ease");
   });
 
   test("opens an available source record without exposing its path", async () => {
@@ -189,6 +196,8 @@ describe("session monitoring catalog", () => {
   test("scans Codex accounts and Claude Code without creating goals", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const systemIdentity = store.getSystemExecutionIdentityId()!;
+    const personalProject = store.createProject("个人项目");
+    const releaseProject = store.createProject("发布项目");
     const alternateIdentity = store.createManagedExecutionIdentity({
       id: "codex-alt",
       label: "工作账号",
@@ -226,11 +235,7 @@ describe("session monitoring catalog", () => {
     expect(response.status).toBe(200);
     expect(body.sessions).toHaveLength(3);
     expect(body.sessions[0].sourcePath).toBeUndefined();
-    expect(body.groups).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sourceKind: "codex_session", executionIdentityId: systemIdentity }),
-      expect.objectContaining({ sourceKind: "codex_session", executionIdentityId: alternateIdentity.id }),
-      expect.objectContaining({ sourceKind: "claude_code_session", executionIdentityId: null }),
-    ]));
+    expect(body.groups).toBeUndefined();
     expect(body.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "shared-id",
@@ -253,7 +258,35 @@ describe("session monitoring catalog", () => {
         executionIdentityId: null,
       }),
     ]));
+
+    const codexSession = body.sessions.find((session: any) => session.sourceKind === "codex_session");
+    const claudeSession = body.sessions.find((session: any) => session.sourceKind === "claude_code_session");
+    const saved = await app.fetch(new Request(
+      "http://teamline.local/api/session-monitoring/selections",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessions: [
+            { key: codexSession.key, projectId: personalProject.id, monitoringEnabled: true },
+            { key: claudeSession.key, projectId: releaseProject.id, monitoringEnabled: false },
+          ],
+        }),
+      },
+    ));
+    expect(saved.status).toBe(200);
+    const scoped = await app.fetch(new Request("http://teamline.local/api/session-monitoring"))
+      .then((response) => response.json());
+    expect(scoped.projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: personalProject.id }),
+      expect.objectContaining({ id: releaseProject.id }),
+    ]));
+    expect(scoped.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: codexSession.key, projectId: personalProject.id, monitoringEnabled: true }),
+      expect.objectContaining({ key: claudeSession.key, projectId: releaseProject.id, monitoringEnabled: false }),
+    ]));
     expect(store.list()).toHaveLength(0);
+    await app.close();
   });
 
   test("persists project and monitoring choices, then leaves refreshed sessions disabled", async () => {

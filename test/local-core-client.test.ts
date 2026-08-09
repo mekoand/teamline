@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { resolveLocalCoreDataDirectory } from "../src/local-core";
+
+const electronMainSource = readFileSync(
+  new URL("../src/electron/main.mjs", import.meta.url),
+  "utf8",
+);
 
 test("Local Core data directory is independent from the client window", () => {
   expect(resolveLocalCoreDataDirectory({}, "/Users/example/teamline"))
@@ -7,6 +13,14 @@ test("Local Core data directory is independent from the client window", () => {
   expect(
     resolveLocalCoreDataDirectory({ TEAMLINE_DATA_DIR: "./custom-core" }, "/Users/example/teamline"),
   ).toBe(`${process.cwd()}/custom-core`);
+});
+
+test("Electron hides the window without stopping Local Core and reopens the same client", () => {
+  expect(electronMainSource).toContain("event.preventDefault();\n    mainWindow?.hide();");
+  expect(electronMainSource).toContain("if (mainWindow) {\n    mainWindow.show();\n    mainWindow.focus();");
+  expect(electronMainSource).toContain('app.on("activate", () => {\n  if (coreConnection) createMainWindow();');
+  expect(electronMainSource).toContain('app.on("window-all-closed", (event) => {\n  event.preventDefault();');
+  expect(electronMainSource).toContain("coreConnection = await ensureLocalCore({");
 });
 
 describe("Electron Local Core connection", () => {

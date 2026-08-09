@@ -255,6 +255,16 @@ export function monitoringProjectEntries(sessions, projects) {
   }));
 }
 
+export function monitoringProjectEntriesForSelection(sessions, projects, requestedProjectId) {
+  const entries = monitoringProjectEntries(sessions, projects);
+  if (!requestedProjectId || requestedProjectId === "unclassified") return entries;
+  if (entries.some((entry) => entry.key === requestedProjectId)) return entries;
+  const project = (Array.isArray(projects) ? projects : [])
+    .find((candidate) => candidate.id === requestedProjectId);
+  if (!project) return entries;
+  return [{ key: project.id, name: project.name, sessions: [] }, ...entries];
+}
+
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
