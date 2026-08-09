@@ -94,6 +94,42 @@ describe("local language contract", () => {
     expect(translateFixedText("zh-CN", "新建目标")).toBe("新建目标");
   });
 
+  test("renders the monitoring-goal entry, dialog, and source trace in English", async () => {
+    const [page, script] = await Promise.all([
+      Bun.file(new URL("../public/index.html", import.meta.url)).text(),
+      Bun.file(new URL("../public/app.js", import.meta.url)).text(),
+    ]);
+    expect(translateFixedText("en", "从当前进展创建目标")).toBe("Create goal from current progress");
+    expect(translateFixedText("en", "当前监控进展")).toBe("Current monitored progress");
+    expect(translateFixedText("en", "保存当前进展并创建目标；原会话继续监控。")).toBe(
+      "Save the current progress and create a goal; the original sessions remain monitored.",
+    );
+    expect(translateFixedText("en", "创建执行目标")).toBe("Create execution goal");
+    expect(translateFixedText("en", "创建时来源上下文 · 2 个会话")).toBe(
+      "Source context at creation · 2 sessions",
+    );
+    expect(translateFixedText("en", "创建时来源上下文 · 1 个会话")).toBe(
+      "Source context at creation · 1 session",
+    );
+    expect(translateFixedText("en", "快照中的关键节点 · 3 项")).toBe(
+      "Key nodes in snapshot · 3 items",
+    );
+    expect(translateFixedText("en", "快照中的关键节点 · 1 项")).toBe(
+      "Key nodes in snapshot · 1 item",
+    );
+    expect(translateFixedText("en", "最近活动 8/9 10:00")).toBe("Last active 8/9 10:00");
+    expect(translateFixedText("en", "从Monitoring project当前进展继续")).toBe(
+      "Continue from Monitoring project's current progress",
+    );
+    expect(translateFixedText("en", "从当前进展继续")).toBe("Continue from current progress");
+    expect(page).toContain('id="monitoring-goal-dialog"');
+    expect(page).toContain("保存当前进展并创建目标；原会话继续监控。");
+    expect(script).toContain('id="open-monitoring-goal"');
+    expect(script).toContain('const goalName = projectName ? `从${projectName}当前进展继续` : "从当前进展继续";');
+    expect(script).toContain("monitoringGoalDialog.addEventListener(\"click\"");
+    expect(script).toContain("monitoringGoalDialog.addEventListener(\"cancel\"");
+  });
+
   test("renders stable semantic messages with parameters", () => {
     expect(
       translateMessage(

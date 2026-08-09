@@ -216,6 +216,33 @@
       </form>
     </dialog>
 
+    <dialog id="monitoring-goal-dialog" class="monitoring-goal-dialog">
+      <form id="monitoring-goal-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="overline">当前监控进展</p>
+            <h2>创建执行目标</h2>
+          </div>
+          <button type="button" class="icon-button" id="close-monitoring-goal" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-description">保存当前进展并创建目标；原会话继续监控。</p>
+        <div class="monitoring-goal-settings">
+          <label><span>目标名称</span><input id="monitoring-goal-name" name="name" autocomplete="off" required placeholder="例如：完成当前发布准备" /></label>
+          <label><span>目标说明 <em>可选</em></span><textarea id="monitoring-goal-description" name="description" rows="4" placeholder="留空则根据创建时的来源进展生成说明"></textarea></label>
+          <label><span>验收标准 <em>可选</em></span><textarea id="monitoring-goal-acceptance" name="acceptance" rows="3" placeholder="说明完成后需要确认什么"></textarea></label>
+        </div>
+        <section class="monitoring-goal-source-section">
+          <div class="section-heading compact"><div><span class="overline">来源会话</span><h3>选择要带入的监控进展</h3></div></div>
+          <div id="monitoring-goal-sources" class="monitoring-goal-source-list"></div>
+        </section>
+        <p class="form-error" id="monitoring-goal-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" id="cancel-monitoring-goal">取消</button>
+          <button type="submit" class="primary-button" id="submit-monitoring-goal">创建并进入目标</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="local-state-dialog" class="local-state-dialog">
       <div class="dialog-heading">
         <div>

@@ -138,6 +138,27 @@ export type WorkOrderImportContext = {
   error: string | null;
 };
 
+export type WorkOrderSourceContextSession = {
+  key: string;
+  source: WorkOrderImportSource;
+  title: string;
+  projectLabel: string;
+  lastActiveAt: string;
+  monitoringEnabled: boolean;
+  organizationStatus: "not_started" | "pending" | "ready" | "failed";
+  lastReadPosition: number | null;
+  lastReadAt: string | null;
+  workGraphSnapshot: unknown | null;
+};
+
+export type WorkOrderSourceContext = {
+  kind: "session_monitoring";
+  version: 1;
+  createdAt: string;
+  projectId: string | null;
+  sessions: WorkOrderSourceContextSession[];
+};
+
 export type WorkOrderWorkspace = {
   kind: "git" | "directory";
   path: string;
@@ -253,6 +274,7 @@ export type WorkOrder = {
   materials: WorkOrderMaterial[];
   sourceSessions: WorkOrderImportSource[];
   importContext: WorkOrderImportContext | null;
+  sourceContext: WorkOrderSourceContext | null;
   currentSessionId: string | null;
   executionIdentityId: string | null;
   sessionIdentityId: string | null;
@@ -300,6 +322,7 @@ export type CreateWorkOrderInput = {
   }>;
   sourceSessions?: WorkOrderImportSource[];
   importContext?: WorkOrderImportContext | null;
+  sourceContext?: WorkOrderSourceContext | null;
   importSource?: WorkOrderImportSource;
   executionIdentityId?: string | null;
   goal?: string;
@@ -333,6 +356,13 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     throw new Error("来源会话不能重复");
   }
 
+  const sourceContext = input.sourceContext === null || input.sourceContext === undefined
+    ? null
+    : normalizeWorkOrderSourceContext(input.sourceContext);
+  if (input.sourceContext !== null && input.sourceContext !== undefined && !sourceContext) {
+    throw new Error("来源上下文格式无效");
+  }
+
   if (!goal) {
     throw new Error("请描述想完成的工作");
   }
@@ -363,6 +393,7 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     })),
     sourceSessions,
     importContext: input.importContext ?? null,
+    sourceContext,
     currentSessionId: null,
     executionIdentityId: input.executionIdentityId?.trim() || null,
     sessionIdentityId: null,
@@ -381,7 +412,12 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     goal,
     acceptance,
     status: "draft",
-    currentSummary: input.importContext ? "正在整理历史" : "等待生成计划",
+    currentSummary:
+      input.importContext?.status === "ready"
+        ? input.importContext.currentState || "已保存来源进展"
+        : input.importContext
+          ? "正在整理历史"
+          : "等待生成计划",
     plan: null,
     pendingClarification: null,
     conversation: [],
@@ -403,6 +439,77 @@ export function createWorkOrder(input: CreateWorkOrderInput): WorkOrder {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+export function normalizeWorkOrderSourceContext(value: unknown): WorkOrderSourceContext | null {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const context = value as Record<string, unknown>;
+    if (
+      context.kind !== "session_monitoring" ||
+      context.version !== 1 ||
+      typeof context.createdAt !== "string" ||
+      !Number.isFinite(Date.parse(context.createdAt)) ||
+      (context.projectId !== null && typeof context.projectId !== "string") ||
+      !Array.isArray(context.sessions) ||
+      context.sessions.length === 0
+    ) {
+      return null;
+    }
+    const sessions = context.sessions.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("invalid source context session");
+      }
+      const session = value as Record<string, unknown>;
+      const key = typeof session.key === "string" ? session.key.trim() : "";
+      const title = typeof session.title === "string" ? session.title.trim() : "";
+      const projectLabel = typeof session.projectLabel === "string"
+        ? session.projectLabel.trim()
+        : "";
+      const lastActiveAt = session.lastActiveAt;
+      const lastReadAt = session.lastReadAt;
+      if (
+        !key ||
+        !title ||
+        !projectLabel ||
+        typeof lastActiveAt !== "string" ||
+        !Number.isFinite(Date.parse(lastActiveAt)) ||
+        typeof session.monitoringEnabled !== "boolean" ||
+        !["not_started", "pending", "ready", "failed"].includes(
+          String(session.organizationStatus),
+        ) ||
+        (session.lastReadPosition !== null &&
+          (!Number.isInteger(session.lastReadPosition) || session.lastReadPosition < 0)) ||
+        (lastReadAt !== null &&
+          (typeof lastReadAt !== "string" || !Number.isFinite(Date.parse(lastReadAt))))
+      ) {
+        throw new Error("invalid source context session");
+      }
+      const source = normalizeSourceSession(session.source);
+      return {
+        key,
+        source,
+        title,
+        projectLabel,
+        lastActiveAt: new Date(lastActiveAt).toISOString(),
+        monitoringEnabled: session.monitoringEnabled,
+        organizationStatus: session.organizationStatus as WorkOrderSourceContextSession["organizationStatus"],
+        lastReadPosition: session.lastReadPosition as number | null,
+        lastReadAt: lastReadAt === null ? null : new Date(lastReadAt).toISOString(),
+        workGraphSnapshot: session.workGraphSnapshot ?? null,
+      };
+    });
+    if (new Set(sessions.map((session) => session.key)).size !== sessions.length) return null;
+    return {
+      kind: "session_monitoring",
+      version: 1,
+      createdAt: new Date(context.createdAt).toISOString(),
+      projectId: context.projectId === null ? null : context.projectId.trim() || null,
+      sessions,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSourceSession(value: unknown): WorkOrderImportSource {

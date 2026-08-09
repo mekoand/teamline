@@ -2098,6 +2098,14 @@ dialog::backdrop {
   padding: 28px;
 }
 
+#monitoring-goal-form {
+  display: flex;
+  flex-direction: column;
+  max-height: min(820px, calc(100vh - 48px));
+  padding: 28px;
+  overflow: auto;
+}
+
 #continue-goal-form {
   padding: 28px;
 }
@@ -2106,6 +2114,88 @@ dialog::backdrop {
   width: min(720px, calc(100% - 32px));
   max-height: min(780px, calc(100vh - 48px));
   overflow: hidden;
+}
+
+.monitoring-goal-dialog {
+  width: min(680px, calc(100% - 32px));
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: hidden;
+}
+
+.monitoring-goal-dialog #submit-monitoring-goal {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+}
+
+.monitoring-goal-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.monitoring-goal-settings label {
+  display: grid;
+  gap: 7px;
+}
+
+.monitoring-goal-settings textarea {
+  resize: vertical;
+}
+
+.monitoring-goal-source-section {
+  display: grid;
+  gap: 11px;
+  margin-top: 20px;
+}
+
+.monitoring-goal-source-section h3 {
+  margin-top: 5px;
+  font-size: 14px;
+  text-wrap: balance;
+}
+
+.monitoring-goal-source-list {
+  display: grid;
+  gap: 8px;
+  max-height: 230px;
+  overflow: auto;
+}
+
+.monitoring-goal-source {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  cursor: pointer;
+}
+
+.monitoring-goal-source > span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.monitoring-goal-source strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitoring-goal-source small,
+.monitoring-goal-source em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.monitoring-goal-source em {
+  color: var(--accent);
+  white-space: nowrap;
 }
 
 .continue-goal-dialog {
@@ -3753,6 +3843,107 @@ dialog::backdrop {
   font-size: 10px;
 }
 
+.source-context-trace {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.source-context-trace > .context-summary {
+  margin-top: 11px;
+  line-height: 1.55;
+}
+
+.source-context-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.source-context-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.source-context-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.source-context-card-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.source-context-card-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-context-card-heading small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.source-context-card .context-list {
+  gap: 7px;
+}
+
+.source-context-card .context-list dd {
+  text-align: right;
+}
+
+.source-context-snapshot-state {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  line-height: 1.45;
+}
+
+.source-context-snapshot-state span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.source-context-snapshot-state strong {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.source-context-snapshot {
+  padding-top: 2px;
+  font-size: 11px;
+}
+
+.source-context-snapshot ol {
+  display: grid;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding-left: 22px;
+  color: var(--text-soft);
+}
+
+.source-context-snapshot li {
+  padding-left: 2px;
+  line-height: 1.45;
+}
+
+.source-context-snapshot li span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .source-update-message {
   margin: 10px 0 0;
   color: var(--attention);
@@ -5048,6 +5239,14 @@ button {
   font-size: 17px;
 }
 
+.monitoring-graph-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+
 .session-monitoring-lanes {
   display: grid;
   gap: 12px;
@@ -5446,6 +5645,12 @@ button {
   .monitoring-artifact-strip {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .monitoring-graph-actions {
+    width: 100%;
+    align-items: flex-start;
+    justify-content: space-between;
   }
 
   .monitoring-overall-progress {

@@ -24,6 +24,8 @@ import {
   type WorkOrderResourcePlan,
   type WorkOrderStatus,
   type WorkOrderWorkspace,
+  normalizeWorkOrderSourceContext,
+  type WorkOrderSourceContext,
 } from "./work-order";
 import type { WorkOrderStore } from "./work-order-store";
 
@@ -81,6 +83,7 @@ type ExportedWorkOrder = {
   maxRunMinutes: number;
   sourceSessions: WorkOrderImportSource[];
   importContext: WorkOrderImportContext | null;
+  sourceContext: WorkOrderSourceContext | null;
   currentSessionId: string | null;
   executionIdentityId: string | null;
   sessionIdentityId: string | null;
@@ -441,6 +444,7 @@ function exportWorkOrder(workOrder: WorkOrder): ExportedWorkOrder {
     maxRunMinutes: workOrder.maxRunMinutes,
     sourceSessions: workOrder.sourceSessions.map(exportSessionSource),
     importContext: workOrder.importContext,
+    sourceContext: exportSourceContext(workOrder.sourceContext),
     currentSessionId: workOrder.currentSessionId,
     executionIdentityId: workOrder.executionIdentityId,
     sessionIdentityId: workOrder.sessionIdentityId,
@@ -487,6 +491,41 @@ function exportSessionSource(source: WorkOrderImportSource): WorkOrderImportSour
       ? { executionIdentityId: source.executionIdentityId }
       : {}),
     version: 1,
+  };
+}
+
+function exportSourceContext(
+  context: WorkOrderSourceContext | null,
+): WorkOrderSourceContext | null {
+  if (!context) return null;
+  return {
+    ...context,
+    sessions: context.sessions.map((session) => ({
+      ...session,
+      source: exportSessionSource(session.source),
+    })),
+  };
+}
+
+function remapSourceContext(
+  context: WorkOrderSourceContext,
+  identityTargetIds: Map<string, string>,
+): WorkOrderSourceContext {
+  return {
+    ...context,
+    sessions: context.sessions.map((session) => ({
+      ...session,
+      source: {
+        ...session.source,
+        ...(session.source.executionIdentityId
+          ? {
+              executionIdentityId:
+                identityTargetIds.get(session.source.executionIdentityId) ??
+                session.source.executionIdentityId,
+            }
+          : {}),
+      },
+    })),
   };
 }
 
@@ -944,12 +983,16 @@ function insertWorkOrder(
           source.sessionHandoff.fromExecutionIdentityId,
       }
     : null;
+  const sourceContext = source.sourceContext
+    ? remapSourceContext(source.sourceContext, identityTargetIds)
+    : null;
   store.database
     .query(`
       INSERT INTO work_orders (
         id, title, project_id, project_materials_confirmed,
         repository_path, workspace_kind, materials_json,
         source_sessions_json, import_source_json, import_context_json,
+        source_context_json,
         execution_identity_id, session_identity_id, session_handoff_json,
         resource_plan_json, goal, acceptance, status,
         current_summary, plan_json, clarification_json, result_json,
@@ -958,8 +1001,10 @@ function insertWorkOrder(
         runtime_ms, runtime_updated_at, max_run_minutes, last_error,
         created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        NULL, NULL, NULL, ?, NULL, NULL, NULL, NULL, ?, 0, NULL, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?
       )
     `)
     .run(
@@ -975,6 +1020,7 @@ function insertWorkOrder(
         ? JSON.stringify(sourceSessions[0])
         : null,
       source.importContext ? JSON.stringify(source.importContext) : null,
+      sourceContext ? JSON.stringify(sourceContext) : null,
       executionIdentityId,
       sessionIdentityId,
       sessionHandoff ? JSON.stringify(sessionHandoff) : null,
@@ -987,8 +1033,17 @@ function insertWorkOrder(
       source.pendingClarification ? JSON.stringify(source.pendingClarification) : null,
       source.result ? JSON.stringify(source.result) : null,
       source.revisionNote,
+      null,
+      null,
+      null,
       source.currentSessionId,
+      null,
+      null,
+      null,
+      null,
       runNumber,
+      0,
+      null,
       source.maxRunMinutes,
       null,
       source.createdAt,
@@ -1185,6 +1240,7 @@ function parseBundle(value: unknown): LocalStateBundle {
       workOrder.sessionIdentityId,
       workOrder.sessionHandoff?.fromExecutionIdentityId ?? null,
       ...workOrder.sourceSessions.map((source) => source.executionIdentityId ?? null),
+      ...(workOrder.sourceContext?.sessions.map((session) => session.source.executionIdentityId ?? null) ?? []),
     ].filter((id): id is string => id !== null);
     if (referencedIdentityIds.some((id) => !executionIdentityIds.has(id))) {
       throw new InvalidStateBundleError("目标引用了导出文件中不存在的 Codex 账号");
@@ -1288,6 +1344,7 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
     version === 4
       ? [
           ...legacyKeys,
+          "sourceContext",
           "name",
           "description",
           "projectId",
@@ -1346,8 +1403,20 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
   const importContext = version >= 3 && item.importContext !== undefined
     ? parseImportContext(item.importContext)
     : null;
+  const sourceContext = version === 4 && item.sourceContext !== undefined
+    ? parseSourceContext(item.sourceContext)
+    : null;
+  if (sourceContext) {
+    const workOrderProjectId = version >= 2 ? nullableString(item.projectId) : null;
+    if (sourceContext.projectId !== workOrderProjectId) {
+      throw new InvalidStateBundleError("来源上下文与目标项目不一致");
+    }
+  }
   if (importContext) {
-    const sourceSessionIds = new Set(sourceSessions.map((source) => source.id));
+    const sourceSessionIds = new Set([
+      ...sourceSessions.map((source) => source.id),
+      ...(sourceContext?.sessions.map((session) => session.source.id) ?? []),
+    ]);
     const danglingSourceId = importContext.historicalStages
       .flatMap((stage) => stage.sourceSessionIds)
       .find((sourceId) => !sourceSessionIds.has(sourceId));
@@ -1395,6 +1464,7 @@ function parseWorkOrder(value: unknown, version: BundleVersion): ExportedWorkOrd
     maxRunMinutes,
     sourceSessions,
     importContext,
+    sourceContext,
     currentSessionId,
     executionIdentityId,
     sessionIdentityId,
@@ -1505,6 +1575,64 @@ function parseSessionSource(
       ? { executionIdentityId: nonempty(source.executionIdentityId) }
       : {}),
     version: 1,
+  };
+}
+
+function parseSourceContext(value: unknown): WorkOrderSourceContext | null {
+  if (value === null) return null;
+  const context = object(value, "来源上下文格式无法识别");
+  exactKeys(context, ["kind", "version", "createdAt", "projectId", "sessions"]);
+  if (context.kind !== "session_monitoring" || context.version !== 1) {
+    throw new InvalidStateBundleError("来源上下文格式无法识别");
+  }
+  const sessions = array(
+    context.sessions,
+    (value) => {
+      const session = object(value, "来源上下文会话格式无法识别");
+      exactKeys(session, [
+        "key",
+        "source",
+        "title",
+        "projectLabel",
+        "lastActiveAt",
+        "monitoringEnabled",
+        "organizationStatus",
+        "lastReadPosition",
+        "lastReadAt",
+        "workGraphSnapshot",
+      ]);
+      return {
+        key: nonempty(session.key),
+        source: parseSessionSource(session.source, true),
+        title: nonempty(session.title),
+        projectLabel: nonempty(session.projectLabel),
+        lastActiveAt: dateString(session.lastActiveAt),
+        monitoringEnabled: boolean(session.monitoringEnabled),
+        organizationStatus: oneOf(session.organizationStatus, [
+          "not_started",
+          "pending",
+          "ready",
+          "failed",
+        ] as const),
+        lastReadPosition:
+          session.lastReadPosition === null
+            ? null
+            : integer(session.lastReadPosition, 0, Number.MAX_SAFE_INTEGER),
+        lastReadAt: session.lastReadAt === null ? null : dateString(session.lastReadAt),
+        workGraphSnapshot: session.workGraphSnapshot ?? null,
+      };
+    },
+    20,
+  );
+  if (new Set(sessions.map((session) => session.key)).size !== sessions.length) {
+    throw new InvalidStateBundleError("来源上下文会话标识不能重复");
+  }
+  return {
+    kind: "session_monitoring",
+    version: 1,
+    createdAt: dateString(context.createdAt),
+    projectId: nullableString(context.projectId),
+    sessions,
   };
 }
 

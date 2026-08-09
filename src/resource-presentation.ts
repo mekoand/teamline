@@ -105,7 +105,7 @@ export function presentResources(
     workOrders: presented.map((workOrder) => ({
       id: workOrder.id,
       title: workOrder.title,
-      ...(workOrder.sourceSessions[0]?.kind === "claude_code_session"
+      ...(!workOrder.sourceContext && workOrder.sourceSessions[0]?.kind === "claude_code_session"
         ? { importOnly: true }
         : {}),
       status: workOrder.userStatus,
@@ -121,7 +121,7 @@ export function presentResources(
         snapshot.observedAt,
       ),
       ...(() => {
-        const result = workOrder.sourceSessions[0]?.kind === "claude_code_session"
+        const result = !workOrder.sourceContext && workOrder.sourceSessions[0]?.kind === "claude_code_session"
           ? {
               text: "仅保留导入状态",
               message: semanticMessage("resource.recommendation.import_only"),
