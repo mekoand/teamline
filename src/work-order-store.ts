@@ -54,6 +54,9 @@ import {
   type SessionMonitoringRecord,
   type SessionMonitoringResourceUsage,
   type SessionMonitoringUpdate,
+  type SessionMonitoringRefreshIntent,
+  type SessionMonitoringRefreshMode,
+  type SessionMonitoringWork,
 } from "./session-monitoring";
 
 export type PaidApiAttributionState = {
@@ -145,11 +148,24 @@ type SessionMonitoringRow = {
   message: string | null;
   project_id: string | null;
   monitoring_enabled: number;
+  monitoring_override: "enabled" | "disabled" | null;
   last_discovered_at: string;
   last_read_position: number | null;
   last_read_at: string | null;
   organization_status: SessionMonitoringOrganizationStatus;
   work_graph_snapshot_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SessionMonitoringWorkRow = {
+  id: string;
+  project_id: string | null;
+  name: string;
+  source_session_keys_json: string;
+  aggregate_snapshot_ref: string | null;
+  last_automatic_completed_at: string | null;
+  pending_refresh_intent_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -322,6 +338,7 @@ export class WorkOrderStore {
         message TEXT,
         project_id TEXT,
         monitoring_enabled INTEGER NOT NULL DEFAULT 0,
+        monitoring_override TEXT,
         last_discovered_at TEXT NOT NULL,
         last_read_position INTEGER,
         last_read_at TEXT,
@@ -336,9 +353,11 @@ export class WorkOrderStore {
       CREATE INDEX IF NOT EXISTS session_monitoring_source_lookup
       ON session_monitoring_catalog(source_kind, execution_identity_id, session_id);
     `);
+    let addedMonitoringOverride = false;
     for (const [column, definition] of [
       ["source_position", "INTEGER"],
       ["source_modified_at", "TEXT"],
+      ["monitoring_override", "TEXT"],
     ] as const) {
       const columns = this.database
         .query<{ name: string }, []>("PRAGMA table_info(session_monitoring_catalog)")
@@ -347,8 +366,48 @@ export class WorkOrderStore {
         this.database.exec(
           `ALTER TABLE session_monitoring_catalog ADD COLUMN ${column} ${definition}`,
         );
+        if (column === "monitoring_override") addedMonitoringOverride = true;
       }
     }
+    if (addedMonitoringOverride) {
+      // Preserve the effective choice held by legacy rows as an explicit
+      // override so a later project default cannot silently change it.
+      this.database.exec(`
+        UPDATE session_monitoring_catalog
+        SET monitoring_override = CASE
+          WHEN monitoring_enabled = 1 THEN 'enabled'
+          ELSE 'disabled'
+        END
+        WHERE monitoring_override IS NULL
+      `);
+    }
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS session_monitoring_works (
+        id TEXT PRIMARY KEY,
+        project_id TEXT,
+        name TEXT NOT NULL,
+        source_session_keys_json TEXT NOT NULL,
+        aggregate_snapshot_ref TEXT,
+        last_automatic_completed_at TEXT,
+        pending_refresh_intent_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS session_monitoring_works_project_lookup
+      ON session_monitoring_works(project_id, updated_at DESC);
+    `);
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS session_monitoring_project_workspaces (
+        project_id TEXT NOT NULL,
+        workspace_path TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      );
+      CREATE INDEX IF NOT EXISTS session_monitoring_project_workspace_lookup
+      ON session_monitoring_project_workspaces(project_id);
+    `);
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS session_monitoring_resource_usage (
         id TEXT PRIMARY KEY,
@@ -480,6 +539,16 @@ export class WorkOrderStore {
       SET notification_kind = 'review'
       WHERE notification_kind = 'response' AND dedupe_key LIKE 'response:%:review:%';
     `);
+    this.backfillSessionMonitoringWorks();
+  }
+
+  private backfillSessionMonitoringWorks(): void {
+    for (const record of this.listSessionMonitoring()) {
+      this.ensureSessionMonitoringWorkForSession(record);
+      if (record.projectId && record.workspacePath) {
+        this.bindProjectMonitoringWorkspace(record.projectId, record.workspacePath);
+      }
+    }
   }
 
   listProjects(): Project[] {
@@ -541,8 +610,27 @@ export class WorkOrderStore {
     availability: SessionMonitoringRecord["availability"];
     message: string | null;
     lastDiscoveredAt: string;
+    projectId?: string | null;
+    monitoringOverride?: boolean | null;
   }): SessionMonitoringRecord {
     const existing = this.getSessionMonitoring(input.key);
+    const requestedProjectId = input.projectId === undefined
+      ? null
+      : input.projectId?.trim() || null;
+    if (requestedProjectId && !this.getProject(requestedProjectId)) {
+      throw new Error("找不到所选项目");
+    }
+    const projectId = requestedProjectId ?? existing?.projectId ??
+      this.findProjectForMonitoringWorkspace(input.workspacePath);
+    const monitoringOverride = existing?.monitoringOverride ??
+      (input.monitoringOverride === undefined ? null : input.monitoringOverride);
+    const monitoringEnabled = monitoringOverride !== null
+      ? monitoringOverride
+      : existing && existing.projectId === projectId
+        ? existing.monitoringEnabled
+        : projectId
+          ? this.getProjectMonitoringDefault(projectId)
+          : false;
     const createdAt = existing?.createdAt ?? input.lastDiscoveredAt;
     this.database
       .query(`
@@ -550,10 +638,10 @@ export class WorkOrderStore {
           session_key, source_kind, execution_identity_id, execution_identity_label,
           session_id, title, workspace_path, project_label, last_active_at, source_path,
           source_position, source_modified_at, availability, message, project_id,
-          monitoring_enabled, last_discovered_at,
+          monitoring_enabled, monitoring_override, last_discovered_at,
           last_read_position, last_read_at, organization_status, work_graph_snapshot_json,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, NULL, NULL,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL,
                   'not_started', NULL, ?, ?)
         ON CONFLICT(session_key) DO UPDATE SET
           source_kind = excluded.source_kind,
@@ -569,6 +657,7 @@ export class WorkOrderStore {
           source_modified_at = excluded.source_modified_at,
           availability = excluded.availability,
           message = excluded.message,
+          project_id = COALESCE(excluded.project_id, session_monitoring_catalog.project_id),
           last_discovered_at = excluded.last_discovered_at,
           updated_at = excluded.updated_at
       `)
@@ -587,11 +676,19 @@ export class WorkOrderStore {
         input.sourceModifiedAt ?? null,
         input.availability,
         input.message,
+        projectId,
+        monitoringEnabled ? 1 : 0,
+        monitoringOverride === null ? null : monitoringOverride ? "enabled" : "disabled",
         input.lastDiscoveredAt,
         createdAt,
         input.lastDiscoveredAt,
       );
-    return this.getSessionMonitoring(input.key)!;
+    const record = this.getSessionMonitoring(input.key)!;
+    this.ensureSessionMonitoringWorkForSession(record);
+    if (record.projectId && record.workspacePath) {
+      this.bindProjectMonitoringWorkspace(record.projectId, record.workspacePath);
+    }
+    return record;
   }
 
   updateSessionMonitoring(
@@ -617,13 +714,20 @@ export class WorkOrderStore {
     ) {
       throw new Error("会话整理状态无效");
     }
+    const nextMonitoringOverride = input.monitoringOverride !== undefined
+      ? input.monitoringOverride
+      : input.monitoringEnabled !== undefined
+        ? Boolean(input.monitoringEnabled)
+        : current.monitoringOverride;
+    const nextProjectId = input.projectId !== undefined
+      ? normalizedProjectId
+      : current.projectId;
     const next = {
       ...current,
-      projectId: input.projectId !== undefined ? normalizedProjectId : current.projectId,
-      monitoringEnabled:
-        input.monitoringEnabled !== undefined
-          ? Boolean(input.monitoringEnabled)
-          : current.monitoringEnabled,
+      projectId: nextProjectId,
+      monitoringEnabled: nextMonitoringOverride ??
+        (nextProjectId ? this.getProjectMonitoringDefault(nextProjectId) : false),
+      monitoringOverride: nextMonitoringOverride,
       message: input.message !== undefined ? input.message : current.message,
       lastReadPosition:
         input.lastReadPosition !== undefined
@@ -641,13 +745,19 @@ export class WorkOrderStore {
     this.database
       .query(`
         UPDATE session_monitoring_catalog
-        SET project_id = ?, monitoring_enabled = ?, last_read_position = ?, last_read_at = ?,
+        SET project_id = ?, monitoring_enabled = ?, monitoring_override = ?,
+            last_read_position = ?, last_read_at = ?,
             organization_status = ?, work_graph_snapshot_json = ?, message = ?, updated_at = ?
         WHERE session_key = ?
       `)
       .run(
         next.projectId,
         next.monitoringEnabled ? 1 : 0,
+        next.monitoringOverride === null
+          ? null
+          : next.monitoringOverride
+            ? "enabled"
+            : "disabled",
         next.lastReadPosition,
         next.lastReadAt,
         next.organizationStatus,
@@ -656,7 +766,290 @@ export class WorkOrderStore {
         next.updatedAt,
         key,
       );
+    if (next.projectId && next.workspacePath) {
+      this.bindProjectMonitoringWorkspace(next.projectId, next.workspacePath);
+    }
+    const work = this.findSessionMonitoringWorkBySourceKey(key);
+    if (work && work.sourceSessionKeys.length === 1 && work.projectId !== next.projectId) {
+      this.updateSessionMonitoringWork(work.id, { projectId: next.projectId });
+    }
     return this.getSessionMonitoring(key)!;
+  }
+
+  getProjectMonitoringDefault(projectId: string): boolean {
+    if (!this.getProject(projectId)) throw new Error("找不到所选项目");
+    return this.database
+      .query<{ value: string }, [string]>(`
+        SELECT value FROM local_preferences
+        WHERE key = ?
+      `)
+      .get(`session-monitoring-project-default:${projectId}`)?.value === "true";
+  }
+
+  listProjectMonitoringDefaults(): Record<string, boolean> {
+    const defaults: Record<string, boolean> = {};
+    for (const project of this.listProjects()) {
+      defaults[project.id] = this.getProjectMonitoringDefault(project.id);
+    }
+    return defaults;
+  }
+
+  setProjectMonitoringDefault(projectId: string, enabled: boolean): {
+    projectId: string;
+    enabled: boolean;
+  } {
+    if (!this.getProject(projectId)) throw new Error("找不到所选项目");
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.database
+        .query(`
+          INSERT INTO local_preferences (key, value, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `)
+        .run(`session-monitoring-project-default:${projectId}`, String(Boolean(enabled)), now);
+      this.database
+        .query(`
+          UPDATE session_monitoring_catalog
+          SET monitoring_enabled = ?, updated_at = ?
+          WHERE project_id = ? AND monitoring_override IS NULL
+        `)
+        .run(enabled ? 1 : 0, now, projectId);
+    })();
+    return { projectId, enabled: Boolean(enabled) };
+  }
+
+  findProjectForMonitoringWorkspace(workspacePath: string | null): string | null {
+    if (!workspacePath) return null;
+    return this.database
+      .query<{ project_id: string }, [string]>(`
+        SELECT project_id FROM session_monitoring_project_workspaces
+        WHERE workspace_path = ?
+      `)
+      .get(workspacePath)?.project_id ?? null;
+  }
+
+  bindProjectMonitoringWorkspace(projectId: string, workspacePath: string): void {
+    const normalizedPath = workspacePath.trim();
+    if (!normalizedPath) return;
+    if (!this.getProject(projectId)) throw new Error("找不到所选项目");
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        INSERT INTO session_monitoring_project_workspaces
+          (project_id, workspace_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(workspace_path) DO UPDATE SET
+          project_id = excluded.project_id,
+          updated_at = excluded.updated_at
+      `)
+      .run(projectId, normalizedPath, now, now);
+  }
+
+  listSessionMonitoringWorks(): SessionMonitoringWork[] {
+    return this.database
+      .query<SessionMonitoringWorkRow, []>(`
+        SELECT * FROM session_monitoring_works
+        ORDER BY updated_at DESC, id ASC
+      `)
+      .all()
+      .map(mapSessionMonitoringWorkRow);
+  }
+
+  getSessionMonitoringWork(id: string): SessionMonitoringWork | null {
+    const row = this.database
+      .query<SessionMonitoringWorkRow, [string]>(`
+        SELECT * FROM session_monitoring_works WHERE id = ?
+      `)
+      .get(id);
+    return row ? mapSessionMonitoringWorkRow(row) : null;
+  }
+
+  findSessionMonitoringWorkBySourceKey(key: string): SessionMonitoringWork | null {
+    return this.listSessionMonitoringWorks().find((work) =>
+      work.sourceSessionKeys.includes(key),
+    ) ?? null;
+  }
+
+  ensureSessionMonitoringWork(record: SessionMonitoringRecord): SessionMonitoringWork {
+    return this.ensureSessionMonitoringWorkForSession(record);
+  }
+
+  private ensureSessionMonitoringWorkForSession(
+    record: SessionMonitoringRecord,
+  ): SessionMonitoringWork {
+    const existing = this.findSessionMonitoringWorkBySourceKey(record.key);
+    if (existing) {
+      if (existing.sourceSessionKeys.length === 1 && existing.projectId !== record.projectId) {
+        return this.updateSessionMonitoringWork(existing.id, { projectId: record.projectId });
+      }
+      return existing;
+    }
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    this.database
+      .query(`
+        INSERT INTO session_monitoring_works (
+          id, project_id, name, source_session_keys_json, aggregate_snapshot_ref,
+          last_automatic_completed_at, pending_refresh_intent_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+      `)
+      .run(id, record.projectId, record.title || "监控工作", JSON.stringify([record.key]), now, now);
+    return this.getSessionMonitoringWork(id)!;
+  }
+
+  createSessionMonitoringWork(input: {
+    name: string;
+    projectId?: string | null;
+    sourceSessionKeys: string[];
+  }): SessionMonitoringWork {
+    const sourceSessionKeys = normalizeSessionMonitoringWorkKeys(input.sourceSessionKeys);
+    const name = input.name.trim();
+    if (!name) throw new Error("请填写监控工作名称");
+    const projectId = input.projectId?.trim() || null;
+    if (projectId && !this.getProject(projectId)) throw new Error("找不到所选项目");
+    const records = sourceSessionKeys.map((key) => {
+      const record = this.getSessionMonitoring(key);
+      if (!record) throw new Error("找不到所选来源会话");
+      return record;
+    });
+    const inferredProjectId = projectId ??
+      (new Set(records.map((record) => record.projectId)).size === 1
+        ? records[0]?.projectId ?? null
+        : null);
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    this.database.transaction(() => {
+      this.removeSourcesFromMonitoringWorks(sourceSessionKeys, null, now);
+      this.database
+        .query(`
+          INSERT INTO session_monitoring_works (
+            id, project_id, name, source_session_keys_json, aggregate_snapshot_ref,
+            last_automatic_completed_at, pending_refresh_intent_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+        `)
+        .run(id, inferredProjectId, name, JSON.stringify(sourceSessionKeys), now, now);
+    })();
+    return this.getSessionMonitoringWork(id)!;
+  }
+
+  updateSessionMonitoringWork(
+    id: string,
+    input: { name?: string; projectId?: string | null; sourceSessionKeys?: string[] },
+  ): SessionMonitoringWork {
+    const current = this.getSessionMonitoringWork(id);
+    if (!current) throw new Error("找不到这个监控工作");
+    const name = input.name === undefined ? current.name : input.name.trim();
+    if (!name) throw new Error("请填写监控工作名称");
+    const projectId = input.projectId === undefined
+      ? current.projectId
+      : input.projectId?.trim() || null;
+    if (projectId && !this.getProject(projectId)) throw new Error("找不到所选项目");
+    const sourceSessionKeys = input.sourceSessionKeys === undefined
+      ? current.sourceSessionKeys
+      : normalizeSessionMonitoringWorkKeys(input.sourceSessionKeys);
+    for (const key of sourceSessionKeys) {
+      if (!this.getSessionMonitoring(key)) throw new Error("找不到所选来源会话");
+    }
+    const removedSourceSessionKeys = current.sourceSessionKeys.filter(
+      (key) => !sourceSessionKeys.includes(key),
+    );
+    const now = new Date().toISOString();
+    this.database.transaction(() => {
+      this.removeSourcesFromMonitoringWorks(sourceSessionKeys, id, now);
+      this.database
+        .query(`
+          UPDATE session_monitoring_works
+          SET project_id = ?, name = ?, source_session_keys_json = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(projectId, name, JSON.stringify(sourceSessionKeys), now, id);
+      for (const key of removedSourceSessionKeys) {
+        const record = this.getSessionMonitoring(key);
+        if (record) this.ensureSessionMonitoringWorkForSession(record);
+      }
+    })();
+    return this.getSessionMonitoringWork(id)!;
+  }
+
+  setSessionMonitoringWorkPendingRefresh(
+    id: string,
+    mode: SessionMonitoringRefreshMode,
+    requestedAt = new Date().toISOString(),
+  ): SessionMonitoringWork {
+    const work = this.getSessionMonitoringWork(id);
+    if (!work) throw new Error("找不到这个监控工作");
+    const pending = work.pendingRefreshIntent;
+    const nextMode = pending && refreshModeRank(pending.mode) > refreshModeRank(mode)
+      ? pending.mode
+      : mode;
+    const nextIntent: SessionMonitoringRefreshIntent = {
+      mode: nextMode,
+      requestedAt: pending?.requestedAt ?? requestedAt,
+    };
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        UPDATE session_monitoring_works
+        SET pending_refresh_intent_json = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(JSON.stringify(nextIntent), now, id);
+    return this.getSessionMonitoringWork(id)!;
+  }
+
+  clearSessionMonitoringWorkPendingRefresh(id: string): void {
+    this.database
+      .query(`
+        UPDATE session_monitoring_works
+        SET pending_refresh_intent_json = NULL, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(new Date().toISOString(), id);
+  }
+
+  markSessionMonitoringAutomaticCompleted(id: string, completedAt = new Date().toISOString()): void {
+    this.database
+      .query(`
+        UPDATE session_monitoring_works
+        SET last_automatic_completed_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(completedAt, completedAt, id);
+  }
+
+  updateSessionMonitoringWorkSnapshotRef(id: string, ref: string | null): void {
+    this.database
+      .query(`
+        UPDATE session_monitoring_works
+        SET aggregate_snapshot_ref = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(ref, new Date().toISOString(), id);
+  }
+
+  private removeSourcesFromMonitoringWorks(
+    sourceSessionKeys: string[],
+    keepWorkId: string | null,
+    updatedAt: string,
+  ): void {
+    const selected = new Set(sourceSessionKeys);
+    for (const work of this.listSessionMonitoringWorks()) {
+      if (work.id === keepWorkId) continue;
+      const remaining = work.sourceSessionKeys.filter((key) => !selected.has(key));
+      if (remaining.length === work.sourceSessionKeys.length) continue;
+      if (remaining.length === 0) {
+        this.database.query("DELETE FROM session_monitoring_works WHERE id = ?").run(work.id);
+      } else {
+        this.database
+          .query(`
+            UPDATE session_monitoring_works
+            SET source_session_keys_json = ?, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(JSON.stringify(remaining), updatedAt, work.id);
+      }
+    }
   }
 
   listSessionMonitoringResourceUsage(): SessionMonitoringResourceUsage[] {
@@ -754,6 +1147,38 @@ export class WorkOrderStore {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
       `)
       .run(value, value);
+  }
+
+  getSessionMonitoringAutomaticRefreshEnabled(): boolean {
+    const value = this.database
+      .query<{ value: string }, []>(`
+        SELECT value FROM local_preferences
+        WHERE key = 'session-monitoring-automatic-refresh'
+      `)
+      .get()?.value;
+    return value !== "false";
+  }
+
+  saveSessionMonitoringAutomaticRefreshEnabled(enabled: boolean): boolean {
+    const value = String(Boolean(enabled));
+    const now = new Date().toISOString();
+    this.database
+      .query(`
+        INSERT INTO local_preferences (key, value, updated_at)
+        VALUES ('session-monitoring-automatic-refresh', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `)
+      .run(value, now);
+    if (!enabled) {
+      this.database
+        .query(`
+          UPDATE session_monitoring_works
+          SET pending_refresh_intent_json = NULL, updated_at = ?
+          WHERE pending_refresh_intent_json LIKE '%"mode":"automatic"%'
+        `)
+        .run(now);
+    }
+    return Boolean(enabled);
   }
 
   listProjectMaterials(projectId: string): ProjectMaterial[] {
@@ -4144,6 +4569,12 @@ function mapSessionMonitoringRow(row: SessionMonitoringRow): SessionMonitoringRe
     message: row.message,
     projectId: row.project_id,
     monitoringEnabled: row.monitoring_enabled === 1,
+    monitoringOverride:
+      row.monitoring_override === "enabled"
+        ? true
+        : row.monitoring_override === "disabled"
+          ? false
+          : null,
     lastDiscoveredAt: row.last_discovered_at,
     lastReadPosition: row.last_read_position,
     lastReadAt: row.last_read_at,
@@ -4152,6 +4583,60 @@ function mapSessionMonitoringRow(row: SessionMonitoringRow): SessionMonitoringRe
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function mapSessionMonitoringWorkRow(row: SessionMonitoringWorkRow): SessionMonitoringWork {
+  let sourceSessionKeys: string[] = [];
+  try {
+    const value = JSON.parse(row.source_session_keys_json);
+    if (Array.isArray(value)) {
+      sourceSessionKeys = value.filter(
+        (key): key is string => typeof key === "string" && key.trim().length > 0,
+      );
+    }
+  } catch {
+    sourceSessionKeys = [];
+  }
+  let pendingRefreshIntent: SessionMonitoringRefreshIntent | null = null;
+  if (row.pending_refresh_intent_json) {
+    try {
+      const value = JSON.parse(row.pending_refresh_intent_json) as Partial<SessionMonitoringRefreshIntent>;
+      if (
+        (value.mode === "automatic" || value.mode === "manual" || value.mode === "deep") &&
+        typeof value.requestedAt === "string"
+      ) {
+        pendingRefreshIntent = { mode: value.mode, requestedAt: value.requestedAt };
+      }
+    } catch {
+      pendingRefreshIntent = null;
+    }
+  }
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    name: row.name,
+    sourceSessionKeys,
+    aggregateSnapshotRef: row.aggregate_snapshot_ref,
+    lastAutomaticCompletedAt: row.last_automatic_completed_at,
+    pendingRefreshIntent,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeSessionMonitoringWorkKeys(value: string[]): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("请选择至少一个来源会话");
+  }
+  const keys = value.map((key) => (typeof key === "string" ? key.trim() : ""));
+  if (keys.some((key) => !key) || new Set(keys).size !== keys.length) {
+    throw new Error("来源会话选择无效");
+  }
+  return keys;
+}
+
+function refreshModeRank(mode: SessionMonitoringRefreshMode): number {
+  return mode === "deep" ? 3 : mode === "manual" ? 2 : 1;
 }
 
 function mapSessionMonitoringResourceUsageRow(

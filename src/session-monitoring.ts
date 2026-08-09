@@ -6,6 +6,31 @@ export type SessionMonitoringOrganizationStatus =
   | "ready"
   | "failed";
 
+export const sessionMonitoringRefreshModes = [
+  "automatic",
+  "manual",
+  "deep",
+] as const;
+
+export type SessionMonitoringRefreshMode = (typeof sessionMonitoringRefreshModes)[number];
+
+export type SessionMonitoringRefreshIntent = {
+  mode: SessionMonitoringRefreshMode;
+  requestedAt: string;
+};
+
+export type SessionMonitoringWork = {
+  id: string;
+  projectId: string | null;
+  name: string;
+  sourceSessionKeys: string[];
+  aggregateSnapshotRef: string | null;
+  lastAutomaticCompletedAt: string | null;
+  pendingRefreshIntent: SessionMonitoringRefreshIntent | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type SessionMonitoringRecord = {
   key: string;
   sourceKind: "codex_session" | "claude_code_session";
@@ -23,6 +48,7 @@ export type SessionMonitoringRecord = {
   message: string | null;
   projectId: string | null;
   monitoringEnabled: boolean;
+  monitoringOverride: boolean | null;
   lastDiscoveredAt: string;
   lastReadPosition: number | null;
   lastReadAt: string | null;
@@ -49,6 +75,7 @@ export type SessionMonitoringResourceUsage = {
 export type SessionMonitoringUpdate = {
   projectId?: string | null;
   monitoringEnabled?: boolean;
+  monitoringOverride?: boolean | null;
   message?: string | null;
   lastReadPosition?: number | null;
   lastReadAt?: string | null;

@@ -69,7 +69,7 @@ export type SessionOrganizationResourceRequest = {
   sessionKey: string;
   sourceKind: string;
   accountId: string | null;
-  preference: "low_cost";
+  preference: "low_cost" | "high_quality";
 };
 
 export type ResourceSelection = {

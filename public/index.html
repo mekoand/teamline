@@ -262,6 +262,26 @@
       </form>
     </dialog>
 
+    <dialog id="monitoring-work-dialog" class="monitoring-work-dialog">
+      <form id="monitoring-work-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="overline">监控工作</p>
+            <h2>合并来源会话</h2>
+          </div>
+          <button type="button" class="icon-button" id="close-monitoring-work" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-description">只有你明确选择的来源会进入同一监控工作；Teamline 不会自动分组，也不生成跨来源聚合进展。</p>
+        <label><span>监控工作名称</span><input name="name" id="monitoring-work-name" required autocomplete="off" /></label>
+        <div id="monitoring-work-sources" class="monitoring-work-source-list"></div>
+        <p class="form-error" id="monitoring-work-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" id="cancel-monitoring-work">取消</button>
+          <button type="submit" class="primary-button" id="submit-monitoring-work">保存监控工作</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="local-state-dialog" class="local-state-dialog">
       <div class="dialog-heading">
         <div>
