@@ -1,7 +1,7 @@
 export const navigationStorageKey = "teamline-client-navigation";
 
 const modes = new Set(["monitoring", "execution"]);
-const workKinds = new Set(["goal", "session"]);
+const workKinds = new Set(["goal", "session", "monitoring-work"]);
 
 export function defaultNavigationState() {
   return {
@@ -41,6 +41,7 @@ export function chooseInitialNavigation({
   projects = [],
   workOrders = [],
   monitoringSessions = [],
+  monitoringWorks = [],
 } = {}) {
   const normalized = normalizeNavigationState(saved);
   const projectIds = new Set(projects.map((project) => project.id));
@@ -51,7 +52,7 @@ export function chooseInitialNavigation({
   );
   const availableProjectIds = new Set(projectIds);
   if (hasUnclassified) availableProjectIds.add("unclassified");
-  const dataExists = projects.length > 0 || workOrders.length > 0 || monitoringSessions.length > 0;
+  const dataExists = projects.length > 0 || workOrders.length > 0 || monitoringSessions.length > 0 || monitoringWorks.length > 0;
   const projectId = availableProjectIds.has(normalized.projectId)
     ? normalized.projectId
     : projects[0]?.id ?? (hasUnclassified ? "unclassified" : null);
@@ -61,6 +62,7 @@ export function chooseInitialNavigation({
     normalized.mode,
     workOrders,
     monitoringSessions,
+    monitoringWorks,
     projectIds,
   );
   return {
@@ -85,13 +87,26 @@ export function routeForNavigation(state) {
   return "/";
 }
 
-function validWorkObject(workObject, projectId, mode, workOrders, monitoringSessions, projectIds) {
+function validWorkObject(
+  workObject,
+  projectId,
+  mode,
+  workOrders,
+  monitoringSessions,
+  monitoringWorks,
+  projectIds,
+) {
   if (!workObject) return null;
-  if (mode === "monitoring" && workObject.kind !== "session") return null;
+  if (mode === "monitoring" && !["session", "monitoring-work"].includes(workObject.kind)) return null;
   if (mode === "execution" && workObject.kind !== "goal") return null;
   if (workObject.kind === "goal") {
     const goal = workOrders.find((candidate) => candidate.id === workObject.id);
     if (!goal || normalizedProjectId(goal.projectId, projectIds) !== projectId) return null;
+    return workObject;
+  }
+  if (workObject.kind === "monitoring-work") {
+    const work = monitoringWorks.find((candidate) => candidate.id === workObject.id);
+    if (!work || normalizedProjectId(work.projectId, projectIds) !== projectId) return null;
     return workObject;
   }
   const session = monitoringSessions.find((candidate) => candidate.key === workObject.id);

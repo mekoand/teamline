@@ -109,6 +109,34 @@ describe("session monitoring work graph", () => {
     });
   });
 
+  test("renders one lane for an explicit monitoring work and keeps source references on nodes", () => {
+    const sessions = [
+      monitoredSession("source-a", "会话 A", { nodes: [{ id: "a", outcome: "A 当前", status: "current" }] }),
+      monitoredSession("source-b", "会话 B", { nodes: [{ id: "b", outcome: "B 当前", status: "current" }] }),
+    ];
+    const graph = buildMonitoringProjectGraph(sessions, [{
+      id: "work-a",
+      name: "合并后的工作",
+      sourceSessionKeys: ["source-a", "source-b"],
+      aggregateSnapshot: {
+        sourceSessionKeys: ["source-a", "source-b"],
+        nodes: [
+          { id: "source-a:a", outcome: "A 当前", status: "current", sourceSessionKeys: ["source-a"] },
+          { id: "source-b:b", outcome: "B 当前", status: "current", sourceSessionKeys: ["source-b"] },
+        ],
+        enumerablePlan: { completed: 2, total: 4 },
+        inferredRelations: [],
+      },
+      aggregateStatus: "ready",
+      aggregateMessage: null,
+      projectId: "project-a",
+    }]);
+
+    expect(graph.lanes.map((lane) => lane.session.key)).toEqual(["work-a"]);
+    expect(graph.lanes[0].nodes.map((node) => node.sourceSessionKeys[0])).toEqual(["source-a", "source-b"]);
+    expect(graph.overallProgress).toEqual({ completed: 2, total: 4, percent: 50 });
+  });
+
   test("keeps sessions grouped by the selected project without inventing a project", () => {
     const entries = monitoringProjectEntries([
       monitoredSession("source-a", "会话 A", null, "project-a"),

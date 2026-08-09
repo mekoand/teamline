@@ -338,6 +338,67 @@ describe("Teamline 3.1 会话监控", () => {
     store.database.close();
   });
 
+  test("A/B 项目来源不能跨项目创建、更新或从多来源工作单独移动", () => {
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const projectA = store.createProject("项目 A");
+    const projectB = store.createProject("项目 B");
+    const record = (id: string, projectId: string, workspacePath: string) => store.upsertDiscoveredSession({
+      key: `codex_session:cross-project-${id}`,
+      sourceKind: "codex_session",
+      executionIdentityId: null,
+      executionIdentityLabel: null,
+      id,
+      title: id,
+      workspacePath,
+      projectLabel: id,
+      lastActiveAt: "2026-08-09T01:00:00.000Z",
+      sourcePath: null,
+      availability: "available",
+      message: null,
+      lastDiscoveredAt: "2026-08-09T01:00:00.000Z",
+      projectId,
+    });
+    const sourceA = record("a", projectA.id, "/tmp/monitoring-project-a");
+    const sourceB = record("b", projectB.id, "/tmp/monitoring-project-b");
+    const beforeCreate = store.listSessionMonitoringWorks();
+
+    expect(() => store.createSessionMonitoringWork({
+      name: "跨项目创建",
+      projectId: projectA.id,
+      sourceSessionKeys: [sourceA.key, sourceB.key],
+    })).toThrow("同一个项目");
+    expect(store.listSessionMonitoringWorks()).toEqual(beforeCreate);
+
+    const single = store.createSessionMonitoringWork({
+      name: "项目 A 单来源",
+      projectId: projectA.id,
+      sourceSessionKeys: [sourceA.key],
+    });
+    const beforeSingle = store.getSessionMonitoringWork(single.id);
+    expect(() => store.updateSessionMonitoringWork(single.id, {
+      projectId: projectB.id,
+    })).toThrow("一致");
+    expect(() => store.updateSessionMonitoringWork(single.id, {
+      sourceSessionKeys: [sourceA.key, sourceB.key],
+    })).toThrow("同一个项目");
+    expect(store.getSessionMonitoringWork(single.id)).toEqual(beforeSingle);
+
+    const sourceA2 = record("a2", projectA.id, "/tmp/monitoring-project-a-2");
+    const multi = store.createSessionMonitoringWork({
+      name: "项目 A 多来源",
+      projectId: projectA.id,
+      sourceSessionKeys: [sourceA.key, sourceA2.key],
+    });
+    const beforeMoveSource = store.getSessionMonitoring(sourceA.key);
+    const beforeMoveWork = store.getSessionMonitoringWork(multi.id);
+    expect(() => store.updateSessionMonitoring(sourceA.key, {
+      projectId: projectB.id,
+    })).toThrow("先解除多来源");
+    expect(store.getSessionMonitoring(sourceA.key)).toEqual(beforeMoveSource);
+    expect(store.getSessionMonitoringWork(multi.id)).toEqual(beforeMoveWork);
+    store.database.close();
+  });
+
   test("监控工作 PATCH 缩减来源后恢复单来源，并拒绝空来源", async () => {
     const store = new WorkOrderStore(new Database(":memory:"));
     const project = store.createProject("监控 API 项目");
@@ -608,6 +669,166 @@ describe("Teamline 3.1 会话监控", () => {
       if (store1.database) {
         try { store1.database.close(); } catch { /* already closed */ }
       }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("多来源聚合只刷新变化来源，并在失败时保留上次聚合结果", async () => {
+    const root = mkdtempSync(join(tmpdir(), "teamline-3-1-aggregate-"));
+    const sourcePaths = {
+      a: join(root, "a.jsonl"),
+      b: join(root, "b.jsonl"),
+    };
+    writeFileSync(sourcePaths.a, "a-1\n", "utf8");
+    writeFileSync(sourcePaths.b, "b-1\n", "utf8");
+    const content = { a: "a-1\n", b: "b-1\n" };
+    const modifiedAt = {
+      a: "2026-08-09T01:00:00.000Z",
+      b: "2026-08-09T01:00:00.000Z",
+    };
+    const organizations: string[] = [];
+    const reads: string[] = [];
+    let failNext = false;
+    const makeSession = (id: "a" | "b") => discoveredSession(
+      id,
+      root,
+      sourcePaths[id],
+      modifiedAt[id],
+    );
+    const providerWithRead: SessionProvider = {
+      async discover() {
+        return {
+          status: "available" as const,
+          message: "Codex",
+          sessions: [makeSession("a"), makeSession("b")],
+        };
+      },
+      async read(session, fromPosition) {
+        const id = session.id as "a" | "b";
+        reads.push(`${id}:${fromPosition}`);
+        const bytes = Buffer.from(content[id]);
+        return {
+          content: bytes.subarray(fromPosition).toString("utf8"),
+          nextPosition: bytes.length,
+        };
+      },
+    };
+    const store = new WorkOrderStore(new Database(":memory:"));
+    const app = createApp({
+      store,
+      codexSessionProvider: providerWithRead,
+      claudeCodeSessionProvider: provider(() => ({ status: "available", message: "Claude", sessions: [] })),
+      sessionOrganizationResourceSelector: {
+        async select() {
+          return { tool: "codex", model: "gpt-5.6-luna", accountId: null, accountLabel: null };
+        },
+      },
+      sessionOrganizer: {
+        async organize(input) {
+          const id = input.sessions[0]?.id as "a" | "b";
+          organizations.push(id);
+          if (failNext) {
+            failNext = false;
+            throw new Error("来源整理失败");
+          }
+          return {
+            summary: `${id}-${content[id].trim()}`,
+            currentState: `${id} 当前状态`,
+            nodes: [{ id: `${id}-current`, outcome: `${id} ${content[id].trim()}`, status: "current", estimatedProgress: id === "a" ? 40 : 60 }],
+            enumerablePlan: { completed: id === "a" ? 1 : 2, total: 4 },
+            inferredRelations: [],
+            historicalStages: [],
+            artifacts: [],
+          };
+        },
+      },
+    });
+    const waitFor = async (predicate: () => boolean) => {
+      const deadline = Date.now() + 2_000;
+      while (!predicate() && Date.now() < deadline) await Bun.sleep(2);
+      expect(predicate()).toBe(true);
+    };
+
+    try {
+      const preview = await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/discover",
+        { method: "POST" },
+      )).then((response) => response.json());
+      const keys = preview.sessions.map((session: { key: string }) => session.key);
+      await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/onboarding",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            projects: [{ candidateKey: preview.candidates[0].key, monitoringEnabled: true }],
+            selectedSessionKeys: keys,
+          }),
+        },
+      ));
+      await waitFor(() => organizations.length === 2);
+      expect(reads.map((entry) => entry.split(":")[0]).sort()).toEqual(["a", "b"]);
+
+      const firstWork = store.findSessionMonitoringWorkBySourceKey(keys[0])!;
+      const mergedResponse = await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/works",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "多来源工作", sourceSessionKeys: keys }),
+        },
+      )).then((response) => response.json());
+      const workId = mergedResponse.work.id as string;
+      expect(workId).not.toBe(firstWork.id);
+      expect(mergedResponse.work.aggregateStatus).toBe("ready");
+      expect(mergedResponse.work.aggregateSnapshot.nodes.map((node: { sourceSessionKeys: string[] }) => node.sourceSessionKeys[0]).sort()).toEqual(keys.sort());
+
+      content.a += "a-2\n";
+      appendFileSync(sourcePaths.a, "a-2\n", "utf8");
+      modifiedAt.a = "2026-08-09T02:00:00.000Z";
+      await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/discover",
+        { method: "POST" },
+      ));
+      await waitFor(() => organizations.length === 3);
+      expect(reads.filter((entry) => entry.startsWith("b:"))).toHaveLength(1);
+      const refreshed = store.getSessionMonitoringWork(workId)!;
+      expect(refreshed.aggregateSnapshot).toMatchObject({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ outcome: "a a-1\na-2" }),
+          expect.objectContaining({ outcome: "b b-1" }),
+        ]),
+      });
+
+      content.a += "a-3\n";
+      appendFileSync(sourcePaths.a, "a-3\n", "utf8");
+      modifiedAt.a = "2026-08-09T02:01:00.000Z";
+      await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/discover",
+        { method: "POST" },
+      ));
+      await waitFor(() => store.findSessionMonitoringWorkBySourceKey(keys[0])?.pendingRefreshIntent?.mode === "automatic");
+      failNext = true;
+      await app.fetch(new Request(
+        "http://teamline.local/api/session-monitoring/refresh",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "manual", workId }),
+        },
+      ));
+      await waitFor(() => organizations.length === 4);
+      const failedWork = store.getSessionMonitoringWork(workId)!;
+      expect(failedWork.aggregateStatus).toBe("failed");
+      expect(failedWork.aggregateSnapshot).toMatchObject({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ outcome: "a a-1\na-2" }),
+          expect.objectContaining({ outcome: "b b-1" }),
+        ]),
+      });
+    } finally {
+      await app.close();
+      store.database.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -97,6 +97,10 @@ const state = {
   sessionMonitoringRefreshInFlight: false,
   sessionMonitoringSelectionKeys: new Set(),
   monitoringSelectedKey: null,
+  monitoringSelectedWorkId: null,
+  monitoringCollapsedWorkIds: new Set(),
+  monitoringZoom: 1,
+  monitoringWorkTab: "progress",
   sourceStatus: null,
   notifications: [],
   unreadNotificationCount: 0,
@@ -396,10 +400,14 @@ function rememberNavigation() {
       ? state.navigation.mode
       : "execution";
   const selectedWorkObject = isSessionMonitoringView()
-    ? state.monitoringSelectedKey
-      ? { kind: "session", id: state.monitoringSelectedKey }
+    ? state.inspector.selection?.type === "monitoring-work"
+      ? { kind: "monitoring-work", id: state.inspector.selection.id }
+      : state.monitoringSelectedKey
+        ? { kind: "session", id: state.monitoringSelectedKey }
       : state.navigation.workObject?.kind === "session"
         ? state.navigation.workObject
+        : state.navigation.workObject?.kind === "monitoring-work"
+          ? state.navigation.workObject
         : null
     : state.selected
       ? { kind: "goal", id: state.selected.id }
@@ -494,6 +502,7 @@ function selectShellProject(projectId) {
   });
   state.selected = null;
   state.monitoringSelectedKey = null;
+  state.monitoringSelectedWorkId = null;
   state.inspector = clearContextInspector();
   const path = routeForNavigation({ ...state.navigation, mode: isSessionMonitoringView() ? "monitoring" : "execution" });
   history.pushState({}, "", path);
@@ -518,6 +527,9 @@ function toggleRightSidebar() {
     openContextInspector({ type: "goal", id: state.selected.id });
   } else if (state.monitoringSelectedKey) {
     selectMonitoringSession(state.monitoringSelectedKey);
+    return;
+  } else if (state.monitoringSelectedWorkId) {
+    selectMonitoringWork(state.monitoringSelectedWorkId);
     return;
   }
   renderConsole();
@@ -557,6 +569,13 @@ function getQuickNavigatorItems() {
     detail: "来源会话",
     projectId: session.projectId || "unclassified",
   })));
+  items.push(...(state.sessionMonitoring.monitoringWorks ?? []).map((work) => ({
+    kind: "monitoring-work",
+    id: work.id,
+    label: work.name,
+    detail: "监控工作",
+    projectId: work.projectId || "unclassified",
+  })));
   const query = state.quickNavigatorQuery.trim().toLocaleLowerCase();
   return query
     ? items.filter((item) => `${item.label} ${item.detail}`.toLocaleLowerCase().includes(query))
@@ -574,7 +593,7 @@ function renderQuickNavigator() {
   quickNavigatorResults.innerHTML = items.map((item, index) => `
     <button class="quick-navigator-row ${index === state.quickNavigatorIndex ? "selected" : ""}" data-quick-index="${index}" type="button" role="option" aria-selected="${index === state.quickNavigatorIndex}">
       <span><strong data-i18n-preserve>${escapeHtml(item.label)}</strong><small>${item.detail}</small></span>
-      <kbd>${item.kind === "project" ? "项目" : item.kind === "goal" ? "目标" : "会话"}</kbd>
+      <kbd>${item.kind === "project" ? "项目" : item.kind === "goal" ? "目标" : item.kind === "monitoring-work" ? "监控工作" : "会话"}</kbd>
     </button>`).join("");
   quickNavigatorResults.querySelectorAll("[data-quick-index]").forEach((button) => {
     button.addEventListener("click", () => openQuickNavigatorItem(items[Number(button.dataset.quickIndex)]));
@@ -603,12 +622,13 @@ function openQuickNavigatorItem(item) {
   quickNavigatorDialog?.close();
   state.navigation = normalizeNavigationState({
     ...state.navigation,
-    mode: item.kind === "session" ? "monitoring" : item.kind === "goal" ? "execution" : state.navigation.mode,
+    mode: ["session", "monitoring-work"].includes(item.kind) ? "monitoring" : item.kind === "goal" ? "execution" : state.navigation.mode,
     projectId: item.projectId ?? item.id,
     workObject: item.kind === "project" ? null : { kind: item.kind, id: item.id },
     rightSidebarCollapsed: false,
   });
   state.monitoringSelectedKey = item.kind === "session" ? item.id : null;
+  state.monitoringSelectedWorkId = item.kind === "monitoring-work" ? item.id : null;
   state.selected = null;
   state.inspector = clearContextInspector();
   history.pushState({}, "", routeForNavigation(state.navigation));
@@ -852,8 +872,20 @@ async function refreshConsole({
       const savedSessionId = state.navigation.workObject?.kind === "session"
         ? state.navigation.workObject.id
         : null;
+      const savedWorkId = state.navigation.workObject?.kind === "monitoring-work"
+        ? state.navigation.workObject.id
+        : null;
       if (!state.monitoringSelectedKey && savedSessionId && findMonitoringSession(savedSessionId)) {
         state.monitoringSelectedKey = savedSessionId;
+      }
+      if (!state.monitoringSelectedWorkId && savedWorkId && findMonitoringWork(savedWorkId)) {
+        state.monitoringSelectedWorkId = savedWorkId;
+      }
+      if (!state.inspector.selection && state.monitoringSelectedWorkId && findMonitoringWork(state.monitoringSelectedWorkId)) {
+        state.inspector = selectContextInspector(state.inspector, {
+          type: "monitoring-work",
+          id: state.monitoringSelectedWorkId,
+        });
       }
       state.selected = null;
       state.sourceStatus = null;
@@ -957,11 +989,15 @@ function initializeNavigationFromData() {
     projects: state.projects,
     workOrders: state.workOrders,
     monitoringSessions: state.sessionMonitoring.sessions ?? [],
+    monitoringWorks: state.sessionMonitoring.monitoringWorks ?? [],
   });
   state.navigation = next;
+  state.monitoringSelectedKey = next.workObject?.kind === "session" ? next.workObject.id : null;
+  state.monitoringSelectedWorkId = next.workObject?.kind === "monitoring-work" ? next.workObject.id : null;
   state.navigationInitialized = true;
   const hasData = state.projects.length > 0 || state.workOrders.length > 0 ||
-    (state.sessionMonitoring.sessions ?? []).length > 0;
+    (state.sessionMonitoring.sessions ?? []).length > 0 ||
+    (state.sessionMonitoring.monitoringWorks ?? []).length > 0;
   if (!hasData) return false;
   const nextRoute = routeForNavigation(next);
   const currentRoute = `${window.location.pathname}${window.location.search}`;
@@ -1429,7 +1465,8 @@ function renderSessionMonitoringWorkspace() {
   );
   const currentProject = projectEntries.find((entry) => entry.key === projectKey);
   const sessions = currentProject?.sessions ?? [];
-  const graph = buildMonitoringProjectGraph(sessions);
+  const works = currentMonitoringProjectWorks(sessions, monitoring.monitoringWorks ?? []);
+  const graph = buildMonitoringProjectGraph(sessions, works);
   const projectName = currentProject?.key === "unclassified" || !currentProject
     ? translateFixedText(state.locale, "未归类")
     : currentProject.name;
@@ -1500,8 +1537,15 @@ function renderMonitoringWorkSection(works, projectKey, sessions) {
   const visibleWorks = projectWorks.filter((work) => work.sourceSessionKeys.some((key) => sourceKeys.has(key)));
   return `
     <section class="session-monitoring-works" aria-label="监控工作">
-      <div class="session-monitoring-works-heading"><div><p class="overline">监控工作</p><h2>来源边界</h2><small>默认一条来源会话一个工作；多来源只在你明确合并后显示为同一组。</small></div><button class="secondary-button" id="open-monitoring-work-editor" type="button">合并来源</button></div>
-      ${visibleWorks.length ? `<div class="session-monitoring-work-list">${visibleWorks.map((work) => `<button type="button" class="session-monitoring-work-row" data-edit-monitoring-work="${escapeHtml(work.id)}"><span><strong data-i18n-preserve>${escapeHtml(work.name)}</strong><small>${work.sources?.length ?? work.sourceSessionKeys.length} 个来源 · ${work.sourceSessionKeys.length > 1 ? "用户已合并" : "单来源"}</small></span><span>编辑</span></button>`).join("")}</div>` : `<p class="session-monitoring-work-empty">选择来源后可创建监控工作。</p>`}
+      <div class="session-monitoring-works-heading"><div><p class="overline">监控工作</p><h2>工作横向轨道</h2><small>每条横向轨道代表一个监控工作；来源会话只作为证据入口。</small></div><button class="secondary-button" id="open-monitoring-work-editor" type="button">合并来源</button></div>
+      ${visibleWorks.length ? `<div class="session-monitoring-work-list">${visibleWorks.map((work) => `
+        <article class="session-monitoring-work-row ${state.monitoringSelectedWorkId === work.id ? "selected" : ""}">
+          <button type="button" class="session-monitoring-work-select" data-monitoring-work="${escapeHtml(work.id)}">
+            <span><strong data-i18n-preserve>${escapeHtml(work.name)}</strong><small>${work.sources?.length ?? work.sourceSessionKeys.length} 个来源 · ${work.sourceSessionKeys.length > 1 ? "用户已合并" : "单来源"}</small></span>
+            <span class="monitoring-work-status">${escapeHtml(sessionOrganizationStatusLabel(work.aggregateStatus))}</span>
+          </button>
+          <button type="button" class="text-button" data-edit-monitoring-work="${escapeHtml(work.id)}">编辑</button>
+        </article>`).join("")}</div>` : `<p class="session-monitoring-work-empty">选择来源后可创建监控工作。</p>`}
     </section>`;
 }
 
@@ -1514,11 +1558,12 @@ function renderSessionMonitoringGraph(graph, projectName, preserveProjectName) {
       <header class="session-monitoring-graph-heading">
         <div><p class="overline">工作图</p><h2><span ${preserveProjectName ? "data-i18n-preserve" : ""}>${escapeHtml(projectName)}</span> · ${translateFixedText(state.locale, "关键进展")}</h2></div>
         <div class="monitoring-graph-actions">
-          ${graph.overallProgress ? `<div class="monitoring-overall-progress"><span>整体进度</span><strong>${graph.overallProgress.percent}%</strong><small>${graph.overallProgress.completed}/${graph.overallProgress.total} ${state.locale === "zh-CN" ? "项" : "items"}</small></div>` : ""}
+          <div class="monitoring-overall-progress ${graph.overallProgress ? "known" : "unknown"}"><span>整体进度</span>${graph.overallProgress ? `<strong>${graph.overallProgress.percent}% · ${translateFixedText(state.locale, "估算")}</strong><small>${graph.overallProgress.completed}/${graph.overallProgress.total} ${state.locale === "zh-CN" ? "项" : "items"}</small>` : `<strong>${graph.lanes.some((lane) => lane.work?.aggregateStatus === "pending") ? "正在整理" : "进度未知"}</strong><small>没有足够的可枚举计划</small>`}</div>
+          <div class="monitoring-graph-zoom" role="group" aria-label="工作图缩放"><button class="icon-button" type="button" data-monitoring-zoom="out" aria-label="缩小工作图">−</button><button class="monitoring-zoom-value" type="button" data-monitoring-zoom="reset" aria-label="重置工作图缩放">${Math.round(state.monitoringZoom * 100)}%</button><button class="icon-button" type="button" data-monitoring-zoom="in" aria-label="放大工作图">＋</button></div>
           <button class="secondary-button" id="open-monitoring-goal" type="button" ${monitoredSessions.length ? "" : "disabled"}>从当前进展创建目标</button>
         </div>
       </header>
-      <div class="session-monitoring-lanes">${graph.lanes.map(renderSessionMonitoringLane).join("")}</div>
+      <div class="session-monitoring-lanes" style="--monitoring-zoom: ${state.monitoringZoom}">${graph.lanes.map(renderSessionMonitoringLane).join("")}</div>
       ${graph.inferredRelations.length
         ? `<section class="monitoring-inferred-relations"><div class="monitoring-inferred-heading"><span class="monitoring-edge-key inferred"></span><strong>推断关系</strong><small>仅表示整理过程的判断</small></div>${graph.inferredRelations.map(renderMonitoringInferredRelation).join("")}</section>`
         : ""}
@@ -1530,25 +1575,50 @@ function renderSessionMonitoringGraph(graph, projectName, preserveProjectName) {
 
 function renderSessionMonitoringLane(lane) {
   const session = lane.session;
-  const selected = state.monitoringSelectedKey === session.key;
+  const work = lane.work ?? null;
+  const selected = work
+    ? state.monitoringSelectedWorkId === work.id
+    : state.monitoringSelectedKey === session.key;
+  const collapsed = work ? state.monitoringCollapsedWorkIds.has(work.id) : false;
   const account = session.executionIdentityLabel ? ` · ${session.executionIdentityLabel}` : "";
+  const sourceTitles = (lane.sources ?? []).map((source) => source.title).filter(Boolean);
+  const sourceSummary = work
+    ? `${sourceTitles.length} 个来源${sourceTitles.length ? ` · ${sourceTitles.slice(0, 2).join("、")}${sourceTitles.length > 2 ? "等" : ""}` : ""}`
+    : `${sourceKindLabel(session.sourceKind)}${escapeHtml(account)} · ${escapeHtml(session.projectLabel)}`;
+  const status = work ? work.aggregateStatus : session.organizationStatus;
+  const statusMessage = work?.aggregateMessage || (work ? "进度未知" : "");
   return `
-    <article class="session-monitoring-lane ${selected ? "selected" : ""}" data-session-monitoring-key="${escapeHtml(session.key)}">
-      <button class="session-monitoring-lane-heading" type="button" data-monitoring-session="${escapeHtml(session.key)}">
+    <article class="session-monitoring-lane ${selected ? "selected" : ""} ${work ? "monitoring-work-lane" : "monitoring-source-lane"}" data-session-monitoring-key="${escapeHtml(session.key)}" ${work ? `data-monitoring-work-lane="${escapeHtml(work.id)}"` : ""}>
+      <div class="session-monitoring-lane-heading">
+        <button class="session-monitoring-lane-select" type="button" data-${work ? "monitoring-work" : "monitoring-session"}="${escapeHtml(session.key)}">
         <span class="monitoring-lane-marker"></span>
-        <span><strong data-i18n-preserve>${escapeHtml(session.title)}</strong><small>${sourceKindLabel(session.sourceKind)}${escapeHtml(account)} · ${escapeHtml(session.projectLabel)}</small></span>
-        <span class="status-pill running">监控中</span>
-      </button>
-      <div class="session-monitoring-lane-track">
-        ${lane.nodes.length ? lane.nodes.map((node, index) => renderMonitoringNode(node, index > 0)).join("") : '<p class="monitoring-lane-empty">暂无可确认的关键进展</p>'}
+        <span><strong data-i18n-preserve>${escapeHtml(work?.name ?? session.title)}</strong><small>${escapeHtml(sourceSummary)}</small></span>
+        <span class="status-pill ${status === "failed" ? "response" : status === "pending" ? "planning" : status === "ready" ? "running" : "queued"}">${escapeHtml(sessionOrganizationStatusLabel(status))}</span>
+        </button>
+        ${work ? `<button class="icon-button monitoring-collapse-button" type="button" data-monitoring-collapse-work="${escapeHtml(work.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? "展开工作轨道" : "折叠工作轨道"}">${collapsed ? "＋" : "−"}</button>` : ""}
+      </div>
+      ${statusMessage ? `<p class="monitoring-lane-status">${escapeHtml(statusMessage)}</p>` : ""}
+      <div class="session-monitoring-lane-track" ${collapsed ? "hidden" : ""}>
+        ${lane.nodes.length ? lane.nodes.map((node, index) => renderMonitoringNode(node, index > 0 && sharesMonitoringSource(lane.nodes[index - 1], node))).join("") : '<p class="monitoring-lane-empty">暂无可确认的关键进展</p>'}
       </div>
     </article>`;
+}
+
+function sharesMonitoringSource(left, right) {
+  const leftKeys = new Set(left.sourceSessionKeys ?? []);
+  return (right.sourceSessionKeys ?? []).some((key) => leftKeys.has(key));
 }
 
 function renderMonitoringNode(node, hasPrevious) {
   const kindLabel = node.status === "current" ? "当前" : node.status === "future" ? "后续 · 来源明确" : "历史";
   const progress = node.status === "current" && node.estimatedProgress !== null
     ? `<span class="monitoring-node-progress">${node.estimatedProgress}% · ${translateFixedText(state.locale, "估算")}</span>`
+    : "";
+  const sourceTitles = (node.sourceSessionKeys ?? [])
+    .map((key) => findMonitoringSession(key)?.title)
+    .filter(Boolean);
+  const sourceReference = sourceTitles.length
+    ? `<span class="monitoring-node-source">来源：${escapeHtml(sourceTitles.slice(0, 2).join("、"))}${sourceTitles.length > 2 ? "等" : ""}</span>`
     : "";
   return `
     <div class="monitoring-node-wrap">
@@ -1557,6 +1627,7 @@ function renderMonitoringNode(node, hasPrevious) {
         <span class="monitoring-node-topline"><span>${kindLabel}</span>${progress}</span>
         <strong data-i18n-preserve>${escapeHtml(node.outcome)}</strong>
         ${node.summary ? `<small data-i18n-preserve>${escapeHtml(node.summary)}</small>` : ""}
+        ${sourceReference}
       </button>
     </div>`;
 }
@@ -1597,6 +1668,20 @@ function currentMonitoringProjectSessions() {
     selectedMonitoringProjectId(),
   );
   return entries.find((entry) => entry.key === activeMonitoringProjectKey())?.sessions ?? [];
+}
+
+function currentMonitoringProjectWorks(
+  sessions = currentMonitoringProjectSessions(),
+  works = state.sessionMonitoring.monitoringWorks ?? [],
+) {
+  const sourceKeys = new Set(sessions.map((session) => session.key));
+  const projectIds = new Set(sessions.map((session) => session.projectId ?? null));
+  if (projectIds.size !== 1) return [];
+  const [projectId] = projectIds;
+  return (Array.isArray(works) ? works : []).filter((work) =>
+    (work.projectId ?? null) === projectId &&
+    work.sourceSessionKeys?.some((key) => sourceKeys.has(key)),
+  );
 }
 
 function currentMonitoredProjectSessions() {
@@ -1690,11 +1775,19 @@ async function createGoalFromMonitoring(event) {
 }
 
 function currentMonitoringProjectGraph() {
-  return buildMonitoringProjectGraph(currentMonitoringProjectSessions());
+  const sessions = currentMonitoringProjectSessions();
+  return buildMonitoringProjectGraph(
+    sessions,
+    currentMonitoringProjectWorks(sessions),
+  );
 }
 
 function findMonitoringSession(key) {
   return (state.sessionMonitoring.sessions ?? []).find((session) => session.key === key) ?? null;
+}
+
+function findMonitoringWork(id) {
+  return (state.sessionMonitoring.monitoringWorks ?? []).find((work) => work.id === id) ?? null;
 }
 
 function findMonitoringNode(key) {
@@ -1736,8 +1829,15 @@ function selectMonitoringProject(projectKey) {
   if (!entries.some((entry) => entry.key === projectKey)) return;
   setMonitoringProjectInUrl(projectKey);
   const selectedSession = findMonitoringSession(state.monitoringSelectedKey);
+  const selectedWork = findMonitoringWork(state.monitoringSelectedWorkId);
   if (selectedSession && !entries.find((entry) => entry.key === projectKey)?.sessions.some((session) => session.key === selectedSession.key)) {
     state.monitoringSelectedKey = null;
+    state.inspector = clearContextInspector();
+  }
+  if (selectedWork && !selectedWork.sourceSessionKeys.some((key) =>
+    entries.find((entry) => entry.key === projectKey)?.sessions.some((session) => session.key === key),
+  )) {
+    state.monitoringSelectedWorkId = null;
     state.inspector = clearContextInspector();
   }
   renderConsole();
@@ -1750,14 +1850,47 @@ function selectMonitoringSession(key) {
     .find((candidate) => candidate.sessions.some((candidateSession) => candidateSession.key === key));
   if (entry && entry.key !== activeMonitoringProjectKey()) setMonitoringProjectInUrl(entry.key);
   state.monitoringSelectedKey = key;
+  state.monitoringSelectedWorkId = currentMonitoringWorkForSource(key)?.id ?? null;
   selectMonitoringObject({ type: "monitoring-session", id: key });
+  renderConsole();
+}
+
+function selectMonitoringWork(id) {
+  const work = findMonitoringWork(id);
+  if (!work) return;
+  const entry = monitoringProjectEntries(state.sessionMonitoring.sessions ?? [], state.projects)
+    .find((candidate) => work.sourceSessionKeys.some((key) => candidate.sessions.some((session) => session.key === key)));
+  if (entry && entry.key !== activeMonitoringProjectKey()) setMonitoringProjectInUrl(entry.key);
+  state.monitoringSelectedWorkId = id;
+  state.monitoringSelectedKey = null;
+  selectMonitoringObject({ type: "monitoring-work", id });
+  renderConsole();
+}
+
+function currentMonitoringWorkForSource(key) {
+  return (state.sessionMonitoring.monitoringWorks ?? [])
+    .find((work) => work.sourceSessionKeys?.includes(key)) ?? null;
+}
+
+function toggleMonitoringWorkCollapse(id) {
+  if (!id) return;
+  if (state.monitoringCollapsedWorkIds.has(id)) state.monitoringCollapsedWorkIds.delete(id);
+  else state.monitoringCollapsedWorkIds.add(id);
+  renderConsole();
+}
+
+function setMonitoringZoom(direction) {
+  if (direction === "reset") state.monitoringZoom = 1;
+  else if (direction === "in") state.monitoringZoom = Math.min(1.35, Number((state.monitoringZoom + 0.15).toFixed(2)));
+  else if (direction === "out") state.monitoringZoom = Math.max(0.75, Number((state.monitoringZoom - 0.15).toFixed(2)));
   renderConsole();
 }
 
 function selectMonitoringNode(key) {
   const node = findMonitoringNode(key);
   if (!node) return;
-  state.monitoringSelectedKey = node.sessionKey;
+  state.monitoringSelectedWorkId = node.workId ?? null;
+  state.monitoringSelectedKey = node.workId ? null : node.sessionKey;
   selectMonitoringObject({ type: "monitoring-node", id: key });
   renderConsole();
 }
@@ -1765,7 +1898,8 @@ function selectMonitoringNode(key) {
 function selectMonitoringArtifact(key) {
   const artifact = findMonitoringArtifact(key);
   if (!artifact) return;
-  state.monitoringSelectedKey = artifact.sessionKey;
+  state.monitoringSelectedWorkId = artifact.workId ?? null;
+  state.monitoringSelectedKey = artifact.workId ? null : artifact.sessionKey;
   selectMonitoringObject({ type: "monitoring-artifact", id: key });
   renderConsole();
 }
@@ -1776,6 +1910,10 @@ function renderSessionMonitoringContext() {
   if (selection.type === "monitoring-session") {
     const session = findMonitoringSession(selection.id);
     return session ? renderMonitoringSessionContext(session) : renderUnavailableContext();
+  }
+  if (selection.type === "monitoring-work") {
+    const work = findMonitoringWork(selection.id);
+    return work ? renderMonitoringWorkContext(work) : renderUnavailableContext();
   }
   if (selection.type === "monitoring-node") {
     const node = findMonitoringNode(selection.id);
@@ -1834,7 +1972,64 @@ function renderMonitoringSessionContext(session) {
     </section>`;
 }
 
+function renderMonitoringWorkContext(work) {
+  const graph = normalizeSessionMonitoringGraph(work.aggregateSnapshot, {
+    id: work.id,
+    key: work.id,
+    sourceSessionIds: (work.sources ?? []).map((source) => source.id),
+    sourceSessionKeys: work.sourceSessionKeys,
+  });
+  const activeTab = state.monitoringWorkTab === "sources" ? "sources" : "progress";
+  const sources = work.sources ?? [];
+  const statusLabel = sessionOrganizationStatusLabel(work.aggregateStatus);
+  const estimate = work.aggregateSnapshot?.enumerablePlan ?? null;
+  const progress = estimate && Number.isInteger(estimate.completed) && Number.isInteger(estimate.total) && estimate.total > 0
+    ? `${Math.round((estimate.completed / estimate.total) * 100)}% · 估算`
+    : "进度未知";
+  return `
+    <section class="context-content monitoring-context monitoring-work-context">
+      <div class="context-heading">
+        <div><p class="overline">监控工作</p><h2 data-i18n-preserve>${escapeHtml(work.name)}</h2></div>
+        ${renderContextCloseButton()}
+      </div>
+      <span class="status-pill ${work.aggregateStatus === "failed" ? "response" : work.aggregateStatus === "pending" ? "planning" : work.aggregateStatus === "ready" ? "running" : "queued"}">${escapeHtml(statusLabel)}</span>
+      <nav class="monitoring-work-tabs" role="tablist" aria-label="监控工作详情">
+        <button type="button" role="tab" aria-selected="${activeTab === "progress"}" class="${activeTab === "progress" ? "active" : ""}" data-monitoring-work-tab="progress">进展</button>
+        <button type="button" role="tab" aria-selected="${activeTab === "sources"}" class="${activeTab === "sources" ? "active" : ""}" data-monitoring-work-tab="sources">来源会话</button>
+      </nav>
+      ${activeTab === "progress" ? `
+        <dl class="context-list">
+          <div><dt>当前进度</dt><dd>${escapeHtml(progress)}</dd></div>
+          <div><dt>关键节点</dt><dd>${graph.nodes.length} 个</dd></div>
+          <div><dt>来源数量</dt><dd>${sources.length} 个</dd></div>
+          <div><dt>最近聚合</dt><dd>${formatDate(work.aggregateUpdatedAt ?? work.updatedAt)}</dd></div>
+        </dl>
+        ${work.aggregateMessage ? `<p class="context-summary">${escapeHtml(work.aggregateMessage)}</p>` : ""}
+        ${graph.currentState ? `<p class="context-summary" data-i18n-preserve>${escapeHtml(graph.currentState)}</p>` : ""}
+        ${graph.nodes.length ? `<section class="context-section"><span>关键进展</span><div class="monitoring-context-reference-list">${graph.nodes.slice(0, 8).map((node) => `<button type="button" class="monitoring-context-node-link" data-monitoring-node="${escapeHtml(`${work.id}:${node.id}`)}"><strong data-i18n-preserve>${escapeHtml(node.outcome)}</strong><small>${node.status === "current" ? "当前" : node.status === "future" ? "后续 · 来源明确" : "历史"}</small></button>`).join("")}</div></section>` : `<p class="context-summary">暂无可确认的关键进展。</p>`}
+      ` : `
+        <section class="context-section monitoring-work-source-section"><span>来源会话</span><div class="monitoring-context-source-list">${sources.length ? sources.map((source) => renderMonitoringWorkSource(source)).join("") : '<p class="context-summary">来源会话已不可用。</p>'}</div></section>
+      `}
+    </section>`;
+}
+
+function renderMonitoringWorkSource(source) {
+  const usage = source.resourceUsage;
+  return `<article class="monitoring-context-source-card">
+    <button type="button" class="monitoring-context-source-select" data-monitoring-session="${escapeHtml(source.key)}"><strong data-i18n-preserve>${escapeHtml(source.title)}</strong><small>${escapeHtml(sourceKindLabel(source.sourceKind))}${source.executionIdentityLabel ? ` · ${escapeHtml(source.executionIdentityLabel)}` : ""}</small></button>
+    <dl class="monitoring-source-facts">
+      <div><dt>整理</dt><dd>${escapeHtml(sessionOrganizationStatusLabel(source.organizationStatus))}</dd></div>
+      <div><dt>最近读取</dt><dd>${formatDate(source.lastReadAt ?? source.lastActiveAt)}</dd></div>
+      <div><dt>资源</dt><dd>${usage ? `${escapeHtml(usage.tool)} · ${escapeHtml(usage.model)}` : "暂无记录"}</dd></div>
+    </dl>
+    ${source.message ? `<p class="context-summary">${escapeHtml(source.message)}</p>` : ""}
+    ${source.sourceAvailable !== false ? `<button class="secondary-button full-button" type="button" data-open-session-source="${escapeHtml(source.key)}">打开原始记录</button>` : '<p class="context-summary">来源记录当前不可用。</p>'}
+  </article>`;
+}
+
 function renderMonitoringNodeContext(node) {
+  const work = node.workId ? findMonitoringWork(node.workId) : null;
+  const sourceSessions = (node.sourceSessionKeys ?? []).map(findMonitoringSession).filter(Boolean);
   const session = findMonitoringSession(node.sessionKey);
   const statusLabel = node.status === "current" ? "当前" : node.status === "future" ? "后续 · 来源明确" : "历史";
   const activities = [...node.toolCalls, ...node.logs];
@@ -1848,17 +2043,20 @@ function renderMonitoringNodeContext(node) {
       ${node.status === "future" ? '<p class="context-summary">来源会话明确提出的后续步骤。</p>' : ""}
       ${node.summary ? `<p class="context-summary" data-i18n-preserve>${escapeHtml(node.summary)}</p>` : ""}
       <dl class="context-list">
-        <div><dt>来源会话</dt><dd>${escapeHtml(session?.title ?? "已不可用")}</dd></div>
-        <div><dt>来源顺序</dt><dd>同一来源会话内的关键进展</dd></div>
+        <div><dt>所属工作</dt><dd>${escapeHtml(work?.name ?? session?.title ?? "已不可用")}</dd></div>
+        <div><dt>来源会话</dt><dd>${escapeHtml(sourceSessions.map((source) => source.title).join("、") || session?.title || "已不可用")}</dd></div>
+        <div><dt>来源顺序</dt><dd>只表示各来源会话内部的事实顺序</dd></div>
       </dl>
       ${node.artifacts.length ? `<section class="context-section"><span>关联成果</span><div class="monitoring-context-reference-list">${node.artifacts.map((artifact) => renderMonitoringArtifactButton({ ...artifact, key: `${node.sessionKey}:${artifact.id || artifact.location}` })).join("")}</div></section>` : ""}
       ${activities.length ? renderMonitoringActivitySection({ activities: { toolCalls: node.toolCalls, logs: node.logs } }) : ""}
-      ${session?.sourceAvailable !== false ? `<section class="context-section"><button class="secondary-button full-button" type="button" data-open-session-source="${escapeHtml(node.sessionKey)}">打开原始记录</button><p class="inline-feedback" id="monitoring-source-feedback" role="status"></p></section>` : ""}
+      ${sourceSessions[0]?.sourceAvailable !== false ? `<section class="context-section"><button class="secondary-button full-button" type="button" data-open-session-source="${escapeHtml(sourceSessions[0]?.key ?? node.sessionKey)}">打开原始记录</button><p class="inline-feedback" id="monitoring-source-feedback" role="status"></p></section>` : ""}
     </section>`;
 }
 
 function renderMonitoringArtifactContext(artifact) {
-  const source = findMonitoringSession(artifact.sessionKey);
+  const sourceKeys = artifact.sourceSessionKeys ?? [artifact.sessionKey];
+  const sources = sourceKeys.map(findMonitoringSession).filter(Boolean);
+  const source = sources[0] ?? findMonitoringSession(artifact.sessionKey);
   return `
     <section class="context-content monitoring-context">
       <div class="context-heading">
@@ -1868,9 +2066,9 @@ function renderMonitoringArtifactContext(artifact) {
       <dl class="context-list">
         <div><dt>类型</dt><dd>${escapeHtml(referenceTypeLabel(artifact.type))}</dd></div>
         <div><dt>位置</dt><dd><code>${escapeHtml(shortPath(artifact.location))}</code></dd></div>
-        <div><dt>来源会话</dt><dd>${escapeHtml(source?.title ?? "已不可用")}</dd></div>
+        <div><dt>来源会话</dt><dd>${escapeHtml(sources.map((candidate) => candidate.title).join("、") || "已不可用")}</dd></div>
       </dl>
-      ${source?.sourceAvailable !== false ? `<section class="context-section"><button class="secondary-button full-button" type="button" data-open-session-source="${escapeHtml(artifact.sessionKey)}">打开原始记录</button><p class="inline-feedback" id="monitoring-source-feedback" role="status"></p></section>` : ""}
+      ${source?.sourceAvailable !== false ? `<section class="context-section"><button class="secondary-button full-button" type="button" data-open-session-source="${escapeHtml(source?.key ?? artifact.sessionKey)}">打开原始记录</button><p class="inline-feedback" id="monitoring-source-feedback" role="status"></p></section>` : ""}
     </section>`;
 }
 
@@ -2267,6 +2465,21 @@ function bindSessionMonitoringEvents() {
   document.querySelector("#open-monitoring-work-editor")?.addEventListener("click", () => openMonitoringWorkEditor());
   document.querySelectorAll("[data-edit-monitoring-work]").forEach((button) => {
     button.addEventListener("click", () => openMonitoringWorkEditor(button.dataset.editMonitoringWork));
+  });
+  document.querySelectorAll("[data-monitoring-work]").forEach((button) => {
+    button.addEventListener("click", () => selectMonitoringWork(button.dataset.monitoringWork));
+  });
+  document.querySelectorAll("[data-monitoring-collapse-work]").forEach((button) => {
+    button.addEventListener("click", () => toggleMonitoringWorkCollapse(button.dataset.monitoringCollapseWork));
+  });
+  document.querySelectorAll("[data-monitoring-zoom]").forEach((button) => {
+    button.addEventListener("click", () => setMonitoringZoom(button.dataset.monitoringZoom));
+  });
+  document.querySelectorAll("[data-monitoring-work-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.monitoringWorkTab = button.dataset.monitoringWorkTab === "sources" ? "sources" : "progress";
+      renderConsole();
+    });
   });
   document.querySelector("#session-monitoring-project-filter")?.addEventListener("change", (event) => {
     selectMonitoringProject(event.currentTarget.value);

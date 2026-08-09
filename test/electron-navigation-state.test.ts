@@ -82,4 +82,20 @@ describe("desktop navigation state", () => {
     });
     expect(routeForNavigation(execution)).toBe("/goals/goal-a");
   });
+
+  test("restores a monitoring work selection in the monitoring mode", () => {
+    const restored = chooseInitialNavigation({
+      saved: {
+        ...defaultNavigationState(),
+        mode: "monitoring",
+        projectId: "project-a",
+        workObject: { kind: "monitoring-work", id: "work-a" },
+      },
+      projects: [{ id: "project-a" }],
+      monitoringSessions: [{ key: "session-a", projectId: "project-a" }],
+      monitoringWorks: [{ id: "work-a", projectId: "project-a", sourceSessionKeys: ["session-a"] }],
+    });
+    expect(restored.workObject).toEqual({ kind: "monitoring-work", id: "work-a" });
+    expect(routeForNavigation(restored)).toBe("/session-monitoring?project=project-a");
+  });
 });

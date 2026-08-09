@@ -11,7 +11,8 @@ const MAX_ACTIVITY_ITEMS = 8;
 export function normalizeSessionMonitoringGraph(snapshot, session) {
   const value = asRecord(snapshot) ?? {};
   const graph = asRecord(value.graph) || value;
-  const sourceSessionIds = [session.id];
+  const sourceSessionIds = uniqueStrings(session.sourceSessionIds ?? [session.id]);
+  const sourceSessionKeys = uniqueStrings(session.sourceSessionKeys ?? [session.key]);
   const nodes = [];
   const seenIds = new Set();
 
@@ -28,19 +29,21 @@ export function normalizeSessionMonitoringGraph(snapshot, session) {
     const sourceIds = uniqueStrings(
       candidate.sourceSessionIds ?? candidate.sources ?? sourceSessionIds,
     );
+    const sourceKeys = uniqueStrings(candidate.sourceSessionKeys ?? sourceSessionKeys);
     const node = {
       id,
       outcome,
       summary: text(candidate.summary ?? candidate.description),
       status,
       sourceSessionIds: sourceIds.length ? sourceIds : [...sourceSessionIds],
+      sourceSessionKeys: sourceKeys.length ? sourceKeys : [...sourceSessionKeys],
       estimatedProgress: progressPercent(
         candidate.estimatedProgress ?? candidate.progressEstimate ?? candidate.percent,
       ),
       explicit: status === "future",
-      toolCalls: activityItems(candidate.toolCalls ?? candidate.tools, "tool"),
-      logs: activityItems(candidate.logs, "log"),
-      artifacts: references(candidate.artifacts),
+      toolCalls: activityItems(candidate.toolCalls ?? candidate.tools, "tool", sourceSessionIds, sourceSessionKeys),
+      logs: activityItems(candidate.logs, "log", sourceSessionIds, sourceSessionKeys),
+      artifacts: references(candidate.artifacts, sourceSessionIds, sourceSessionKeys),
     };
     nodes.push(node);
     return node;
@@ -73,6 +76,7 @@ export function normalizeSessionMonitoringGraph(snapshot, session) {
         outcome: graph.currentState,
         summary: text(graph.summary),
         sourceSessionIds,
+        sourceSessionKeys,
       },
       "current-state",
       "current",
@@ -113,11 +117,13 @@ export function normalizeSessionMonitoringGraph(snapshot, session) {
   }
 
   const activities = {
-    toolCalls: activityItems(graph.toolCalls ?? graph.tools, "tool"),
-    logs: activityItems(graph.logs, "log"),
+    toolCalls: activityItems(graph.toolCalls ?? graph.tools, "tool", sourceSessionIds, sourceSessionKeys),
+    logs: activityItems(graph.logs, "log", sourceSessionIds, sourceSessionKeys),
   };
   const inferredRelations = relationItems(
     graph.inferredRelations ?? graph.crossSessionRelations ?? graph.relations,
+    sourceSessionIds,
+    sourceSessionKeys,
   );
 
   return {
@@ -127,19 +133,60 @@ export function normalizeSessionMonitoringGraph(snapshot, session) {
     nextAction: text(graph.nextAction),
     nodes,
     inferredRelations,
-    artifacts: references(graph.artifacts),
+    artifacts: references(graph.artifacts, sourceSessionIds, sourceSessionKeys),
     activities,
     enumerablePlan: enumerablePlan(graph.enumerablePlan),
   };
 }
 
 /**
- * Merge independently organized source sessions into one project view. The
- * lanes stay independent; only explicitly supplied inferred relations may
- * cross from one lane to another.
+ * Merge independently organized source sessions into one project view. A
+ * selected monitoring work owns one horizontal lane; sources that do not
+ * belong to a work remain visible as source lanes. Source order and inferred
+ * relations are kept as separate visual data.
  */
-export function buildMonitoringProjectGraph(sessions) {
-  const lanes = (Array.isArray(sessions) ? sessions : [])
+export function buildMonitoringProjectGraph(sessions, works = []) {
+  const records = Array.isArray(sessions) ? sessions : [];
+  const workList = Array.isArray(works) ? works : [];
+  const sourceByKey = new Map(records.map((session) => [session.key, session]));
+  const workSourceKeys = new Set(workList.flatMap((work) =>
+    Array.isArray(work?.sourceSessionKeys) ? work.sourceSessionKeys : [],
+  ));
+  const workLanes = workList
+    .map((work) => {
+      const sourceRecords = (Array.isArray(work.sourceSessionKeys) ? work.sourceSessionKeys : [])
+        .map((key) => sourceByKey.get(key))
+        .filter(Boolean);
+      if (!sourceRecords.some((session) => session.monitoringEnabled)) return null;
+      const representative = sourceRecords[0] ?? {};
+      const session = {
+        ...representative,
+        key: work.id,
+        id: work.id,
+        title: work.name,
+        sourceSessionKeys: sourceRecords.map((source) => source.key),
+        sourceSessionIds: sourceRecords.map((source) => source.id),
+        monitoringEnabled: true,
+        monitoringWork: work,
+      };
+      const graph = normalizeSessionMonitoringGraph(work.aggregateSnapshot, session);
+      return {
+        session,
+        work,
+        sources: sourceRecords,
+        graph,
+        nodes: graph.nodes.map((node) => ({
+          ...node,
+          key: `${work.id}:${node.id}`,
+          sessionKey: work.id,
+          sessionId: work.id,
+          workId: work.id,
+        })),
+      };
+    })
+    .filter(Boolean);
+  const sourceLanes = records
+    .filter((session) => !workSourceKeys.has(session.key))
     .filter((session) => session?.monitoringEnabled)
     .map((session) => {
       const graph = normalizeSessionMonitoringGraph(session.workGraphSnapshot, session);
@@ -154,6 +201,7 @@ export function buildMonitoringProjectGraph(sessions) {
         })),
       };
     });
+  const lanes = [...workLanes, ...sourceLanes];
 
   const nodes = lanes.flatMap((lane) => lane.nodes);
   const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
@@ -162,7 +210,7 @@ export function buildMonitoringProjectGraph(sessions) {
     for (const relation of lane.graph.inferredRelations) {
       const from = resolveNodeKey(relation.from, lane, nodes, nodeByKey);
       const to = resolveNodeKey(relation.to, lane, nodes, nodeByKey);
-      if (!from || !to || from.sessionKey === to.sessionKey) continue;
+      if (!from || !to || from.key === to.key) continue;
       const key = `${from.key}->${to.key}`;
       if (inferredRelations.some((candidate) => candidate.key === key)) continue;
       inferredRelations.push({
@@ -192,9 +240,13 @@ export function buildMonitoringProjectGraph(sessions) {
         ...artifact,
         key,
         sessionKey: lane.session.key,
+        workId: lane.work?.id ?? null,
         sourceSessionIds: artifact.sourceSessionIds.length
           ? artifact.sourceSessionIds
           : [lane.session.id],
+        sourceSessionKeys: artifact.sourceSessionKeys.length
+          ? artifact.sourceSessionKeys
+          : lane.session.sourceSessionKeys ?? [lane.session.key],
       });
     }
   }
@@ -308,7 +360,7 @@ function enumerablePlan(value) {
   return { completed: plan.completed, total: plan.total };
 }
 
-function activityItems(value, kind) {
+function activityItems(value, kind, fallbackSourceSessionIds = [], fallbackSourceSessionKeys = []) {
   if (!Array.isArray(value)) return [];
   return value
     .map((item, index) => {
@@ -324,7 +376,8 @@ function activityItems(value, kind) {
             id: text(record.id) || `${kind}-${index + 1}`,
             label,
             kind,
-            sourceSessionIds: uniqueStrings(record.sourceSessionIds),
+            sourceSessionIds: uniqueStrings(record.sourceSessionIds ?? fallbackSourceSessionIds),
+            sourceSessionKeys: uniqueStrings(record.sourceSessionKeys ?? fallbackSourceSessionKeys),
             nodeId: text(record.nodeId),
           }
         : null;
@@ -345,7 +398,7 @@ function mergeActivityItems(items) {
     .slice(0, MAX_ACTIVITY_ITEMS);
 }
 
-function relationItems(value) {
+function relationItems(value, fallbackSourceSessionIds = [], fallbackSourceSessionKeys = []) {
   if (!Array.isArray(value)) return [];
   return value
     .map((item, index) => {
@@ -359,13 +412,16 @@ function relationItems(value) {
         from,
         to,
         label: text(record.label) || "推断",
+        inferred: true,
+        sourceSessionIds: uniqueStrings(record.sourceSessionIds ?? fallbackSourceSessionIds),
+        sourceSessionKeys: uniqueStrings(record.sourceSessionKeys ?? fallbackSourceSessionKeys),
       };
     })
     .filter(Boolean)
     .slice(0, MAX_RELATIONS);
 }
 
-function references(value) {
+function references(value, fallbackSourceSessionIds = [], fallbackSourceSessionKeys = []) {
   if (!Array.isArray(value)) return [];
   return value
     .map((item, index) => {
@@ -379,7 +435,8 @@ function references(value) {
         type: text(record.type) || "file",
         label,
         location,
-        sourceSessionIds: uniqueStrings(record.sourceSessionIds),
+        sourceSessionIds: uniqueStrings(record.sourceSessionIds ?? fallbackSourceSessionIds),
+        sourceSessionKeys: uniqueStrings(record.sourceSessionKeys ?? fallbackSourceSessionKeys),
       };
     })
     .filter(Boolean)
