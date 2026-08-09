@@ -118,6 +118,7 @@ describe("session monitoring catalog", () => {
     expect(script).toContain("data-monitoring-session");
     expect(script).toContain("data-monitoring-node");
     expect(script).toContain("data-monitoring-artifact");
+    expect(script).toContain('[data-create-monitoring-goal-work], [data-create-monitoring-goal-session]');
     expect(script).toContain("后续 · 来源明确");
     expect(script).toContain("估算");
     expect(script).toContain('if (isSessionMonitoringView()) {\n    state.refreshTimer = setTimeout(() => refreshConsole({ polling: true }), 30_000);');

@@ -18,6 +18,7 @@ import {
   type WorkOrderConversationMessage,
   type WorkOrderImportSource,
   type WorkOrderImportContext,
+  type WorkOrderMonitoringImportContext,
   type WorkOrderMaterial,
   type WorkOrderPlan,
   type WorkOrderResult,
@@ -1581,7 +1582,7 @@ function parseSessionSource(
 function parseSourceContext(value: unknown): WorkOrderSourceContext | null {
   if (value === null) return null;
   const context = object(value, "来源上下文格式无法识别");
-  exactKeys(context, ["kind", "version", "createdAt", "projectId", "sessions"]);
+  exactKeys(context, ["kind", "version", "createdAt", "projectId", "monitoringWork", "sessions"], true);
   if (context.kind !== "session_monitoring" || context.version !== 1) {
     throw new InvalidStateBundleError("来源上下文格式无法识别");
   }
@@ -1627,11 +1628,67 @@ function parseSourceContext(value: unknown): WorkOrderSourceContext | null {
   if (new Set(sessions.map((session) => session.key)).size !== sessions.length) {
     throw new InvalidStateBundleError("来源上下文会话标识不能重复");
   }
+  const projectId = nullableString(context.projectId);
+  let monitoringWork: WorkOrderSourceContext["monitoringWork"];
+  if (context.monitoringWork !== undefined && context.monitoringWork !== null) {
+    const work = object(context.monitoringWork, "来源监控工作格式无法识别");
+    const requiredKeys = [
+      "id",
+      "name",
+      "projectId",
+      "sourceSessionKeys",
+      "aggregateSnapshotRef",
+      "aggregateSnapshot",
+      "aggregateStatus",
+      "aggregateMessage",
+      "aggregateUpdatedAt",
+      "updatedAt",
+    ] as const;
+    exactKeys(work, [...requiredKeys, "focusNodeId"], true);
+    if (requiredKeys.some((key) => !(key in work))) {
+      throw new InvalidStateBundleError("来源监控工作格式无法识别");
+    }
+    const sourceSessionKeys = array(work.sourceSessionKeys, (key) => nonempty(key), 20);
+    if (new Set(sourceSessionKeys).size !== sourceSessionKeys.length) {
+      throw new InvalidStateBundleError("来源监控工作会话标识不能重复");
+    }
+    if (
+      sourceSessionKeys.length !== sessions.length ||
+      sourceSessionKeys.some((key) => !sessions.some((session) => session.key === key))
+    ) {
+      throw new InvalidStateBundleError("来源监控工作与会话引用不一致");
+    }
+    const workProjectId = nullableString(work.projectId);
+    if (workProjectId !== projectId) {
+      throw new InvalidStateBundleError("来源监控工作与目标项目不一致");
+    }
+    monitoringWork = {
+      id: nonempty(work.id),
+      name: nonempty(work.name),
+      projectId: workProjectId,
+      sourceSessionKeys,
+      aggregateSnapshotRef: nullableString(work.aggregateSnapshotRef),
+      aggregateSnapshot: work.aggregateSnapshot ?? null,
+      aggregateStatus: oneOf(work.aggregateStatus, [
+        "not_started",
+        "pending",
+        "ready",
+        "failed",
+      ] as const),
+      aggregateMessage: nullableString(work.aggregateMessage),
+      aggregateUpdatedAt: work.aggregateUpdatedAt === null ? null : dateString(work.aggregateUpdatedAt),
+      updatedAt: dateString(work.updatedAt),
+      ...(work.focusNodeId === undefined
+        ? {}
+        : { focusNodeId: work.focusNodeId === null ? null : nonempty(work.focusNodeId) }),
+    };
+  }
   return {
     kind: "session_monitoring",
     version: 1,
     createdAt: dateString(context.createdAt),
-    projectId: nullableString(context.projectId),
+    projectId,
+    ...(monitoringWork ? { monitoringWork } : {}),
     sessions,
   };
 }
@@ -1720,9 +1777,14 @@ function parseImportContext(value: unknown): WorkOrderImportContext | null {
   };
   exactKeys(context, [
     "status", "summary", "currentState", "completedHighlights", "nextAction",
-    "historicalStages", "artifacts",
+    "historicalStages", "artifacts", "monitoringContext",
     "organizedAt", "error",
-  ]);
+  ], true);
+  if ([
+    "status", "summary", "currentState", "historicalStages", "artifacts", "organizedAt", "error",
+  ].some((key) => !(key in context))) {
+    throw new InvalidStateBundleError("会话整理结果格式无法识别");
+  }
   const historicalStages = array(context.historicalStages, (item) => {
     const stage = object(item, "会话历史节点格式无法识别");
     exactKeys(stage, ["id", "outcome", "summary", "status", "sourceSessionIds"]);
@@ -1747,6 +1809,71 @@ function parseImportContext(value: unknown): WorkOrderImportContext | null {
     artifacts: array(context.artifacts, parseReference, 10_000),
     organizedAt: context.organizedAt === null ? null : dateString(context.organizedAt),
     error: nullableString(context.error),
+    ...(context.monitoringContext === undefined
+      ? {}
+      : { monitoringContext: parseMonitoringImportContext(context.monitoringContext) }),
+  };
+}
+
+function parseMonitoringImportContext(
+  value: unknown,
+): WorkOrderMonitoringImportContext {
+  const context = object(value, "监控来源上下文格式无法识别");
+  exactKeys(context, [
+    "workId", "workName", "sourceSessionKeys", "aggregateSnapshotRef",
+    "aggregateStatus", "aggregateUpdatedAt", "summary", "currentState", "nextAction",
+    "focusNodeId", "focusNode", "artifacts", "toolCalls", "logs",
+  ]);
+  let focusNode: WorkOrderMonitoringImportContext["focusNode"] = null;
+  if (context.focusNode !== null) {
+    const candidate = object(context.focusNode, "监控聚合焦点节点格式无法识别");
+    exactKeys(candidate, [
+      "id", "outcome", "summary", "status", "sourceSessionIds", "sourceSessionKeys",
+    ]);
+    focusNode = {
+      id: nonempty(candidate.id),
+      outcome: candidate.outcome === "" ? "" : string(candidate.outcome),
+      summary: candidate.summary === "" ? "" : string(candidate.summary),
+      status: nonempty(candidate.status),
+      sourceSessionIds: array(candidate.sourceSessionIds, nonempty, 20),
+      sourceSessionKeys: array(candidate.sourceSessionKeys, nonempty, 20),
+    };
+  }
+  const artifacts = array(context.artifacts, (item) => {
+    const artifact = object(item, "监控成果引用格式无法识别");
+    exactKeys(artifact, [
+      "id", "type", "label", "location", "sourceSessionIds", "sourceSessionKeys",
+    ]);
+    return {
+      ...parseReference({
+        id: artifact.id,
+        type: artifact.type,
+        label: artifact.label,
+        location: artifact.location,
+      }),
+      sourceSessionIds: array(artifact.sourceSessionIds, nonempty, 20),
+      sourceSessionKeys: array(artifact.sourceSessionKeys, nonempty, 20),
+    };
+  }, 8);
+  return {
+    workId: nonempty(context.workId),
+    workName: nonempty(context.workName),
+    sourceSessionKeys: array(context.sourceSessionKeys, nonempty, 20),
+    aggregateSnapshotRef: nullableString(context.aggregateSnapshotRef),
+    aggregateStatus: oneOf(context.aggregateStatus, [
+      "not_started", "pending", "ready", "failed",
+    ] as const),
+    aggregateUpdatedAt: context.aggregateUpdatedAt === null
+      ? null
+      : dateString(context.aggregateUpdatedAt),
+    summary: nullableString(context.summary),
+    currentState: nullableString(context.currentState),
+    nextAction: nullableString(context.nextAction),
+    focusNodeId: nullableString(context.focusNodeId),
+    focusNode,
+    artifacts,
+    toolCalls: array(context.toolCalls, nonempty, 8),
+    logs: array(context.logs, nonempty, 8),
   };
 }
 

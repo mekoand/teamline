@@ -36,6 +36,7 @@ import {
   type WorkOrderResult,
   type WorkOrderSourceContext,
   type WorkOrderImportContext,
+  type WorkOrderMonitoringImportContext,
 } from "./work-order";
 import {
   PlanLockedError,
@@ -1041,17 +1042,35 @@ export function createApp({
       throw new Error("监控目标创建格式无效");
     }
     const input = body as Record<string, unknown>;
-    const rawKeys = input.sessionKeys ?? input.sourceSessionKeys ?? input.selectedSessionKeys;
+    const rawWorkId = input.monitoringWorkId ?? input.workId;
+    const monitoringWorkId = rawWorkId === undefined
+      ? null
+      : typeof rawWorkId === "string"
+        ? rawWorkId.trim()
+        : "invalid";
+    if (monitoringWorkId === "invalid") throw new Error("监控工作引用无效");
+    const monitoringWork = monitoringWorkId
+      ? store.getSessionMonitoringWork(monitoringWorkId)
+      : null;
+    if (monitoringWorkId && !monitoringWork) throw new Error("找不到这个监控工作");
+    const rawKeys = monitoringWork
+      ? monitoringWork.sourceSessionKeys
+      : input.sessionKeys ?? input.sourceSessionKeys ?? input.selectedSessionKeys;
     const sessionKeys = normalizeMonitoringSessionKeys(rawKeys);
     const records = sessionKeys.map((key) => {
       const record = store.getSessionMonitoring(key);
       if (!record) throw new Error("找不到所选来源会话");
-      if (!record.monitoringEnabled) throw new Error("只能从已启用监控的会话创建目标");
+      if (!record.monitoringEnabled && !monitoringWork) {
+        throw new Error("只能从已启用监控的会话创建目标");
+      }
       return record;
     });
     const projectIds = new Set(records.map((record) => record.projectId));
     if (projectIds.size !== 1) throw new Error("所选来源会话必须属于同一个项目");
     const projectId = records[0]!.projectId;
+    if (monitoringWork && monitoringWork.projectId !== projectId) {
+      throw new Error("监控工作项目与来源会话不一致");
+    }
     if (input.projectId !== undefined) {
       const requestedProjectId = input.projectId === null
         ? null
@@ -1063,7 +1082,17 @@ export function createApp({
       }
     }
     const createdAt = new Date().toISOString();
-    const sourceContext = createSessionMonitoringSourceContext(records, createdAt);
+    const focusNodeId = normalizeMonitoringFocusNodeId(input.focusNodeId ?? input.nodeId);
+    if (focusNodeId && !monitoringWork) throw new Error("监控节点必须属于一个监控工作");
+    if (monitoringWork && focusNodeId && !monitoringWorkContainsNode(monitoringWork, focusNodeId)) {
+      throw new Error("找不到所选监控节点");
+    }
+    const sourceContext = createSessionMonitoringSourceContext(
+      records,
+      createdAt,
+      monitoringWork,
+      focusNodeId,
+    );
     const importContext = createSessionMonitoringImportContext(sourceContext);
     const name = typeof input.name === "string" ? input.name.trim() : "";
     if (!name) throw new Error("请填写目标名称");
@@ -3322,15 +3351,24 @@ export function createApp({
         }
       }
 
+      const sessionMonitoringGoalWorkMatch = url.pathname.match(
+        /^\/api\/session-monitoring\/works\/([^/]+)\/create-goal$/,
+      );
       if (
         request.method === "POST" &&
-        ["/api/session-monitoring/create-goal", "/api/session-monitoring/goals"].includes(
-          url.pathname,
+        (
+          ["/api/session-monitoring/create-goal", "/api/session-monitoring/goals"].includes(
+            url.pathname,
+          ) || Boolean(sessionMonitoringGoalWorkMatch)
         )
       ) {
         try {
+          const body = await request.json() as Record<string, unknown>;
+          if (sessionMonitoringGoalWorkMatch) {
+            body.monitoringWorkId = decodeURIComponent(sessionMonitoringGoalWorkMatch[1]!);
+          }
           return Response.json(
-            createGoalFromSessionMonitoring(await request.json()),
+            createGoalFromSessionMonitoring(body),
             { status: 201 },
           );
         } catch (error) {
@@ -6149,11 +6187,42 @@ function normalizeMonitoringSessionKeys(value: unknown): string[] {
   return normalizeSessionIds(value as string[]);
 }
 
+function normalizeMonitoringFocusNodeId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !value.trim()) throw new Error("监控节点引用无效");
+  return value.trim();
+}
+
+function monitoringWorkContainsNode(
+  work: SessionMonitoringWork,
+  focusNodeId: string,
+): boolean {
+  const root = monitoringSnapshotObject(work.aggregateSnapshot);
+  const graph = monitoringSnapshotObject(root?.graph) ?? root;
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  return nodes.some((value) => {
+    const node = monitoringSnapshotObject(value);
+    const id = monitoringSnapshotText(node?.id);
+    return id === focusNodeId || `${work.id}:${id}` === focusNodeId;
+  });
+}
+
+function cloneMonitoringSnapshot<T>(value: T): T {
+  if (value === null || value === undefined) return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+}
+
 function createSessionMonitoringSourceContext(
   records: SessionMonitoringRecord[],
   createdAt: string,
+  monitoringWork: SessionMonitoringWork | null = null,
+  focusNodeId: string | null = null,
 ): WorkOrderSourceContext {
-  return {
+  const context: WorkOrderSourceContext = {
     kind: "session_monitoring",
     version: 1,
     createdAt,
@@ -6177,23 +6246,43 @@ function createSessionMonitoringSourceContext(
       organizationStatus: record.organizationStatus,
       lastReadPosition: record.lastReadPosition,
       lastReadAt: record.lastReadAt,
-      workGraphSnapshot: record.workGraphSnapshot,
+      workGraphSnapshot: cloneMonitoringSnapshot(record.workGraphSnapshot),
     })),
   };
+  if (monitoringWork) {
+    context.monitoringWork = {
+      id: monitoringWork.id,
+      name: monitoringWork.name,
+      projectId: monitoringWork.projectId,
+      sourceSessionKeys: [...monitoringWork.sourceSessionKeys],
+      aggregateSnapshotRef: monitoringWork.aggregateSnapshotRef,
+      aggregateSnapshot: cloneMonitoringSnapshot(monitoringWork.aggregateSnapshot),
+      aggregateStatus: monitoringWork.aggregateStatus,
+      aggregateMessage: monitoringWork.aggregateMessage,
+      aggregateUpdatedAt: monitoringWork.aggregateUpdatedAt,
+      updatedAt: monitoringWork.updatedAt,
+      ...(focusNodeId ? { focusNodeId } : {}),
+    };
+  }
+  return context;
 }
 
 function createSessionMonitoringImportContext(
   sourceContext: WorkOrderSourceContext,
 ): WorkOrderImportContext {
-  const snapshots = sourceContext.sessions.map((session) =>
-    monitoringSnapshotRecord(session.workGraphSnapshot),
-  );
+  const snapshots = [
+    ...(sourceContext.monitoringWork?.aggregateSnapshot
+      ? [monitoringSnapshotRecord(sourceContext.monitoringWork.aggregateSnapshot)]
+      : []),
+    ...sourceContext.sessions.map((session) => monitoringSnapshotRecord(session.workGraphSnapshot)),
+  ];
   const historicalStages = monitoringHistoricalStages(sourceContext);
   const summaries = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.summary));
   const currentStates = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.currentState));
   const nextActions = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.nextAction));
   const summary = summaries.join("；") || "已保存创建时工作图快照";
   const currentState = currentStates.join("；") || "已保存创建时工作图快照";
+  const monitoringContext = createMonitoringImportContext(sourceContext);
   return {
     status: "ready",
     summary,
@@ -6204,19 +6293,87 @@ function createSessionMonitoringImportContext(
       .slice(0, 3),
     nextAction: nextActions.join("；") || currentState,
     historicalStages,
-    artifacts: [],
+    artifacts: monitoringContext?.artifacts.map(({ sourceSessionIds, sourceSessionKeys, ...reference }) => reference) ?? [],
     organizedAt: sourceContext.createdAt,
     error: null,
+    ...(monitoringContext ? { monitoringContext } : {}),
+  };
+}
+
+function createMonitoringImportContext(
+  sourceContext: WorkOrderSourceContext,
+): WorkOrderMonitoringImportContext | undefined {
+  const work = sourceContext.monitoringWork;
+  if (!work) return undefined;
+  const aggregate = monitoringSnapshotRecord(work.aggregateSnapshot);
+  const sourceSessionKeys = uniqueMonitoringText(work.sourceSessionKeys).slice(0, 20);
+  const sourceSessionIds = sourceSessionKeys.flatMap((key) => {
+    const session = sourceContext.sessions.find((candidate) => candidate.key === key);
+    return session ? [session.source.id] : [];
+  });
+  const focusNodeId = work.focusNodeId ?? null;
+  const rawFocusNode = focusNodeId
+    ? aggregate.nodes
+        .map((value) => monitoringSnapshotObject(value))
+        .find((node) => {
+          const id = monitoringSnapshotText(node?.id);
+          return id === focusNodeId || `${work.id}:${id}` === focusNodeId;
+        }) ?? null
+    : null;
+  const focusNode = rawFocusNode
+    ? {
+        id: monitoringSnapshotText(rawFocusNode.id) || focusNodeId!,
+        outcome: monitoringSnapshotText(
+          rawFocusNode.outcome ?? rawFocusNode.title ?? rawFocusNode.label,
+        ),
+        summary: monitoringSnapshotText(rawFocusNode.summary ?? rawFocusNode.description),
+        status: monitoringSnapshotText(rawFocusNode.status ?? rawFocusNode.kind) || "unknown",
+        sourceSessionIds: monitoringSnapshotStringList(
+          rawFocusNode.sourceSessionIds,
+          sourceSessionIds,
+          20,
+        ),
+        sourceSessionKeys: monitoringSnapshotStringList(
+          rawFocusNode.sourceSessionKeys,
+          sourceSessionKeys,
+          20,
+        ),
+      }
+    : null;
+  const artifacts = monitoringSnapshotReferences(
+    aggregate.artifacts,
+    sourceSessionIds,
+    sourceSessionKeys,
+  ).slice(0, 8);
+  return {
+    workId: work.id,
+    workName: work.name,
+    sourceSessionKeys,
+    aggregateSnapshotRef: work.aggregateSnapshotRef,
+    aggregateStatus: work.aggregateStatus,
+    aggregateUpdatedAt: work.aggregateUpdatedAt,
+    summary: aggregate.summary || null,
+    currentState: aggregate.currentState || null,
+    nextAction: aggregate.nextAction || null,
+    focusNodeId,
+    focusNode,
+    artifacts,
+    toolCalls: aggregate.toolCalls.slice(0, 8),
+    logs: aggregate.logs.slice(0, 8),
   };
 }
 
 function monitoringGoalDescription(sourceContext: WorkOrderSourceContext): string {
-  const snapshots = sourceContext.sessions.map((session) =>
-    monitoringSnapshotRecord(session.workGraphSnapshot),
-  );
+  const snapshots = [
+    ...(sourceContext.monitoringWork?.aggregateSnapshot
+      ? [monitoringSnapshotRecord(sourceContext.monitoringWork.aggregateSnapshot)]
+      : []),
+    ...sourceContext.sessions.map((session) => monitoringSnapshotRecord(session.workGraphSnapshot)),
+  ];
   const currentState = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.currentState));
   const nextAction = uniqueMonitoringText(snapshots.map((snapshot) => snapshot.nextAction));
-  const sourceNames = sourceContext.sessions.map((session) => session.title).join("、");
+  const sourceNames = sourceContext.monitoringWork?.name ||
+    sourceContext.sessions.map((session) => session.title).join("、");
   const details = [
     `从${sourceNames}的当前监控进展继续推进`,
     currentState.length ? `当前状态：${currentState.join("；")}` : "",
@@ -6237,6 +6394,9 @@ function monitoringSnapshotRecord(value: unknown): {
   nextAction: string;
   historicalStages: unknown[];
   nodes: unknown[];
+  artifacts: unknown[];
+  toolCalls: string[];
+  logs: string[];
 } {
   const root = monitoringSnapshotObject(value);
   const graph = monitoringSnapshotObject(root?.graph) ?? root;
@@ -6246,7 +6406,86 @@ function monitoringSnapshotRecord(value: unknown): {
     nextAction: monitoringSnapshotText(graph?.nextAction),
     historicalStages: Array.isArray(graph?.historicalStages) ? graph.historicalStages : [],
     nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
+    artifacts: [
+      ...(Array.isArray(graph?.artifacts) ? graph.artifacts : []),
+      ...(Array.isArray(graph?.nodes)
+        ? graph.nodes.flatMap((value) => {
+            const node = monitoringSnapshotObject(value);
+            return Array.isArray(node?.artifacts) ? node.artifacts : [];
+          })
+        : []),
+    ],
+    toolCalls: monitoringSnapshotStrings(graph?.toolCalls ?? graph?.tools),
+    logs: monitoringSnapshotStrings(graph?.logs),
   };
+}
+
+function monitoringSnapshotReferences(
+  values: unknown[],
+  fallbackSourceSessionIds: string[],
+  fallbackSourceSessionKeys: string[],
+): WorkOrderMonitoringImportContext["artifacts"] {
+  const references = new Map<string, WorkOrderMonitoringImportContext["artifacts"][number]>();
+  values.forEach((value, index) => {
+    const item = monitoringSnapshotObject(value);
+    if (!item) return;
+    const location = monitoringSnapshotText(item.location ?? item.path ?? item.url);
+    const label = monitoringSnapshotText(item.label) || location;
+    if (!location || !label) return;
+    const rawType = monitoringSnapshotText(item.type);
+    const type = ["repository", "folder", "file", "image", "link"].includes(rawType)
+      ? rawType as WorkOrderMonitoringImportContext["artifacts"][number]["type"]
+      : "file";
+    const reference = {
+      id: monitoringSnapshotText(item.id) || `monitoring-artifact-${index + 1}`,
+      type,
+      label,
+      location,
+      sourceSessionIds: monitoringSnapshotStringList(
+        item.sourceSessionIds,
+        fallbackSourceSessionIds,
+        20,
+      ),
+      sourceSessionKeys: monitoringSnapshotStringList(
+        item.sourceSessionKeys,
+        fallbackSourceSessionKeys,
+        20,
+      ),
+    };
+    const key = `${reference.type}:${reference.location}`;
+    const existing = references.get(key);
+    references.set(key, existing
+      ? {
+          ...existing,
+          sourceSessionIds: uniqueMonitoringText([
+            ...existing.sourceSessionIds,
+            ...reference.sourceSessionIds,
+          ]).slice(0, 20),
+          sourceSessionKeys: uniqueMonitoringText([
+            ...existing.sourceSessionKeys,
+            ...reference.sourceSessionKeys,
+          ]).slice(0, 20),
+        }
+      : reference);
+  });
+  return [...references.values()];
+}
+
+function monitoringSnapshotStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? uniqueMonitoringText(value.filter((item): item is string => typeof item === "string")).slice(0, 8)
+    : [];
+}
+
+function monitoringSnapshotStringList(
+  value: unknown,
+  fallback: string[],
+  maximum: number,
+): string[] {
+  const values = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+  return uniqueMonitoringText(values.length ? values : fallback).slice(0, maximum);
 }
 
 function monitoringHistoricalStages(

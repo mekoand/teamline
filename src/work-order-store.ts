@@ -41,6 +41,7 @@ import {
   type WorkOrderResourcePlan,
   type WorkOrderImportSource,
   type WorkOrderImportContext,
+  type WorkOrderMonitoringImportContext,
   normalizeWorkOrderSourceContext,
   type WorkOrderSourceContext,
   type SessionHandoff,
@@ -4918,6 +4919,9 @@ function normalizeImportContext(value: string | null): WorkOrderImportContext | 
     ) {
       return null;
     }
+    const monitoringContext = stored.monitoringContext === undefined
+      ? undefined
+      : normalizeMonitoringImportContext(stored.monitoringContext);
     const sourceIds = new Set<string>();
     const historicalStages = normalizeImportedHistoricalStages(
       stored.historicalStages ?? [],
@@ -4938,10 +4942,124 @@ function normalizeImportContext(value: string | null): WorkOrderImportContext | 
         ? new Date(stored.organizedAt).toISOString()
         : null,
       error: stored.error ?? null,
+      ...(monitoringContext ? { monitoringContext } : {}),
     };
   } catch {
     return null;
   }
+}
+
+function normalizeMonitoringImportContext(
+  value: unknown,
+): WorkOrderMonitoringImportContext {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("监控来源上下文格式无效");
+  }
+  const context = value as Record<string, unknown>;
+  const textValue = (candidate: unknown, required = false): string | null => {
+    if (candidate === null && !required) return null;
+    if (typeof candidate !== "string") throw new Error("监控来源上下文格式无效");
+    const normalized = candidate.trim();
+    if (required && !normalized) throw new Error("监控来源上下文格式无效");
+    return normalized;
+  };
+  const listValue = (candidate: unknown, maximum: number): string[] => {
+    if (!Array.isArray(candidate) || candidate.length > maximum) {
+      throw new Error("监控来源上下文格式无效");
+    }
+    const values = candidate.map((item) => textValue(item, true)!);
+    return [...new Set(values)];
+  };
+  const workId = textValue(context.workId, true)!;
+  const workName = textValue(context.workName, true)!;
+  const sourceSessionKeys = listValue(context.sourceSessionKeys, 20);
+  const aggregateSnapshotRef = textValue(context.aggregateSnapshotRef);
+  const aggregateStatus = context.aggregateStatus;
+  if (![
+    "not_started",
+    "pending",
+    "ready",
+    "failed",
+  ].includes(String(aggregateStatus))) {
+    throw new Error("监控来源上下文格式无效");
+  }
+  const aggregateUpdatedAt = textValue(context.aggregateUpdatedAt);
+  if (aggregateUpdatedAt !== null && !Number.isFinite(Date.parse(aggregateUpdatedAt))) {
+    throw new Error("监控来源上下文格式无效");
+  }
+  const focusNodeId = textValue(context.focusNodeId);
+  let focusNode: WorkOrderMonitoringImportContext["focusNode"] = null;
+  if (context.focusNode !== null) {
+    if (!context.focusNode || typeof context.focusNode !== "object" || Array.isArray(context.focusNode)) {
+      throw new Error("监控来源上下文格式无效");
+    }
+    const candidate = context.focusNode as Record<string, unknown>;
+    focusNode = {
+      id: textValue(candidate.id, true)!,
+      outcome: textValue(candidate.outcome) ?? "",
+      summary: textValue(candidate.summary) ?? "",
+      status: textValue(candidate.status, true)!,
+      sourceSessionIds: listValue(candidate.sourceSessionIds, 20),
+      sourceSessionKeys: listValue(candidate.sourceSessionKeys, 20),
+    };
+  }
+  const artifacts = normalizeMonitoringImportArtifacts(context.artifacts);
+  const toolCalls = listValue(context.toolCalls, 8);
+  const logs = listValue(context.logs, 8);
+  return {
+    workId,
+    workName,
+    sourceSessionKeys,
+    aggregateSnapshotRef,
+    aggregateStatus: aggregateStatus as WorkOrderMonitoringImportContext["aggregateStatus"],
+    aggregateUpdatedAt: aggregateUpdatedAt
+      ? new Date(aggregateUpdatedAt).toISOString()
+      : null,
+    summary: textValue(context.summary),
+    currentState: textValue(context.currentState),
+    nextAction: textValue(context.nextAction),
+    focusNodeId,
+    focusNode,
+    artifacts,
+    toolCalls,
+    logs,
+  };
+}
+
+function normalizeMonitoringImportArtifacts(
+  value: unknown,
+): WorkOrderMonitoringImportContext["artifacts"] {
+  if (!Array.isArray(value) || value.length > 8) {
+    throw new Error("监控成果引用格式无效");
+  }
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("监控成果引用格式无效");
+    }
+    const artifact = item as Partial<WorkOrderMonitoringImportContext["artifacts"][number]>;
+    if (
+      typeof artifact.id !== "string" || !artifact.id.trim() ||
+      !["repository", "folder", "file", "image", "link"].includes(artifact.type ?? "") ||
+      typeof artifact.label !== "string" || !artifact.label.trim() ||
+      typeof artifact.location !== "string" || !artifact.location.trim()
+    ) {
+      throw new Error("监控成果引用格式无效");
+    }
+    const normalizeList = (candidate: unknown): string[] => {
+      if (!Array.isArray(candidate) || candidate.length > 20 || candidate.some((value) => typeof value !== "string" || !value.trim())) {
+        throw new Error("监控成果引用格式无效");
+      }
+      return [...new Set(candidate.map((value) => value.trim()))];
+    };
+    return {
+      id: artifact.id.trim(),
+      type: artifact.type!,
+      label: artifact.label.trim(),
+      location: artifact.location.trim(),
+      sourceSessionIds: normalizeList(artifact.sourceSessionIds),
+      sourceSessionKeys: normalizeList(artifact.sourceSessionKeys),
+    };
+  });
 }
 
 function normalizeWorkOrderSourceContextFromJson(
