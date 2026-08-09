@@ -49,4 +49,58 @@ describe("work orders", () => {
       .map((column) => column.name);
     expect(columns).toContain("import_source_json");
   });
+
+  test("migrates the session monitoring cursor columns from the #74 schema", () => {
+    const database = new Database(":memory:");
+    database.exec(`
+      CREATE TABLE session_monitoring_catalog (
+        session_key TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        execution_identity_id TEXT,
+        execution_identity_label TEXT,
+        session_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        workspace_path TEXT,
+        project_label TEXT NOT NULL,
+        last_active_at TEXT NOT NULL,
+        source_path TEXT,
+        availability TEXT NOT NULL,
+        message TEXT,
+        project_id TEXT,
+        monitoring_enabled INTEGER NOT NULL DEFAULT 0,
+        last_discovered_at TEXT NOT NULL,
+        last_read_position INTEGER,
+        last_read_at TEXT,
+        organization_status TEXT NOT NULL DEFAULT 'not_started',
+        work_graph_snapshot_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+
+    const store = new WorkOrderStore(database);
+    const columns = database
+      .query<{ name: string }, []>("PRAGMA table_info(session_monitoring_catalog)")
+      .all()
+      .map((column) => column.name);
+    expect(columns).toContain("source_position");
+    expect(columns).toContain("source_modified_at");
+    expect(store.upsertDiscoveredSession({
+      key: "codex_session:codex-system-default:migrated",
+      sourceKind: "codex_session",
+      executionIdentityId: "codex-system-default",
+      executionIdentityLabel: "Codex",
+      id: "migrated",
+      title: "已迁移会话",
+      workspacePath: null,
+      projectLabel: "未知项目",
+      lastActiveAt: "2026-08-09T01:00:00.000Z",
+      sourcePath: "/tmp/migrated.jsonl",
+      sourcePosition: 128,
+      sourceModifiedAt: "2026-08-09T01:00:00.000Z",
+      availability: "available",
+      message: null,
+      lastDiscoveredAt: "2026-08-09T01:00:00.000Z",
+    })).toMatchObject({ sourcePosition: 128, sourceModifiedAt: "2026-08-09T01:00:00.000Z" });
+  });
 });

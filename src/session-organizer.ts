@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import type { DiscoveredSession } from "./session-discovery";
 import type { WorkOrderImportContext, WorkOrderImportSource } from "./work-order";
 import { codexProcessEnvironment } from "./codex-environment";
+import type { ResourceSelection } from "./resource-provider";
 
 export type SessionOrganization = {
   description: string;
@@ -20,6 +21,8 @@ export type SessionOrganizationInput = {
   sourceLabel?: string;
   sourceKind?: WorkOrderImportSource["kind"];
   sessions: Array<DiscoveredSession & { sourcePath: string }>;
+  previousSnapshot?: unknown | null;
+  resource?: ResourceSelection;
 };
 
 export interface SessionOrganizer {
@@ -30,10 +33,28 @@ export interface SessionOrganizer {
 }
 
 const schemaPath = resolve(import.meta.dir, "session-organization-schema.json");
-const organizationModel = "gpt-5.6-luna";
+
+type CodexSessionOrganizerOptions = {
+  codexPath?: string;
+  defaultModel?: string;
+  codexHomeForAccount?: (accountId: string) => string | undefined;
+};
 
 export class CodexSessionOrganizer implements SessionOrganizer {
-  constructor(private readonly codexPath = Bun.env.TEAMLINE_CODEX_PATH || "codex") {}
+  private readonly codexPath: string;
+  private readonly defaultModel: string;
+  private readonly codexHomeForAccount?: (accountId: string) => string | undefined;
+
+  constructor(options: CodexSessionOrganizerOptions | string = {}) {
+    if (typeof options === "string") {
+      this.codexPath = options;
+      this.defaultModel = "gpt-5.6-luna";
+      return;
+    }
+    this.codexPath = options.codexPath || Bun.env.TEAMLINE_CODEX_PATH || "codex";
+    this.defaultModel = options.defaultModel || "gpt-5.6-luna";
+    this.codexHomeForAccount = options.codexHomeForAccount;
+  }
 
   async organize(
     input: SessionOrganizationInput,
@@ -52,13 +73,22 @@ export class CodexSessionOrganizer implements SessionOrganizer {
 
     try {
       if (signal?.aborted) throw new Error("会话整理已停止");
+      if (input.resource?.tool && input.resource.tool !== "codex") {
+        throw new Error("当前快速整理工具暂不支持，请重试");
+      }
       const preparedInput = prepareOrganizationInput(input, temporaryDirectory);
+      const codexHome = input.resource?.accountId
+        ? this.codexHomeForAccount?.(input.resource.accountId)
+        : undefined;
+      if (input.resource?.accountId && !codexHome) {
+        throw new Error("快速整理账号当前不可用，请重试");
+      }
       subprocess = Bun.spawn(
         [
           this.codexPath,
           "exec",
           "--model",
-          organizationModel,
+          input.resource?.model || this.defaultModel,
           "--config",
           "model_reasoning_effort=medium",
           "--skip-git-repo-check",
@@ -77,7 +107,9 @@ export class CodexSessionOrganizer implements SessionOrganizer {
           buildSessionOrganizationPrompt(preparedInput),
         ],
         {
-          env: codexProcessEnvironment(),
+          env: codexProcessEnvironment({
+            codexHome,
+          }),
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -159,7 +191,10 @@ ${JSON.stringify(sources, null, 2)}
 
 Infer the working language from the user's goal name and the dominant user language in the source conversations, never from Teamline's interface language. Write all newly generated user-visible fields in that working language. Preserve quoted or mixed-language source content, file names, commands, and URLs as written; do not translate imported history.
 
-Read every source file fully, then return:
+The previous Teamline organization snapshot is:
+${JSON.stringify(input.previousSnapshot ?? null, null, 2)}
+
+Read every listed source file fully, then return:
 - description: one outcome-focused goal, without process history, current failures, or proposed solutions, at most 120 characters;
 - summary: an internal historical summary for later planning, at most 240 characters;
 - currentState: one line describing the current state, at most 100 characters;

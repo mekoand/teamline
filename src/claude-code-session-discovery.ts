@@ -11,8 +11,10 @@ import { basename, extname, join } from "node:path";
 import type {
   DiscoveredSession,
   SessionDiscoveryResult,
+  SessionSourceRead,
   SessionProvider,
 } from "./session-discovery";
+import { readSessionSource } from "./session-discovery";
 
 const MAX_SESSION_FILES = 200;
 const MAX_VISIBLE_SESSIONS = 50;
@@ -39,7 +41,7 @@ export class LocalClaudeCodeSessionProvider implements SessionProvider {
 
     const files = listRecentSessionFiles(this.projectsRoot);
     const sessions = files
-      .map((file) => readClaudeSession(file.path, file.modifiedAt))
+      .map((file) => readClaudeSession(file.path, file.modifiedAt, file.size))
       .filter((session): session is DiscoveredSession => session !== null)
       .sort((left, right) => Date.parse(right.lastActiveAt) - Date.parse(left.lastActiveAt))
       .slice(0, MAX_VISIBLE_SESSIONS);
@@ -60,13 +62,22 @@ export class LocalClaudeCodeSessionProvider implements SessionProvider {
       sessions,
     };
   }
+
+  read(
+    session: DiscoveredSession,
+    fromPosition: number,
+    signal?: AbortSignal,
+  ): Promise<SessionSourceRead> {
+    return readSessionSource(session, fromPosition, signal);
+  }
 }
 
 function listRecentSessionFiles(root: string): Array<{
   path: string;
   modifiedAt: string;
+  size: number;
 }> {
-  const files: Array<{ path: string; modifiedAt: string }> = [];
+  const files: Array<{ path: string; modifiedAt: string; size: number }> = [];
   try {
     for (const projectEntry of readdirSync(root, { withFileTypes: true })) {
       if (!projectEntry.isDirectory() || projectEntry.isSymbolicLink()) continue;
@@ -77,9 +88,11 @@ function listRecentSessionFiles(root: string): Array<{
         const path = join(projectPath, sessionEntry.name);
         try {
           if (lstatSync(path).isSymbolicLink()) continue;
+          const details = statSync(path);
           files.push({
             path,
-            modifiedAt: statSync(path).mtime.toISOString(),
+            modifiedAt: details.mtime.toISOString(),
+            size: details.size,
           });
         } catch {
           // A file can disappear while the local session list is being read.
@@ -97,6 +110,7 @@ function listRecentSessionFiles(root: string): Array<{
 function readClaudeSession(
   path: string,
   modifiedAt: string,
+  sourcePosition?: number,
 ): DiscoveredSession | null {
   const metadata = readMetadata(path);
   if (!metadata || !metadata.hasConversation || metadata.sidechainOnly) return null;
@@ -111,6 +125,8 @@ function readClaudeSession(
     projectLabel,
     lastActiveAt: modifiedAt,
     sourcePath: path,
+    sourcePosition: sourcePosition ?? null,
+    sourceModifiedAt: modifiedAt,
     availability: degraded ? "degraded" : "available",
     message: !workspacePath
       ? "工作文件夹不可用"

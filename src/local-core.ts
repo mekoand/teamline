@@ -12,6 +12,7 @@ import { LocalCodexSessionProvider } from "./codex-session-discovery";
 import { LocalWorkOrderResultProcessor } from "./result-processor";
 import { createServerIdentityResourceProvider, createServerResourceProvider } from "./server-resources";
 import { CodexSessionOrganizer } from "./session-organizer";
+import type { SessionOrganizationResourceSelector } from "./resource-provider";
 import { GitCheckpointManager } from "./checkpoint-manager";
 import { WorkOrderStore } from "./work-order-store";
 import { GitWorktreeManager } from "./worktree-manager";
@@ -69,6 +70,30 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
       systemHome: systemCodexHome,
     },
   );
+  const sessionOrganizationModel =
+    environment.TEAMLINE_SESSION_ORGANIZER_MODEL?.trim() || "gpt-5.6-luna";
+  const sessionOrganizationResourceSelector: SessionOrganizationResourceSelector = {
+    async select(request) {
+      const identityId = request.accountId ??
+        store.getCurrentExecutionIdentityId() ??
+        store.getDefaultExecutionIdentityId();
+      const identity = identityId ? store.getExecutionIdentity(identityId) : null;
+      if (
+        !identity ||
+        identity.status !== "enabled" ||
+        (identity.loginState !== "ready" &&
+          !(identity.homeKind === "system" && identity.loginState === "unknown"))
+      ) {
+        return null;
+      }
+      return {
+        tool: "codex",
+        model: sessionOrganizationModel,
+        accountId: identity.id,
+        accountLabel: identity.label,
+      };
+    },
+  };
   const app = createApp({
     store,
     planGenerator: new CodexPlanGenerator(),
@@ -91,7 +116,25 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
           join(homedir(), ".claude", "projects"),
       ),
     ),
-    sessionOrganizer: new CodexSessionOrganizer(),
+    sessionOrganizationResourceSelector,
+    sessionOrganizer: new CodexSessionOrganizer({
+      codexPath: environment.TEAMLINE_CODEX_PATH,
+      defaultModel: sessionOrganizationModel,
+      codexHomeForAccount: (accountId) => {
+        const identity = store.getExecutionIdentity(accountId);
+        if (
+          !identity ||
+          identity.status !== "enabled" ||
+          (identity.loginState !== "ready" &&
+            !(identity.homeKind === "system" && identity.loginState === "unknown"))
+        ) {
+          return undefined;
+        }
+        return identity?.homeKind === "managed"
+          ? identity.managedHomePath ?? undefined
+          : systemCodexHome;
+      },
+    }),
     projectRoot,
     dataDirectory,
     executionIdentityEnvironment,

@@ -75,6 +75,7 @@ describe("resource API", () => {
     expect(response.status).toBe(200);
     expect(result).toEqual({
       observedAt,
+      sessionMonitoringUsage: [],
       runningCount: 0,
       codex: {
         status: "available",

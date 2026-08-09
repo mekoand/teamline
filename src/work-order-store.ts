@@ -50,6 +50,7 @@ import {
 import {
   type SessionMonitoringOrganizationStatus,
   type SessionMonitoringRecord,
+  type SessionMonitoringResourceUsage,
   type SessionMonitoringUpdate,
 } from "./session-monitoring";
 
@@ -135,6 +136,8 @@ type SessionMonitoringRow = {
   project_label: string;
   last_active_at: string;
   source_path: string | null;
+  source_position: number | null;
+  source_modified_at: string | null;
   availability: SessionMonitoringRecord["availability"];
   message: string | null;
   project_id: string | null;
@@ -146,6 +149,20 @@ type SessionMonitoringRow = {
   work_graph_snapshot_json: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type SessionMonitoringResourceUsageRow = {
+  id: string;
+  session_key: string;
+  source_kind: SessionMonitoringResourceUsage["sourceKind"];
+  tool: string;
+  model: string;
+  account_id: string | null;
+  account_label: string | null;
+  status: SessionMonitoringResourceUsage["status"];
+  started_at: string;
+  completed_at: string | null;
+  message: string | null;
 };
 
 type RunEventRow = {
@@ -296,6 +313,8 @@ export class WorkOrderStore {
         project_label TEXT NOT NULL,
         last_active_at TEXT NOT NULL,
         source_path TEXT,
+        source_position INTEGER,
+        source_modified_at TEXT,
         availability TEXT NOT NULL,
         message TEXT,
         project_id TEXT,
@@ -313,6 +332,36 @@ export class WorkOrderStore {
       ON session_monitoring_catalog(project_id, monitoring_enabled, last_active_at DESC);
       CREATE INDEX IF NOT EXISTS session_monitoring_source_lookup
       ON session_monitoring_catalog(source_kind, execution_identity_id, session_id);
+    `);
+    for (const [column, definition] of [
+      ["source_position", "INTEGER"],
+      ["source_modified_at", "TEXT"],
+    ] as const) {
+      const columns = this.database
+        .query<{ name: string }, []>("PRAGMA table_info(session_monitoring_catalog)")
+        .all();
+      if (!columns.some((candidate) => candidate.name === column)) {
+        this.database.exec(
+          `ALTER TABLE session_monitoring_catalog ADD COLUMN ${column} ${definition}`,
+        );
+      }
+    }
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS session_monitoring_resource_usage (
+        id TEXT PRIMARY KEY,
+        session_key TEXT NOT NULL,
+        source_kind TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        model TEXT NOT NULL,
+        account_id TEXT,
+        account_label TEXT,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        message TEXT
+      );
+      CREATE INDEX IF NOT EXISTS session_monitoring_resource_usage_lookup
+      ON session_monitoring_resource_usage(session_key, started_at DESC);
     `);
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS work_orders (
@@ -483,6 +532,8 @@ export class WorkOrderStore {
     projectLabel: string;
     lastActiveAt: string;
     sourcePath: string | null;
+    sourcePosition?: number | null;
+    sourceModifiedAt?: string | null;
     availability: SessionMonitoringRecord["availability"];
     message: string | null;
     lastDiscoveredAt: string;
@@ -494,10 +545,11 @@ export class WorkOrderStore {
         INSERT INTO session_monitoring_catalog (
           session_key, source_kind, execution_identity_id, execution_identity_label,
           session_id, title, workspace_path, project_label, last_active_at, source_path,
-          availability, message, project_id, monitoring_enabled, last_discovered_at,
+          source_position, source_modified_at, availability, message, project_id,
+          monitoring_enabled, last_discovered_at,
           last_read_position, last_read_at, organization_status, work_graph_snapshot_json,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, NULL, NULL,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, NULL, NULL,
                   'not_started', NULL, ?, ?)
         ON CONFLICT(session_key) DO UPDATE SET
           source_kind = excluded.source_kind,
@@ -509,6 +561,8 @@ export class WorkOrderStore {
           project_label = excluded.project_label,
           last_active_at = excluded.last_active_at,
           source_path = excluded.source_path,
+          source_position = excluded.source_position,
+          source_modified_at = excluded.source_modified_at,
           availability = excluded.availability,
           message = excluded.message,
           last_discovered_at = excluded.last_discovered_at,
@@ -525,6 +579,8 @@ export class WorkOrderStore {
         input.projectLabel,
         input.lastActiveAt,
         input.sourcePath,
+        input.sourcePosition ?? null,
+        input.sourceModifiedAt ?? null,
         input.availability,
         input.message,
         input.lastDiscoveredAt,
@@ -564,6 +620,7 @@ export class WorkOrderStore {
         input.monitoringEnabled !== undefined
           ? Boolean(input.monitoringEnabled)
           : current.monitoringEnabled,
+      message: input.message !== undefined ? input.message : current.message,
       lastReadPosition:
         input.lastReadPosition !== undefined
           ? input.lastReadPosition
@@ -581,7 +638,7 @@ export class WorkOrderStore {
       .query(`
         UPDATE session_monitoring_catalog
         SET project_id = ?, monitoring_enabled = ?, last_read_position = ?, last_read_at = ?,
-            organization_status = ?, work_graph_snapshot_json = ?, updated_at = ?
+            organization_status = ?, work_graph_snapshot_json = ?, message = ?, updated_at = ?
         WHERE session_key = ?
       `)
       .run(
@@ -591,10 +648,90 @@ export class WorkOrderStore {
         next.lastReadAt,
         next.organizationStatus,
         next.workGraphSnapshot === null ? null : JSON.stringify(next.workGraphSnapshot),
+        next.message,
         next.updatedAt,
         key,
       );
     return this.getSessionMonitoring(key)!;
+  }
+
+  listSessionMonitoringResourceUsage(): SessionMonitoringResourceUsage[] {
+    return this.database
+      .query<SessionMonitoringResourceUsageRow, []>(`
+        SELECT * FROM session_monitoring_resource_usage
+        ORDER BY started_at DESC, id DESC
+        LIMIT 100
+      `)
+      .all()
+      .map(mapSessionMonitoringResourceUsageRow);
+  }
+
+  listRunningSessionMonitoringResourceUsage(): SessionMonitoringResourceUsage[] {
+    return this.database
+      .query<SessionMonitoringResourceUsageRow, []>(`
+        SELECT * FROM session_monitoring_resource_usage
+        WHERE status = 'running'
+        ORDER BY started_at ASC, id ASC
+      `)
+      .all()
+      .map(mapSessionMonitoringResourceUsageRow);
+  }
+
+  startSessionMonitoringResourceUsage(input: {
+    sessionKey: string;
+    sourceKind: SessionMonitoringResourceUsage["sourceKind"];
+    tool: string;
+    model: string;
+    accountId: string | null;
+    accountLabel: string | null;
+    startedAt?: string;
+  }): SessionMonitoringResourceUsage {
+    const startedAt = input.startedAt ?? new Date().toISOString();
+    const id = crypto.randomUUID();
+    this.database
+      .query(`
+        INSERT INTO session_monitoring_resource_usage (
+          id, session_key, source_kind, tool, model, account_id, account_label,
+          status, started_at, completed_at, message
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, NULL, NULL)
+      `)
+      .run(
+        id,
+        input.sessionKey,
+        input.sourceKind,
+        input.tool,
+        input.model,
+        input.accountId,
+        input.accountLabel,
+        startedAt,
+      );
+    const row = this.database
+      .query<SessionMonitoringResourceUsageRow, [string]>(`
+        SELECT * FROM session_monitoring_resource_usage WHERE id = ?
+      `)
+      .get(id);
+    return mapSessionMonitoringResourceUsageRow(row!);
+  }
+
+  finishSessionMonitoringResourceUsage(
+    id: string,
+    status: Extract<SessionMonitoringResourceUsage["status"], "succeeded" | "failed">,
+    message: string | null = null,
+    completedAt = new Date().toISOString(),
+  ): SessionMonitoringResourceUsage | null {
+    this.database
+      .query(`
+        UPDATE session_monitoring_resource_usage
+        SET status = ?, completed_at = ?, message = ?
+        WHERE id = ?
+      `)
+      .run(status, completedAt, message, id);
+    const row = this.database
+      .query<SessionMonitoringResourceUsageRow, [string]>(`
+        SELECT * FROM session_monitoring_resource_usage WHERE id = ?
+      `)
+      .get(id);
+    return row ? mapSessionMonitoringResourceUsageRow(row) : null;
   }
 
   getLastSessionMonitoringDiscoveryAt(): string | null {
@@ -3979,6 +4116,8 @@ function mapSessionMonitoringRow(row: SessionMonitoringRow): SessionMonitoringRe
     projectLabel: row.project_label,
     lastActiveAt: row.last_active_at,
     sourcePath: row.source_path,
+    sourcePosition: row.source_position,
+    sourceModifiedAt: row.source_modified_at,
     availability: row.availability,
     message: row.message,
     projectId: row.project_id,
@@ -3990,6 +4129,24 @@ function mapSessionMonitoringRow(row: SessionMonitoringRow): SessionMonitoringRe
     workGraphSnapshot,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapSessionMonitoringResourceUsageRow(
+  row: SessionMonitoringResourceUsageRow,
+): SessionMonitoringResourceUsage {
+  return {
+    id: row.id,
+    sessionKey: row.session_key,
+    sourceKind: row.source_kind,
+    tool: row.tool,
+    model: row.model,
+    accountId: row.account_id,
+    accountLabel: row.account_label,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    message: row.message,
   };
 }
 
