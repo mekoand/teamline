@@ -167,6 +167,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     path: "public/i18n.js",
     type: "text/javascript; charset=utf-8",
   },
+  "/navigation-state.js": {
+    path: "public/navigation-state.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/result-artifacts.js": {
     path: "public/result-artifacts.js",
     type: "text/javascript; charset=utf-8",

@@ -140,6 +140,16 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
     executionIdentityEnvironment,
   });
   const coreIdentity = localCoreIdentity(dataDirectory);
+  let server: ReturnType<typeof Bun.serve> | null = null;
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    server?.stop(true);
+    await app.close();
+    await executionIdentityEnvironment.close();
+    store.database.close();
+  };
   const fetch = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/api/local-core/health") {
@@ -148,28 +158,38 @@ export async function startLocalCore(options: LocalCoreOptions = {}): Promise<Lo
         identity: coreIdentity,
       });
     }
+    if (request.method === "POST" && url.pathname === "/api/local-core/shutdown") {
+      const activeWorkOrders = store.activeRunIds();
+      if (activeWorkOrders.length) {
+        return Response.json(
+          {
+            code: "LOCAL_CORE_BUSY",
+            error: "Local Core 仍有运行中的目标，请先安全停止它们",
+            workOrderIds: activeWorkOrders,
+          },
+          { status: 409 },
+        );
+      }
+      setTimeout(() => void close(), 10);
+      return Response.json(
+        { service: "teamline-local-core", identity: coreIdentity, stopping: true },
+        { status: 202 },
+      );
+    }
     return app.fetch(request);
   };
 
-  const server = Bun.serve({
+  server = Bun.serve({
     hostname: "127.0.0.1",
     port: options.port ?? Number(environment.TEAMLINE_PORT ?? 4310),
     idleTimeout: 0,
     fetch,
   });
-
-  let closed = false;
+  const startedServer = server;
   return {
-    url: server.url,
+    url: startedServer.url,
     dataDirectory,
     fetch,
-    async close() {
-      if (closed) return;
-      closed = true;
-      server.stop(true);
-      await app.close();
-      await executionIdentityEnvironment.close();
-      store.database.close();
-    },
+    close,
   };
 }

@@ -10,15 +10,26 @@ describe("personal console", () => {
   test("serves the formal three-column workspace with a persistent theme control", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
 
-    const [pageResponse, scriptResponse] = await Promise.all([
+    const [pageResponse, scriptResponse, navigationResponse, stylesResponse] = await Promise.all([
       app.fetch(new Request("http://teamline.local/")),
       app.fetch(new Request("http://teamline.local/app.js")),
+      app.fetch(new Request("http://teamline.local/navigation-state.js")),
+      app.fetch(new Request("http://teamline.local/styles.css")),
     ]);
     const page = await pageResponse.text();
     const script = await scriptResponse.text();
+    const navigation = await navigationResponse.text();
+    const styles = await stylesResponse.text();
 
     expect(pageResponse.status).toBe(200);
+    expect(navigationResponse.status).toBe(200);
     expect(page).toContain('class="console-shell"');
+    expect(page).toContain('class="order-sidebar project-sidebar"');
+    expect(page).toContain('class="main-column"');
+    expect(page).toContain('id="project-list"');
+    expect(page).toContain('id="toggle-left-sidebar"');
+    expect(page).toContain('id="toggle-right-sidebar"');
+    expect(page).toContain('id="quick-navigator"');
     expect(page).toContain('id="work-order-list"');
     expect(page).toContain('id="work-order-workspace"');
     expect(page).toContain('id="context-panel"');
@@ -26,6 +37,14 @@ describe("personal console", () => {
     expect(page).not.toContain('id="max-concurrency"');
     expect(script).toContain('localStorage.getItem("teamline-theme")');
     expect(script).toContain('localStorage.setItem("teamline-theme"');
+    expect(script).toContain('import {');
+    expect(script).toContain('"./navigation-state.js"');
+    expect(script).toContain("initializeNavigationFromData");
+    expect(navigation).toContain("export function chooseInitialNavigation");
+    expect(navigation).toContain('"/projects/unclassified"');
+    expect(styles).toContain("/* Teamline 3.1 desktop shell.");
+    expect(styles).toContain(".console-shell[class] > .main-column");
+    expect(styles).toContain("@media (max-width: 1000px)");
     expect(script).toContain('"/api/execution-settings"');
     expect(script).toContain("state.workOrders.some((workOrder)");
     expect(script).toContain('workOrder.importContext?.status === "pending"');
