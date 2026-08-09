@@ -164,6 +164,10 @@ type SessionMonitoringWorkRow = {
   name: string;
   source_session_keys_json: string;
   aggregate_snapshot_ref: string | null;
+  aggregate_snapshot_json: string | null;
+  aggregate_status: SessionMonitoringOrganizationStatus;
+  aggregate_message: string | null;
+  aggregate_updated_at: string | null;
   last_automatic_completed_at: string | null;
   pending_refresh_intent_json: string | null;
   created_at: string;
@@ -388,6 +392,10 @@ export class WorkOrderStore {
         name TEXT NOT NULL,
         source_session_keys_json TEXT NOT NULL,
         aggregate_snapshot_ref TEXT,
+        aggregate_snapshot_json TEXT,
+        aggregate_status TEXT NOT NULL DEFAULT 'not_started',
+        aggregate_message TEXT,
+        aggregate_updated_at TEXT,
         last_automatic_completed_at TEXT,
         pending_refresh_intent_json TEXT,
         created_at TEXT NOT NULL,
@@ -397,6 +405,21 @@ export class WorkOrderStore {
       CREATE INDEX IF NOT EXISTS session_monitoring_works_project_lookup
       ON session_monitoring_works(project_id, updated_at DESC);
     `);
+    for (const [column, definition] of [
+      ["aggregate_snapshot_json", "TEXT"],
+      ["aggregate_status", "TEXT NOT NULL DEFAULT 'not_started'"],
+      ["aggregate_message", "TEXT"],
+      ["aggregate_updated_at", "TEXT"],
+    ] as const) {
+      const columns = this.database
+        .query<{ name: string }, []>("PRAGMA table_info(session_monitoring_works)")
+        .all();
+      if (!columns.some((candidate) => candidate.name === column)) {
+        this.database.exec(
+          `ALTER TABLE session_monitoring_works ADD COLUMN ${column} ${definition}`,
+        );
+      }
+    }
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS session_monitoring_project_workspaces (
         project_id TEXT NOT NULL,
@@ -722,6 +745,15 @@ export class WorkOrderStore {
     const nextProjectId = input.projectId !== undefined
       ? normalizedProjectId
       : current.projectId;
+    const work = this.findSessionMonitoringWorkBySourceKey(key);
+    if (
+      work &&
+      work.sourceSessionKeys.length > 1 &&
+      input.projectId !== undefined &&
+      nextProjectId !== current.projectId
+    ) {
+      throw new Error("请先解除多来源监控工作，再移动来源会话");
+    }
     const next = {
       ...current,
       projectId: nextProjectId,
@@ -769,7 +801,6 @@ export class WorkOrderStore {
     if (next.projectId && next.workspacePath) {
       this.bindProjectMonitoringWorkspace(next.projectId, next.workspacePath);
     }
-    const work = this.findSessionMonitoringWorkBySourceKey(key);
     if (work && work.sourceSessionKeys.length === 1 && work.projectId !== next.projectId) {
       this.updateSessionMonitoringWork(work.id, { projectId: next.projectId });
     }
@@ -891,8 +922,9 @@ export class WorkOrderStore {
       .query(`
         INSERT INTO session_monitoring_works (
           id, project_id, name, source_session_keys_json, aggregate_snapshot_ref,
+          aggregate_snapshot_json, aggregate_status, aggregate_message, aggregate_updated_at,
           last_automatic_completed_at, pending_refresh_intent_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, NULL, NULL, 'not_started', NULL, NULL, NULL, NULL, ?, ?)
       `)
       .run(id, record.projectId, record.title || "监控工作", JSON.stringify([record.key]), now, now);
     return this.getSessionMonitoringWork(id)!;
@@ -906,17 +938,18 @@ export class WorkOrderStore {
     const sourceSessionKeys = normalizeSessionMonitoringWorkKeys(input.sourceSessionKeys);
     const name = input.name.trim();
     if (!name) throw new Error("请填写监控工作名称");
-    const projectId = input.projectId?.trim() || null;
-    if (projectId && !this.getProject(projectId)) throw new Error("找不到所选项目");
+    const requestedProjectId = input.projectId === undefined
+      ? undefined
+      : input.projectId?.trim() || null;
+    if (requestedProjectId && !this.getProject(requestedProjectId)) throw new Error("找不到所选项目");
     const records = sourceSessionKeys.map((key) => {
       const record = this.getSessionMonitoring(key);
       if (!record) throw new Error("找不到所选来源会话");
       return record;
     });
-    const inferredProjectId = projectId ??
-      (new Set(records.map((record) => record.projectId)).size === 1
-        ? records[0]?.projectId ?? null
-        : null);
+    const sourceProjectId = commonSessionMonitoringProjectId(records);
+    const projectId = requestedProjectId === undefined ? sourceProjectId : requestedProjectId;
+    assertSessionMonitoringWorkProject(records, projectId);
     const now = new Date().toISOString();
     const id = crypto.randomUUID();
     this.database.transaction(() => {
@@ -925,10 +958,11 @@ export class WorkOrderStore {
         .query(`
           INSERT INTO session_monitoring_works (
             id, project_id, name, source_session_keys_json, aggregate_snapshot_ref,
+            aggregate_snapshot_json, aggregate_status, aggregate_message, aggregate_updated_at,
             last_automatic_completed_at, pending_refresh_intent_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+          ) VALUES (?, ?, ?, ?, NULL, NULL, 'not_started', NULL, NULL, NULL, NULL, ?, ?)
         `)
-        .run(id, inferredProjectId, name, JSON.stringify(sourceSessionKeys), now, now);
+        .run(id, projectId, name, JSON.stringify(sourceSessionKeys), now, now);
     })();
     return this.getSessionMonitoringWork(id)!;
   }
@@ -941,16 +975,21 @@ export class WorkOrderStore {
     if (!current) throw new Error("找不到这个监控工作");
     const name = input.name === undefined ? current.name : input.name.trim();
     if (!name) throw new Error("请填写监控工作名称");
-    const projectId = input.projectId === undefined
-      ? current.projectId
+    const requestedProjectId = input.projectId === undefined
+      ? undefined
       : input.projectId?.trim() || null;
-    if (projectId && !this.getProject(projectId)) throw new Error("找不到所选项目");
+    if (requestedProjectId && !this.getProject(requestedProjectId)) throw new Error("找不到所选项目");
     const sourceSessionKeys = input.sourceSessionKeys === undefined
       ? current.sourceSessionKeys
       : normalizeSessionMonitoringWorkKeys(input.sourceSessionKeys);
-    for (const key of sourceSessionKeys) {
-      if (!this.getSessionMonitoring(key)) throw new Error("找不到所选来源会话");
-    }
+    const records = sourceSessionKeys.map((key) => {
+      const record = this.getSessionMonitoring(key);
+      if (!record) throw new Error("找不到所选来源会话");
+      return record;
+    });
+    const sourceProjectId = commonSessionMonitoringProjectId(records);
+    const projectId = requestedProjectId === undefined ? sourceProjectId : requestedProjectId;
+    assertSessionMonitoringWorkProject(records, projectId);
     const removedSourceSessionKeys = current.sourceSessionKeys.filter(
       (key) => !sourceSessionKeys.includes(key),
     );
@@ -1026,6 +1065,41 @@ export class WorkOrderStore {
         WHERE id = ?
       `)
       .run(ref, new Date().toISOString(), id);
+  }
+
+  updateSessionMonitoringWorkAggregate(
+    id: string,
+    input: {
+      snapshot?: unknown | null;
+      status?: SessionMonitoringOrganizationStatus;
+      message?: string | null;
+      updatedAt?: string;
+    },
+  ): SessionMonitoringWork {
+    const current = this.getSessionMonitoringWork(id);
+    if (!current) throw new Error("找不到这个监控工作");
+    const updatedAt = input.updatedAt ?? new Date().toISOString();
+    const snapshot = input.snapshot === undefined
+      ? current.aggregateSnapshot
+      : input.snapshot;
+    const status = input.status ?? current.aggregateStatus;
+    const message = input.message === undefined ? current.aggregateMessage : input.message;
+    this.database
+      .query(`
+        UPDATE session_monitoring_works
+        SET aggregate_snapshot_json = ?, aggregate_status = ?, aggregate_message = ?,
+            aggregate_updated_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        snapshot === null ? null : JSON.stringify(snapshot),
+        status,
+        message,
+        updatedAt,
+        updatedAt,
+        id,
+      );
+    return this.getSessionMonitoringWork(id)!;
   }
 
   private removeSourcesFromMonitoringWorks(
@@ -4611,12 +4685,32 @@ function mapSessionMonitoringWorkRow(row: SessionMonitoringWorkRow): SessionMoni
       pendingRefreshIntent = null;
     }
   }
+  let aggregateSnapshot: unknown | null = null;
+  if (row.aggregate_snapshot_json) {
+    try {
+      aggregateSnapshot = JSON.parse(row.aggregate_snapshot_json);
+    } catch {
+      aggregateSnapshot = null;
+    }
+  }
+  const aggregateStatus: SessionMonitoringOrganizationStatus = [
+    "not_started",
+    "pending",
+    "ready",
+    "failed",
+  ].includes(row.aggregate_status)
+    ? row.aggregate_status
+    : "not_started";
   return {
     id: row.id,
     projectId: row.project_id,
     name: row.name,
     sourceSessionKeys,
     aggregateSnapshotRef: row.aggregate_snapshot_ref,
+    aggregateSnapshot,
+    aggregateStatus,
+    aggregateMessage: row.aggregate_message,
+    aggregateUpdatedAt: row.aggregate_updated_at,
     lastAutomaticCompletedAt: row.last_automatic_completed_at,
     pendingRefreshIntent,
     createdAt: row.created_at,
@@ -4633,6 +4727,23 @@ function normalizeSessionMonitoringWorkKeys(value: string[]): string[] {
     throw new Error("来源会话选择无效");
   }
   return keys;
+}
+
+function commonSessionMonitoringProjectId(records: SessionMonitoringRecord[]): string | null {
+  const projectIds = new Set(records.map((record) => record.projectId));
+  if (projectIds.size !== 1) {
+    throw new Error("监控工作来源会话必须属于同一个项目");
+  }
+  return records[0]?.projectId ?? null;
+}
+
+function assertSessionMonitoringWorkProject(
+  records: SessionMonitoringRecord[],
+  projectId: string | null,
+): void {
+  if (commonSessionMonitoringProjectId(records) !== projectId) {
+    throw new Error("监控工作项目必须与来源会话所在项目一致");
+  }
 }
 
 function refreshModeRank(mode: SessionMonitoringRefreshMode): number {

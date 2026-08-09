@@ -25,6 +25,10 @@ export type SessionMonitoringWork = {
   name: string;
   sourceSessionKeys: string[];
   aggregateSnapshotRef: string | null;
+  aggregateSnapshot: unknown | null;
+  aggregateStatus: SessionMonitoringOrganizationStatus;
+  aggregateMessage: string | null;
+  aggregateUpdatedAt: string | null;
   lastAutomaticCompletedAt: string | null;
   pendingRefreshIntent: SessionMonitoringRefreshIntent | null;
   createdAt: string;

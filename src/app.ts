@@ -74,10 +74,12 @@ import {
   sessionMonitoringKey,
   sessionMonitoringRefreshModes,
   type SessionMonitoringRefreshMode,
+  type SessionMonitoringResourceUsage,
   type SessionMonitoringWork,
   type SessionMonitoringRecord,
   type SessionMonitoringUpdate,
 } from "./session-monitoring";
+import { aggregateSessionMonitoringWork } from "./session-monitoring-aggregation";
 import {
   assertStateBundleSize,
   InvalidStateBundleError,
@@ -532,6 +534,7 @@ export function createApp({
       monitoringWorks: presentSessionMonitoringWorks(
         store.listSessionMonitoringWorks(),
         store.listSessionMonitoring(),
+        store.listSessionMonitoringResourceUsage(),
       ),
       projectMonitoringDefaults: store.listProjectMonitoringDefaults(),
       automaticRefreshEnabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
@@ -583,6 +586,7 @@ export function createApp({
       monitoringWorks: presentSessionMonitoringWorks(
         store.listSessionMonitoringWorks(),
         store.listSessionMonitoring(),
+        store.listSessionMonitoringResourceUsage(),
       ),
       projectMonitoringDefaults: store.listProjectMonitoringDefaults(),
       automaticRefreshEnabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
@@ -592,6 +596,7 @@ export function createApp({
   };
 
   const sessionMonitoringState = () => {
+    ensureSessionMonitoringWorkAggregates();
     if (sessionMonitoringPreview && !sessionMonitoringOnboardingDismissed) {
       return sessionMonitoringOnboardingState([]);
     }
@@ -605,12 +610,100 @@ export function createApp({
       monitoringWorks: presentSessionMonitoringWorks(
         store.listSessionMonitoringWorks(),
         store.listSessionMonitoring(),
+        store.listSessionMonitoringResourceUsage(),
       ),
       projectMonitoringDefaults: store.listProjectMonitoringDefaults(),
       automaticRefreshEnabled: store.getSessionMonitoringAutomaticRefreshEnabled(),
       onboarding: false,
       onboardingDismissed: sessionMonitoringOnboardingDismissed,
     };
+  };
+
+  const refreshSessionMonitoringWorkAggregate = (
+    workId: string,
+    changedSourceKeys: string[] = [],
+  ) => {
+    const work = store.getSessionMonitoringWork(workId);
+    if (!work) return null;
+    const records = work.sourceSessionKeys.flatMap((key) => {
+      const record = store.getSessionMonitoring(key);
+      return record ? [record] : [];
+    });
+    const snapshot = aggregateSessionMonitoringWork({
+      work,
+      records,
+      previousSnapshot: work.aggregateSnapshot,
+      changedSourceKeys: changedSourceKeys.length ? changedSourceKeys : undefined,
+    });
+    const aggregateView = sessionMonitoringAggregateView(
+      work,
+      records,
+      snapshot ?? work.aggregateSnapshot,
+    );
+    const updated = store.updateSessionMonitoringWorkAggregate(work.id, {
+      ...(snapshot ? { snapshot } : {}),
+      ...aggregateView,
+      updatedAt: new Date(sessionMonitoringNow()).toISOString(),
+    });
+    if (snapshot) {
+      store.updateSessionMonitoringWorkSnapshotRef(
+        work.id,
+        `session-monitoring-work:${work.id}:${updated.aggregateUpdatedAt ?? updated.updatedAt}`,
+      );
+    }
+    return updated;
+  };
+
+  const sessionMonitoringAggregateView = (
+    work: SessionMonitoringWork,
+    records: SessionMonitoringRecord[],
+    snapshot: unknown | null = work.aggregateSnapshot,
+  ) => {
+    const pending = records.some((record) => record.organizationStatus === "pending");
+    const failed = records.find((record) => record.organizationStatus === "failed");
+    const hasReadableSource = records.some((record) => record.organizationStatus === "ready");
+    const status = pending
+      ? "pending" as const
+      : failed
+        ? "failed" as const
+        : snapshot || work.aggregateSnapshot || hasReadableSource
+          ? "ready" as const
+          : "not_started" as const;
+    const message = pending
+      ? "正在整理来源会话"
+      : failed
+        ? failed.message || "部分来源整理失败，已保留上次聚合结果"
+        : snapshot
+          ? null
+          : "进度未知";
+    return { status, message };
+  };
+
+  const ensureSessionMonitoringWorkAggregates = () => {
+    for (const work of store.listSessionMonitoringWorks()) {
+      const snapshot = work.aggregateSnapshot;
+      const sourceKeys = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) &&
+        Array.isArray((snapshot as { sourceSessionKeys?: unknown }).sourceSessionKeys)
+        ? (snapshot as { sourceSessionKeys: unknown[] }).sourceSessionKeys
+            .filter((key): key is string => typeof key === "string")
+        : [];
+      const snapshotMatchesSources = Boolean(
+        snapshot &&
+        sourceKeys.length === work.sourceSessionKeys.length &&
+        work.sourceSessionKeys.every((key) => sourceKeys.includes(key)),
+      );
+      const records = work.sourceSessionKeys.flatMap((key) => {
+        const record = store.getSessionMonitoring(key);
+        return record ? [record] : [];
+      });
+      const aggregateView = sessionMonitoringAggregateView(work, records);
+      if (
+        (snapshotMatchesSources || !snapshot) &&
+        work.aggregateStatus === aggregateView.status &&
+        work.aggregateMessage === aggregateView.message
+      ) continue;
+      refreshSessionMonitoringWorkAggregate(work.id);
+    }
   };
 
   const materializePreviewSession = (
@@ -1341,6 +1434,8 @@ export function createApp({
         organizationStatus: "pending",
         message: null,
       });
+      const pendingWork = store.findSessionMonitoringWorkBySourceKey(record.key);
+      if (pendingWork) refreshSessionMonitoringWorkAggregate(pendingWork.id);
       if (candidate.availability === "unavailable" || !candidate.sourcePath) {
         throw new Error(candidate.message || "来源会话当前不可用，请重试");
       }
@@ -1370,6 +1465,8 @@ export function createApp({
           organizationStatus: "ready",
           message: sourceMessage,
         });
+        const work = store.findSessionMonitoringWorkBySourceKey(record.key);
+        if (work) refreshSessionMonitoringWorkAggregate(work.id, [record.key]);
         return;
       }
       if (!sessionOrganizationResourceSelector) {
@@ -1429,6 +1526,7 @@ export function createApp({
       });
       const work = store.findSessionMonitoringWorkBySourceKey(record.key);
       if (work) {
+        refreshSessionMonitoringWorkAggregate(work.id, [record.key]);
         if (refreshMode === "automatic") {
           store.markSessionMonitoringAutomaticCompleted(
             work.id,
@@ -1454,6 +1552,8 @@ export function createApp({
           organizationStatus: "failed",
           message,
         });
+        const work = store.findSessionMonitoringWorkBySourceKey(record.key);
+        if (work) refreshSessionMonitoringWorkAggregate(work.id);
       }
       if (usageId) store.finishSessionMonitoringResourceUsage(usageId, "failed", message);
     } finally {
@@ -3007,6 +3107,7 @@ export function createApp({
           works: presentSessionMonitoringWorks(
             store.listSessionMonitoringWorks(),
             store.listSessionMonitoring(),
+            store.listSessionMonitoringResourceUsage(),
           ),
         });
       }
@@ -3024,9 +3125,11 @@ export function createApp({
             projectId: body.projectId,
             sourceSessionKeys: body.sourceSessionKeys ?? body.sessionKeys ?? [],
           });
+          const aggregate = refreshSessionMonitoringWorkAggregate(work.id);
           return Response.json({ work: presentSessionMonitoringWorks(
-            [work],
+            [aggregate ?? work],
             store.listSessionMonitoring(),
+            store.listSessionMonitoringResourceUsage(),
           )[0] }, { status: 201 });
         } catch (error) {
           return Response.json(
@@ -3055,9 +3158,11 @@ export function createApp({
               sourceSessionKeys: body.sourceSessionKeys ?? body.sessionKeys,
             },
           );
+          const aggregate = refreshSessionMonitoringWorkAggregate(work.id);
           return Response.json({ work: presentSessionMonitoringWorks(
-            [work],
+            [aggregate ?? work],
             store.listSessionMonitoring(),
+            store.listSessionMonitoringResourceUsage(),
           )[0] });
         } catch (error) {
           return Response.json(
@@ -6227,6 +6332,25 @@ type PresentedSessionMonitoringWork = SessionMonitoringWork & {
     id: string;
     title: string;
     sourceKind: SessionMonitoringRecord["sourceKind"];
+    executionIdentityLabel: string | null;
+    projectLabel: string;
+    workspacePath: string | null;
+    lastActiveAt: string;
+    lastReadAt: string | null;
+    lastReadPosition: number | null;
+    sourceModifiedAt: string | null;
+    monitoringEnabled: boolean;
+    organizationStatus: SessionMonitoringRecord["organizationStatus"];
+    message: string | null;
+    sourceAvailable: boolean;
+    resourceUsage: {
+      tool: string;
+      model: string;
+      accountLabel: string | null;
+      status: SessionMonitoringResourceUsage["status"];
+      startedAt: string;
+      completedAt: string | null;
+    } | null;
   }>;
 };
 
@@ -6243,14 +6367,48 @@ function presentSessionMonitoring(
 function presentSessionMonitoringWorks(
   works: SessionMonitoringWork[],
   records: SessionMonitoringRecord[],
+  resourceUsage: SessionMonitoringResourceUsage[] = [],
 ): PresentedSessionMonitoringWork[] {
   const byKey = new Map(records.map((record) => [record.key, record]));
+  const usageByKey = new Map<string, SessionMonitoringResourceUsage>();
+  for (const usage of resourceUsage) {
+    if (!usageByKey.has(usage.sessionKey)) usageByKey.set(usage.sessionKey, usage);
+  }
   return works.map((work) => ({
     ...work,
     sources: work.sourceSessionKeys.flatMap((key) => {
       const source = byKey.get(key);
       return source
-        ? [{ key, id: source.id, title: source.title, sourceKind: source.sourceKind }]
+        ? [{
+            key,
+            id: source.id,
+            title: source.title,
+            sourceKind: source.sourceKind,
+            executionIdentityLabel: source.executionIdentityLabel,
+            projectLabel: source.projectLabel,
+            workspacePath: source.workspacePath,
+            lastActiveAt: source.lastActiveAt,
+            lastReadAt: source.lastReadAt,
+            lastReadPosition: source.lastReadPosition,
+            sourceModifiedAt: source.sourceModifiedAt,
+            monitoringEnabled: source.monitoringEnabled,
+            organizationStatus: source.organizationStatus,
+            message: source.message,
+            sourceAvailable: Boolean(source.sourcePath && existsSync(source.sourcePath)),
+            resourceUsage: usageByKey.has(key)
+              ? (() => {
+                  const usage = usageByKey.get(key)!;
+                  return {
+                    tool: usage.tool,
+                    model: usage.model,
+                    accountLabel: usage.accountLabel,
+                    status: usage.status,
+                    startedAt: usage.startedAt,
+                    completedAt: usage.completedAt,
+                  };
+                })()
+              : null,
+          }]
         : [];
     }),
   }));
