@@ -450,6 +450,7 @@ body {
 }
 
 .settings-layout {
+  display: grid;
   grid-template-columns: 118px minmax(0, 1fr);
   gap: 14px;
   height: calc(100% - 53px);
@@ -458,7 +459,11 @@ body {
 }
 
 .settings-nav {
+  display: grid;
   gap: 2px;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  overflow: visible;
 }
 
 .settings-nav-item {
@@ -468,7 +473,8 @@ body {
 
 .settings-content {
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-right: 3px;
 }
 
@@ -489,6 +495,9 @@ body {
   min-height: 42px;
   padding: 9px 0;
   gap: 12px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
 }
 
 .setting-row strong,
@@ -524,6 +533,7 @@ input:not([type="checkbox"]):not([type="file"]) {
 }
 
 .source-settings label {
+  grid-template-columns: minmax(104px, 0.42fr) minmax(0, 1fr);
   gap: 8px;
   font-size: 12px;
 }
@@ -534,6 +544,8 @@ input:not([type="checkbox"]):not([type="file"]) {
 
 .settings-actions {
   gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .settings-actions .primary-button,
@@ -548,10 +560,36 @@ input:not([type="checkbox"]):not([type="file"]) {
   font-size: 11px;
 }
 
+.settings-feedback:empty {
+  display: none;
+}
+
 .advanced-card {
   margin-top: 10px;
   padding: 11px;
   gap: 10px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.setting-toggle input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--settings-accent);
+}
+
+:is(.icon-button, .secondary-button, .primary-button, .settings-nav-item) {
+  display: inline-flex;
+  align-items: center;
+}
+
+:is(.icon-button, .secondary-button, .primary-button) {
+  justify-content: center;
 }
 
 .restore-card {
@@ -589,6 +627,56 @@ input:not([type="checkbox"]):not([type="file"]) {
   min-width: 0;
 }
 
+.setting-row > span,
+.advanced-card > div {
+  flex: 1 1 auto;
+}
+
+.setting-row > :is(select, input, .setting-toggle),
+.advanced-card > :is(button, input[type="file"]) {
+  flex: 0 0 auto;
+}
+
+.setting-row > select {
+  width: 168px;
+}
+
+.advanced-card > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.advanced-card p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.advanced-card strong {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.restore-card > input[type="file"] {
+  max-width: 190px;
+  font-size: 11px;
+}
+
+.restore-actions[hidden] {
+  display: none;
+}
+
+.settings-actions .settings-feedback {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .setting-row strong,
 .source-settings label > span,
 .advanced-card strong,
@@ -599,4 +687,25 @@ input:not([type="checkbox"]):not([type="file"]) {
 .source-settings input,
 .settings-content select {
   max-width: 100%;
+}
+
+@media (max-width: 520px) {
+  .setting-row,
+  .advanced-card:not(.restore-card) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .source-settings label,
+  .restore-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .advanced-card > div {
+    flex-wrap: wrap;
+  }
+
+  .advanced-card p {
+    white-space: normal;
+  }
 }

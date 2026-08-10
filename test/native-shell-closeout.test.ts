@@ -6,6 +6,10 @@ import {
   visibleOnboardingCandidates,
   visibleOnboardingSessionKeys,
 } from "../public/session-monitoring-onboarding.js";
+import {
+  availableQuotaWindows,
+  quotaWindowSummary,
+} from "../public/resource-window-presentation.js";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const page = read("public/index.html");
@@ -18,6 +22,12 @@ const electronMain = read("src/electron/main.mjs");
 const preload = read("src/electron/preload.cjs");
 const serverApp = read("src/app.ts");
 const traySvg = read("public/teamline-tray-template.svg");
+
+function cssBlock(source: string, selector: string): string {
+  const start = source.indexOf(selector);
+  const end = source.indexOf("}", start);
+  return start < 0 || end < 0 ? "" : source.slice(start, end + 1);
+}
 
 describe("native shell closeout", () => {
   test("keeps a real drag region separate from interactive topbar controls", () => {
@@ -67,6 +77,7 @@ describe("native shell closeout", () => {
     expect(script).toContain('aria-pressed="${activeToolKeys.has(tool.key)}"');
     expect(script).toContain('class="monitoring-onboarding-session-preview"');
     expect(script).not.toContain('data-onboarding-session="${escapeHtml(key)}" checked');
+    expect(script).not.toContain('type="checkbox" data-onboarding-session=');
     expect(script).not.toContain("当前及以后同一工作文件夹的来源会话继承此设置");
     expect(styles).toContain(".monitoring-onboarding-project-choice");
     expect(styles).toContain("grid-template-columns: minmax(0, 1fr) auto");
@@ -124,25 +135,145 @@ describe("native shell closeout", () => {
     expect(settingsStyles).toContain("-webkit-app-region: no-drag");
   });
 
-  test("uses the restrained monitoring accent for controls and focus", () => {
-    expect(styles).toContain("--mode-accent: #b77b73");
-    expect(styles).toContain("--mode-accent-soft: #f7efec");
+  test("uses pink for monitoring and green for execution across each mode", () => {
+    const monitoringTheme = cssBlock(styles, ".console-shell[class].mode-monitoring {");
+    const executionTheme = cssBlock(styles, ".console-shell[class].mode-execution {");
+    expect(monitoringTheme).toContain("--mode-accent: #b77b73");
+    expect(monitoringTheme).toContain("--mode-accent-soft: #f7efec");
+    expect(monitoringTheme).not.toContain("--accent:");
+    expect(executionTheme).toContain("--mode-accent: #2f6b50");
+    expect(executionTheme).toContain("--mode-accent-soft: #e5efe9");
+    expect(executionTheme).not.toContain("--accent:");
     expect(styles).toContain(".console-shell[class].mode-monitoring .monitoring-onboarding-tool");
     expect(styles).toContain(".console-shell[class].mode-monitoring .session-monitoring-lane.selected");
-    expect(styles).not.toContain(".console-shell[class].mode-monitoring {\n  --accent:");
     expect(styles).toContain("accent-color: var(--mode-accent)");
-    expect(styles).toContain(".console-shell[class].mode-monitoring button:focus-visible");
+    expect(styles).toContain(".console-shell[class].mode-execution button:focus-visible");
+    expect(styles).toContain(".console-shell[class] .secondary-button:hover");
+  });
+
+  test("keeps the selected mode tab on the active mode theme", () => {
+    const monitoringTab = cssBlock(
+      styles,
+      '.console-shell[class].mode-monitoring .mode-switch-button[data-mode="monitoring"].selected {',
+    );
+    const executionTab = cssBlock(
+      styles,
+      '.console-shell[class].mode-execution .mode-switch-button[data-mode="execution"].selected {',
+    );
+    expect(monitoringTab).toContain("color: var(--mode-accent)");
+    expect(monitoringTab).toContain("background: var(--mode-accent-soft)");
+    expect(executionTab).toContain("color: var(--mode-accent)");
+    expect(executionTab).toContain("background: var(--mode-accent-soft)");
+  });
+
+  test("normalizes compact checkboxes and button contents in the shell and Settings", () => {
+    const shellCheckbox = cssBlock(styles, '.console-shell[class] input[type="checkbox"] {');
+    expect(shellCheckbox).toContain("width: 16px");
+    expect(shellCheckbox).toContain("height: 16px");
+    expect(shellCheckbox).toContain("margin: 0");
+    expect(shellCheckbox).toContain("padding: 0");
+
+    const shellCompactButtons = cssBlock(
+      styles,
+      ".console-shell[class] :is(.mode-switch-button, .primary-button, .secondary-button, .notification-button, .icon-button) {",
+    );
+    expect(shellCompactButtons).toContain("display: inline-flex");
+    expect(shellCompactButtons).toContain("align-items: center");
+    expect(shellCompactButtons).toContain("justify-content: center");
+
+    const settingsCheckbox = cssBlock(settingsStyles, '.setting-toggle input[type="checkbox"] {');
+    expect(settingsCheckbox).toContain("width: 16px");
+    expect(settingsCheckbox).toContain("height: 16px");
+    expect(settingsCheckbox).toContain("margin: 0");
+  });
+
+  test("does not overwrite semantic running status colors with the current mode", () => {
+    expect(cssBlock(styles, ".local-status i {")).toContain("background: var(--accent)");
+    expect(cssBlock(styles, ".status-dot.running {")).toContain("background: var(--accent)");
+    expect(cssBlock(styles, ".status-pill.running {")).toContain("color: var(--accent)");
+  });
+
+  test("keeps the compact Teamline logo left aligned", () => {
+    const finalCascade = styles.slice(styles.indexOf("/* Final cascade for the native shell closeout. */"));
+    const brandRow = cssBlock(finalCascade, ".console-shell[class] .sidebar-brand-row {");
+    expect(brandRow).toContain("padding-inline-start: 8px");
+    expect(cssBlock(finalCascade, ".console-shell[class] .sidebar-brand-row,\n.console-shell[class].left-collapsed .sidebar-brand-row {")).toContain("align-items: center");
+    expect(cssBlock(finalCascade, ".console-shell[class] .sidebar-brand-row .brand {")).toContain("width: 72px");
+    expect(cssBlock(finalCascade, ".console-shell[class] .sidebar-brand-row .brand {")).toContain("height: 18px");
+    expect(cssBlock(finalCascade, ".console-shell[class] .brand-logo {")).toContain("width: 72px");
+  });
+
+  test("aligns compact monitoring candidates to one content rail", () => {
+    expect(cssBlock(styles, ".console-shell[class].mode-monitoring .monitoring-onboarding-candidate {")).toContain("padding: 10px 12px");
+    expect(cssBlock(styles, ".console-shell[class].mode-monitoring .monitoring-onboarding-project-choice > span {")).toContain("grid-template-columns: minmax(88px, 0.32fr) minmax(0, 0.68fr)");
+    expect(cssBlock(styles, ".console-shell[class].mode-monitoring .monitoring-onboarding-sessions {")).toContain("padding-left: 0");
+    const sessionPreview = cssBlock(styles, ".console-shell[class].mode-monitoring .monitoring-onboarding-session-preview {");
+    expect(sessionPreview).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(sessionPreview).toContain("padding: 5px 0");
+    expect(cssBlock(styles, ".console-shell[class].mode-monitoring .monitoring-onboarding-session-preview > span {")).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(styles).not.toContain(".monitoring-onboarding-session-preview > input[type=\"checkbox\"]");
+    expect(cssBlock(styles, ".console-shell[class].mode-monitoring :is(.monitoring-onboarding-project-choice, .monitoring-onboarding-default, .monitoring-onboarding-session-preview) > span {")).toContain("margin-bottom: 0");
+  });
+
+  test("keeps the source-session count intact beside a truncating workspace path", () => {
+    expect(script).toContain('class="monitoring-onboarding-project-meta"');
+    expect(script).toContain('class="monitoring-onboarding-project-path"');
+    expect(script).toContain('class="monitoring-onboarding-project-count"');
+    expect(cssBlock(styles, ".monitoring-onboarding-project-meta {")).toContain("display: flex");
+    expect(cssBlock(styles, ".monitoring-onboarding-project-path {")).toContain("text-overflow: ellipsis");
+    expect(cssBlock(styles, ".monitoring-onboarding-project-count {")).toContain("white-space: nowrap");
+    expect(cssBlock(styles, ".monitoring-onboarding-candidate-heading .monitoring-onboarding-project-count {")).toContain("display: inline-flex");
+    expect(cssBlock(styles, ".monitoring-onboarding-project-count [data-onboarding-candidate-count] {")).toContain("display: inline");
   });
 
   test("keeps the 640x480 settings window dense while its content scrolls", () => {
     expect(electronMain).toContain("createSettingsWindowOptions");
     expect(electronMain).toContain('preloadPath: resolve(sourceRoot, "src/electron/preload.cjs")');
     expect(settingsStyles).toContain("height: 100dvh");
-    expect(settingsStyles).toContain(".settings-content");
-    expect(settingsStyles).toContain("overflow: auto");
+    const nativeSettingsStyles = settingsStyles.slice(settingsStyles.indexOf("/* The native settings window is 640x480"));
+    expect(cssBlock(nativeSettingsStyles, ".settings-layout {")).toContain("display: grid");
+    expect(cssBlock(nativeSettingsStyles, ".settings-nav {")).toContain("display: grid");
+    expect(cssBlock(nativeSettingsStyles, ".settings-nav {")).toContain("overflow: visible");
+    expect(cssBlock(nativeSettingsStyles, ".settings-content {")).toContain("overflow-y: auto");
     expect(settingsPage).toContain('id="settings-language"');
     expect(settingsPage).toContain('id="settings-theme"');
     expect(settingsPage).toContain('value="system">跟随系统');
+  });
+
+  test("keeps native Settings labels, controls, and card actions on one row", () => {
+    const nativeSettingsStyles = settingsStyles.slice(settingsStyles.indexOf("/* The native settings window is 640x480"));
+    const settingRow = cssBlock(nativeSettingsStyles, ".setting-row {");
+    const advancedCard = cssBlock(nativeSettingsStyles, ".advanced-card {");
+    const sourceLabel = cssBlock(nativeSettingsStyles, ".source-settings label {");
+    expect(settingRow).toContain("flex-direction: row");
+    expect(settingRow).toContain("flex-wrap: nowrap");
+    expect(advancedCard).toContain("flex-direction: row");
+    expect(advancedCard).toContain("flex-wrap: nowrap");
+    expect(sourceLabel).toContain("grid-template-columns: minmax(104px, 0.42fr) minmax(0, 1fr)");
+    expect(cssBlock(nativeSettingsStyles, ".settings-feedback:empty {")).toContain("display: none");
+    expect(cssBlock(nativeSettingsStyles, ".setting-row > select {")).toContain("width: 168px");
+    expect(cssBlock(nativeSettingsStyles, ".restore-actions[hidden] {")).toContain("display: none");
+  });
+
+  test("does not leave a clipped shortcut trace beside Settings", () => {
+    expect(page).not.toContain("<kbd>");
+    expect(styles).not.toContain("#open-settings kbd");
+  });
+
+  test("shows a valid weekly-only Codex quota instead of unknown", () => {
+    expect(script).toContain('quotaWindowSummary(quota, state.locale)');
+    expect(script).toContain('const quotaWindows = availableQuotaWindows(codex)');
+    expect(script).not.toContain('quota?.shortWindow && quota?.longWindow');
+    const weeklyOnly = {
+      status: "available",
+      shortWindow: null,
+      longWindow: { usedPercent: 24, windowMinutes: 10_080, resetsAt: "2026-08-16T00:00:00.000Z" },
+    };
+    expect(availableQuotaWindows(weeklyOnly).map(({ key }) => key)).toEqual(["long"]);
+    expect(quotaWindowSummary(weeklyOnly, "zh-CN")).toBe("周额度 76% 可用");
+    expect(quotaWindowSummary(weeklyOnly, "en")).toBe("Weekly 76% available");
+    expect(quotaWindowSummary({ status: "available", shortWindow: null, longWindow: null }, "zh-CN")).toBeNull();
+    expect(serverApp).toContain('"/resource-window-presentation.js"');
   });
 
   test("keeps the notification panel above responsive drawers and exposes the Tray actions", () => {

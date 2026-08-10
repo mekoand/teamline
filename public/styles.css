@@ -418,12 +418,6 @@ pre {
   white-space: nowrap;
 }
 
-#open-settings kbd {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 500;
-}
-
 .sidebar-heading,
 .order-group-heading,
 .workspace-heading,
@@ -7606,9 +7600,23 @@ button {
 .console-shell[class] .sidebar-brand-row,
 .console-shell[class].left-collapsed .sidebar-brand-row {
   min-height: 72px;
-  align-items: flex-start;
+  align-items: center;
   padding-top: 38px;
   padding-bottom: 0;
+}
+
+.console-shell[class] .sidebar-brand-row {
+  padding-inline-start: 8px;
+}
+
+.console-shell[class] .sidebar-brand-row .brand {
+  width: 72px;
+  height: 18px;
+}
+
+.console-shell[class] .brand-logo {
+  width: 72px;
+  height: 18px;
 }
 
 .console-shell[class].mode-monitoring {
@@ -7636,14 +7644,42 @@ button {
 }
 
 .console-shell[class] input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  align-self: start;
   accent-color: var(--mode-accent);
+}
+
+.console-shell[class] :is(.mode-switch-button, .primary-button, .secondary-button, .notification-button, .icon-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.console-shell[class].mode-monitoring .mode-switch-button[data-mode="monitoring"].selected {
+  color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class].mode-execution .mode-switch-button[data-mode="execution"].selected {
+  color: var(--mode-accent);
+  background: var(--mode-accent-soft);
 }
 
 .console-shell[class].mode-monitoring button:focus-visible,
 .console-shell[class].mode-monitoring input:focus-visible,
 .console-shell[class].mode-monitoring select:focus-visible,
 .console-shell[class].mode-monitoring textarea:focus-visible,
-.console-shell[class].mode-monitoring a:focus-visible {
+.console-shell[class].mode-monitoring a:focus-visible,
+.console-shell[class].mode-execution button:focus-visible,
+.console-shell[class].mode-execution input:focus-visible,
+.console-shell[class].mode-execution select:focus-visible,
+.console-shell[class].mode-execution textarea:focus-visible,
+.console-shell[class].mode-execution a:focus-visible {
   outline-color: color-mix(in srgb, var(--mode-accent) 60%, transparent);
 }
 
@@ -7652,21 +7688,33 @@ button {
   border-color: var(--mode-border, color-mix(in srgb, var(--mode-accent) 46%, var(--line)));
 }
 
+.console-shell[class] :is(.overview-actions, .session-monitoring-workspace, .monitoring-onboarding, .context-panel) .secondary-button {
+  color: var(--mode-accent);
+  border-color: var(--mode-border);
+  background: color-mix(in srgb, var(--mode-accent-soft) 58%, var(--panel));
+}
+
+.console-shell[class] .secondary-button:hover {
+  border-color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
 .console-shell[class].mode-monitoring .monitoring-onboarding-tool {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--mode-border);
   border-radius: 8px;
   color: var(--text);
-  background: var(--panel-soft);
+  background: color-mix(in srgb, var(--mode-accent-soft) 72%, var(--panel));
   text-align: left;
 }
 
 .console-shell[class].mode-monitoring .monitoring-onboarding-tool:hover,
 .console-shell[class].mode-monitoring .monitoring-onboarding-tool:focus-visible,
-.console-shell[class].mode-monitoring .monitoring-onboarding-tool.is-active {
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool.is-active,
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool.is-partial {
   border-color: var(--mode-border);
   color: var(--mode-accent);
   background: var(--mode-accent-soft);
@@ -7683,8 +7731,8 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-  padding: 7px 8px;
-  border-radius: 7px;
+  padding: 5px 0;
+  border-radius: 5px;
   color: var(--text);
   background: transparent;
 }
@@ -7792,6 +7840,40 @@ button {
   gap: 2px;
 }
 
+.monitoring-onboarding-project-meta {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.monitoring-onboarding-project-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitoring-onboarding-project-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.monitoring-onboarding-candidate-heading .monitoring-onboarding-project-path {
+  display: block;
+}
+
+.monitoring-onboarding-candidate-heading .monitoring-onboarding-project-count {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.monitoring-onboarding-project-count [data-onboarding-candidate-count] {
+  display: inline;
+}
+
 .monitoring-onboarding-default {
   display: flex;
   align-items: center;
@@ -7853,6 +7935,57 @@ button {
   display: none !important;
 }
 
+.console-shell[class].mode-monitoring .monitoring-onboarding-candidate {
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-candidate-heading {
+  gap: 10px;
+  padding-bottom: 6px;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-project-choice {
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+}
+
+.console-shell[class].mode-monitoring :is(.monitoring-onboarding-project-choice, .monitoring-onboarding-default) > input[type="checkbox"] {
+  align-self: center;
+}
+
+.console-shell[class].mode-monitoring :is(.monitoring-onboarding-project-choice, .monitoring-onboarding-default, .monitoring-onboarding-session-preview) > span {
+  margin-bottom: 0;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-project-choice > span {
+  grid-template-columns: minmax(88px, 0.32fr) minmax(0, 0.68fr);
+  align-items: baseline;
+  gap: 12px;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-project-choice strong {
+  white-space: nowrap;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-sessions {
+  gap: 0;
+  padding-left: 0;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-session-preview > span {
+  grid-column: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 1px;
+  width: 100%;
+}
+
+.console-shell[class].mode-monitoring #confirm-session-monitoring-onboarding:disabled:not([data-busy="true"]) {
+  cursor: not-allowed;
+}
+
 @media (max-width: 680px) {
   .notification-dialog {
     top: 54px;
@@ -7866,8 +7999,17 @@ button {
     gap: 8px;
   }
 
+  .console-shell[class].mode-monitoring .monitoring-onboarding-project-choice > span {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .console-shell[class].mode-monitoring .monitoring-onboarding-session-preview > span {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .monitoring-onboarding-default {
-    margin-left: 28px;
+    margin-left: 25px;
   }
 
   .monitoring-onboarding-candidate-heading strong,

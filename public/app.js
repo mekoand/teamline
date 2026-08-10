@@ -43,6 +43,10 @@ import {
   visibleOnboardingSessionKeys,
 } from "./session-monitoring-onboarding.js";
 import {
+  availableQuotaWindows,
+  quotaWindowSummary,
+} from "./resource-window-presentation.js";
+import {
   chooseInitialNavigation,
   buildQuickNavigationIndex,
   defaultNavigationState,
@@ -1687,7 +1691,7 @@ function renderSessionMonitoringOnboarding(monitoring) {
             return `
             <article class="monitoring-onboarding-candidate" data-onboarding-candidate-card="${escapeHtml(candidate.key)}" ${visibleSessionKeys.size ? "" : "hidden"} style="${visibleSessionKeys.size ? "" : "display: none;"}">
               <div class="monitoring-onboarding-candidate-heading">
-                <label class="monitoring-onboarding-project-choice" title="${escapeHtml(candidate.name)}"><input type="checkbox" data-onboarding-project="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve title="${escapeHtml(candidate.name)}">${escapeHtml(candidate.name)}</strong><small title="${escapeHtml(candidate.workspacePath || "未提供工作文件夹")}">${escapeHtml(candidate.workspacePath || "未提供工作文件夹")} · <span data-onboarding-candidate-count>${visibleSessionKeys.size}</span> 个来源会话</small></span></label>
+                <label class="monitoring-onboarding-project-choice" title="${escapeHtml(candidate.name)}"><input type="checkbox" data-onboarding-project="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve title="${escapeHtml(candidate.name)}">${escapeHtml(candidate.name)}</strong><small class="monitoring-onboarding-project-meta" title="${escapeHtml(candidate.workspacePath || "未提供工作文件夹")}"><span class="monitoring-onboarding-project-path">${escapeHtml(candidate.workspacePath || "未提供工作文件夹")}</span><span class="monitoring-onboarding-project-count">· <span data-onboarding-candidate-count>${visibleSessionKeys.size}</span> 个来源会话</span></small></span></label>
                 <label class="monitoring-onboarding-default"><input type="checkbox" data-onboarding-default="${escapeHtml(candidate.key)}" /><span><strong>默认开启监控</strong></span></label>
               </div>
               <div class="monitoring-onboarding-sessions">${candidate.sessionKeys.map((key) => {
@@ -3267,7 +3271,7 @@ function renderResourceMiniCard() {
   const quota = current?.quota ?? state.resources?.codex;
   if (resourceMiniStatusElement) {
     const label = current?.identity.label || "Codex";
-    resourceMiniStatusElement.textContent = `${label} · ${resourceAvailabilityLabel(quota?.status, quota)}`;
+    resourceMiniStatusElement.textContent = `${label} · ${quotaWindowSummary(quota, state.locale) || resourceAvailabilityLabel(quota?.status)}`;
   }
 }
 
@@ -3343,13 +3347,13 @@ function renderCodexResourceCard(codex = {}, runningCount = 0) {
   const status = codex?.status;
   const available = status === "available";
   const explicitlyUnavailable = ["unavailable", "not_connected"].includes(status);
-  const completeQuota = available && codex.shortWindow && codex.longWindow;
-  const heading = completeQuota ? "额度可读取" : explicitlyUnavailable ? "不可用" : "未知";
+  const quotaWindows = availableQuotaWindows(codex);
+  const heading = available && quotaWindows.length ? "额度可读取" : explicitlyUnavailable ? "不可用" : "未知";
   return `
     <article class="resource-card ${available ? "available" : "unavailable"}">
       <div class="resource-card-heading"><div><p class="overline">Codex 订阅</p><h2>${heading}</h2></div><span class="status-pill ${available ? "running" : "response"}">${runningCount} 项运行中</span></div>
-      ${available
-        ? `<div class="quota-windows">${renderQuotaWindow("5 小时", codex.shortWindow, status)}${renderQuotaWindow("周额度", codex.longWindow, status)}</div>`
+      ${available && quotaWindows.length
+        ? `<div class="quota-windows">${quotaWindows.map(({ label, window }) => renderQuotaWindow(label, window, status)).join("")}</div>`
         : `<p class="resource-message">${explicitlyUnavailable ? escapeHtml(codex.message || "暂时没有可用额度数据") : "暂无数据"}</p>`}
     </article>`;
 }
@@ -6410,9 +6414,7 @@ function resourceStatusLabel(status) {
   }[status] || "未知";
 }
 
-function resourceAvailabilityLabel(status, quota) {
-  if (status === "available" && quota?.shortWindow && quota?.longWindow) return "可用";
-  if (status === "available") return "未知";
+function resourceAvailabilityLabel(status) {
   if (["unavailable", "not_connected"].includes(status)) return "不可用";
   return "未知";
 }
