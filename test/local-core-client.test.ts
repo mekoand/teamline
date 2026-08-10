@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolveLocalCoreDataDirectory } from "../src/local-core";
+import {
+  createOpenSettingsIpcHandler,
+  createSettingsUrl,
+  createSettingsWindowOptions,
+  normalizeSettingsSection,
+} from "../src/electron/settings-window.mjs";
 
 const electronMainSource = readFileSync(
   new URL("../src/electron/main.mjs", import.meta.url),
@@ -52,10 +58,36 @@ test("Electron exposes only an authorized artifact action bridge", () => {
 test("Electron opens Cmd+, settings as a separate window on the same Local Core", () => {
   expect(electronMainSource).toContain('accelerator: "CmdOrCtrl+,"');
   expect(electronMainSource).toContain('ipcMain.handle("teamline:open-settings"');
-  expect(electronMainSource).toContain('new URL("/settings", coreConnection.url)');
+  expect(electronMainSource).toContain('createSettingsUrl(coreConnection.url, normalizedSection)');
   expect(electronMainSource).toContain('titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default"');
   expect(electronMainSource).not.toContain("data:text/html;charset=utf-8");
-  expect(electronPreloadSource).toContain('ipcRenderer.invoke("teamline:open-settings")');
+  expect(electronPreloadSource).toContain('ipcRenderer.invoke("teamline:open-settings", section)');
+});
+
+test("Settings IPC preserves the requested section and uses the isolated preload", () => {
+  const openedSections: string[] = [];
+  const handler = createOpenSettingsIpcHandler((section) => openedSections.push(section));
+  expect(handler(null, "notifications")).toEqual({ opened: true });
+  expect(handler(null, "unknown")).toEqual({ opened: true });
+  expect(openedSections).toEqual(["notifications", "general"]);
+  expect(normalizeSettingsSection("advanced")).toBe("advanced");
+
+  const options = createSettingsWindowOptions({
+    platform: "darwin",
+    preloadPath: "/tmp/teamline-preload.cjs",
+  });
+  expect(options).toMatchObject({
+    width: 640,
+    height: 480,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: "/tmp/teamline-preload.cjs",
+      sandbox: true,
+    },
+  });
+  expect(createSettingsUrl("http://127.0.0.1:4321", "notifications").toString())
+    .toBe("http://127.0.0.1:4321/settings?section=notifications");
 });
 
 describe("Electron Local Core connection", () => {

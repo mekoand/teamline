@@ -170,18 +170,33 @@ export function buildMonitoringProjectGraph(sessions, works = []) {
         monitoringWork: work,
       };
       const graph = normalizeSessionMonitoringGraph(work.aggregateSnapshot, session);
+      const nodes = graph.nodes.map((node) => ({
+        ...node,
+        key: `${work.id}:${node.id}`,
+        sessionKey: work.id,
+        sessionId: work.id,
+        workId: work.id,
+      }));
+      const sourceKeys = new Set(sourceRecords.map((source) => source.key));
+      const sourceLanes = sourceRecords.map((source) => ({
+        source,
+        nodes: nodes.filter((node) => {
+          const nodeSources = node.sourceSessionKeys ?? [];
+          return nodeSources.length === 1 && nodeSources[0] === source.key;
+        }),
+      }));
+      const aggregateNodes = nodes.filter((node) => {
+        const nodeSources = (node.sourceSessionKeys ?? []).filter((key) => sourceKeys.has(key));
+        return nodeSources.length !== 1;
+      });
       return {
         session,
         work,
         sources: sourceRecords,
         graph,
-        nodes: graph.nodes.map((node) => ({
-          ...node,
-          key: `${work.id}:${node.id}`,
-          sessionKey: work.id,
-          sessionId: work.id,
-          workId: work.id,
-        })),
+        nodes,
+        sourceLanes,
+        aggregateLane: aggregateNodes.length ? { nodes: aggregateNodes } : null,
       };
     })
     .filter(Boolean);

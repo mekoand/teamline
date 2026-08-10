@@ -418,12 +418,6 @@ pre {
   white-space: nowrap;
 }
 
-#open-settings kbd {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 500;
-}
-
 .sidebar-heading,
 .order-group-heading,
 .workspace-heading,
@@ -2291,6 +2285,7 @@ dialog::backdrop {
 }
 
 .notification-dialog {
+  left: auto;
   width: min(520px, calc(100% - 32px));
   max-height: min(720px, calc(100vh - 48px));
   padding: 26px;
@@ -6648,6 +6643,21 @@ button {
 }
 
 @media (max-width: 680px) {
+  .monitoring-onboarding-candidate .monitoring-onboarding-default {
+    width: calc(100% - 28px);
+    min-width: 0;
+  }
+
+  .monitoring-onboarding-candidate .monitoring-onboarding-default > span {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .monitoring-onboarding-candidate .monitoring-onboarding-default strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .console-shell[class]:is(.view-home, .view-projects, .view-resources, .view-goal, .view-session-monitoring),
   .console-shell[class].view-session-monitoring:not(.context-open),
   .console-shell[class].context-open:is(.view-home, .view-projects, .view-resources, .view-goal, .view-session-monitoring) {
@@ -7171,5 +7181,854 @@ button {
 
   .session-monitoring-lane-track {
     margin-right: -4px;
+  }
+}
+
+/* Teamline 3.1 mode accents and compact shell overrides. */
+.console-shell[class] {
+  --mode-accent: #2f6b50;
+  --mode-accent-soft: #e5efe9;
+  --mode-border: #d0dfd5;
+}
+
+:root[data-theme="dark"] .console-shell[class] {
+  --mode-accent: #81ab8f;
+  --mode-accent-soft: #263b2e;
+  --mode-border: #405b49;
+}
+
+:root[data-theme="dark"] .console-shell[class] .brand-logo {
+  filter: invert(1) hue-rotate(180deg);
+  mix-blend-mode: screen;
+}
+
+.console-shell[class] .brand-logo {
+  display: block;
+  width: 82px;
+  height: 24px;
+  object-fit: contain;
+  mix-blend-mode: multiply;
+}
+
+.console-shell[class].left-collapsed {
+  --shell-left-column: 60px;
+}
+
+.console-shell[class].left-collapsed .sidebar-brand-row {
+  min-height: 56px;
+}
+
+.console-shell[class] .mode-switch-button.selected,
+.console-shell[class] .primary-button {
+  color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class] .primary-button {
+  border-color: color-mix(in srgb, var(--mode-accent) 46%, var(--line));
+}
+
+.console-shell[class] .project-nav-row.selected .project-nav-mark {
+  border-color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class] .order-row.selected {
+  border-left-color: var(--mode-accent);
+  color: var(--mode-accent);
+}
+
+.console-shell[class] .map-node.selected,
+.console-shell[class] .monitoring-node.current {
+  border-color: color-mix(in srgb, var(--mode-accent) 62%, var(--line));
+}
+
+.console-shell[class] .monitoring-lane-marker,
+.console-shell[class] .monitoring-node-wrap:has(.monitoring-node.current)::before {
+  background: var(--mode-accent);
+}
+
+.console-shell[class] .monitoring-node-progress,
+.console-shell[class] .monitoring-work-status,
+.console-shell[class] .monitoring-overall-progress strong {
+  color: var(--mode-accent);
+}
+
+.console-shell[class] .session-monitoring-work-row.selected {
+  border-color: color-mix(in srgb, var(--mode-accent) 38%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mode-accent) 8%, transparent);
+}
+
+@media (max-width: 820px) {
+  .console-shell[class] {
+    --shell-left-column: 60px;
+  }
+
+  .console-shell[class]:not(.left-collapsed) {
+    --shell-left-column: 224px;
+  }
+}
+
+@media (max-width: 680px) {
+  .console-shell[class] {
+    --shell-left-column: 60px;
+  }
+
+  .console-shell[class]:not(.left-collapsed) {
+    --shell-left-column: 206px;
+  }
+}
+
+.quick-navigator-heading {
+  margin: -2px -2px 0;
+  padding: 2px 2px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.resource-order-row {
+  padding: 0;
+}
+
+.resource-order-disclosure {
+  min-width: 0;
+}
+
+.resource-order-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.resource-order-summary::-webkit-details-marker {
+  display: none;
+}
+
+.resource-order-summary > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.resource-order-summary > span > span:last-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.resource-order-summary strong,
+.resource-order-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-order-summary small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.resource-order-summary .row-arrow {
+  color: var(--muted);
+  font-style: normal;
+  transition: transform 120ms ease;
+}
+
+.resource-order-disclosure[open] .resource-order-summary .row-arrow {
+  transform: rotate(90deg);
+}
+
+.resource-order-details {
+  display: grid;
+  gap: 14px;
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.resource-order-inspector {
+  justify-self: start;
+  padding-inline: 0;
+}
+
+.monitoring-work-sublanes {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 0 20px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+}
+
+.monitoring-source-sub-lane {
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.monitoring-source-sub-lane:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.monitoring-source-sub-lane .session-monitoring-lane-heading {
+  min-height: 32px;
+}
+
+.monitoring-source-sub-lane .session-monitoring-lane-track {
+  margin-top: 8px;
+}
+
+.monitoring-aggregate-sub-lane {
+  padding: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.monitoring-aggregate-sub-lane .session-monitoring-lane-track {
+  padding-bottom: 2px;
+}
+
+/* Final responsive and compactness pass for the 3.1 shell. */
+.project-empty-state {
+  display: grid;
+  gap: 8px;
+  max-width: 520px;
+  margin-top: 26px;
+  padding-block: 26px;
+  border-block: 1px solid var(--line);
+}
+
+.project-empty-state h2,
+.project-empty-state p {
+  margin: 0;
+}
+
+.project-empty-state p {
+  color: var(--text-soft);
+}
+
+.resource-card.unknown {
+  border-color: var(--line);
+}
+
+.monitoring-onboarding-tool-list,
+.monitoring-onboarding-candidates,
+.monitoring-onboarding-candidate,
+.monitoring-onboarding-sessions {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.monitoring-onboarding-tool,
+.monitoring-onboarding-candidate-heading,
+.monitoring-onboarding-default,
+.monitoring-onboarding-sessions label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0;
+  text-align: left;
+}
+
+.monitoring-onboarding-tool > input,
+.monitoring-onboarding-candidate-heading > input,
+.monitoring-onboarding-default > input,
+.monitoring-onboarding-sessions label > input {
+  grid-column: 1;
+  margin: 3px 0 0;
+}
+
+.monitoring-onboarding-tool > input[type="checkbox"],
+.monitoring-onboarding-project-choice > input[type="checkbox"],
+.monitoring-onboarding-default > input[type="checkbox"],
+.monitoring-onboarding-sessions label > input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  padding: 0;
+  flex: 0 0 16px;
+}
+
+.monitoring-onboarding-tool > span,
+.monitoring-onboarding-candidate-heading > span,
+.monitoring-onboarding-default > span,
+.monitoring-onboarding-sessions label > span {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.monitoring-onboarding-tool strong,
+.monitoring-onboarding-candidate-heading strong,
+.monitoring-onboarding-default strong,
+.monitoring-onboarding-sessions label strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.monitoring-onboarding-tool small,
+.monitoring-onboarding-candidate-heading small,
+.monitoring-onboarding-default small,
+.monitoring-onboarding-sessions label small {
+  justify-self: end;
+  min-width: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .console-shell[class],
+  .console-shell[class].view-home,
+  .console-shell[class].view-projects,
+  .console-shell[class].context-open {
+    position: relative;
+    display: grid;
+    width: 100vw;
+    height: 100dvh;
+    min-height: 0;
+    grid-template-columns: 60px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .console-shell[class] > .order-sidebar {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1;
+    width: auto;
+    min-width: 0;
+    padding-inline: 8px;
+    overflow: hidden;
+  }
+
+  .console-shell[class] > .main-column {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .console-shell[class]:not(.left-collapsed) > .order-sidebar {
+    position: absolute;
+    z-index: 32;
+    inset: 0 auto 0 0;
+    display: flex;
+    width: 240px;
+    padding-inline: 12px;
+    border-right: 1px solid var(--line);
+    background: var(--sidebar);
+    box-shadow: var(--shadow);
+  }
+
+  .console-shell[class] .workspace-content {
+    min-width: 0;
+    padding-inline: 16px;
+  }
+
+  .monitoring-onboarding-tool small,
+  .monitoring-onboarding-candidate-heading small,
+  .monitoring-onboarding-default small,
+  .monitoring-onboarding-sessions label small {
+    grid-column: 1;
+    justify-self: start;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .monitoring-onboarding-tool > span,
+  .monitoring-onboarding-candidate-heading > span,
+  .monitoring-onboarding-default > span,
+  .monitoring-onboarding-sessions label > span {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 3px;
+  }
+
+  .console-shell[class].context-open:not(.right-collapsed) > .context-backdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 54px 0 0;
+    display: block;
+    background: rgba(25, 27, 24, 0.24);
+  }
+
+  .console-shell[class].context-open:not(.right-collapsed) > .context-panel {
+    position: fixed;
+    z-index: 31;
+    top: 54px;
+    right: 0;
+    bottom: 0;
+    display: block;
+    width: min(340px, calc(100vw - 60px));
+    max-width: calc(100vw - 60px);
+    overflow: auto;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+}
+
+/* Final cascade for the native shell closeout. */
+.console-shell[class] .window-heading.window-drag-region {
+  flex: 1 1 auto;
+  min-height: 100%;
+  -webkit-app-region: drag;
+}
+
+.console-shell[class] .console-topbar button,
+.console-shell[class] .console-topbar a,
+.console-shell[class] .console-topbar input,
+.console-shell[class] .console-topbar select,
+.console-shell[class] .console-topbar textarea,
+.console-shell[class] .console-topbar [role="button"] {
+  -webkit-app-region: no-drag;
+}
+
+.console-shell[class] .sidebar-brand-row,
+.console-shell[class].left-collapsed .sidebar-brand-row {
+  min-height: 72px;
+  align-items: center;
+  padding-top: 38px;
+  padding-bottom: 0;
+}
+
+.console-shell[class] .sidebar-brand-row {
+  padding-inline-start: 8px;
+}
+
+.console-shell[class] .sidebar-brand-row .brand {
+  width: 72px;
+  height: 18px;
+}
+
+.console-shell[class] .brand-logo {
+  width: 72px;
+  height: 18px;
+}
+
+.console-shell[class].mode-monitoring {
+  --mode-accent: #b77b73;
+  --mode-accent-soft: #f7efec;
+  --mode-border: #e4d3cf;
+}
+
+:root[data-theme="dark"] .console-shell[class].mode-monitoring {
+  --mode-accent: #c18d84;
+  --mode-accent-soft: #382b29;
+  --mode-border: #57413e;
+}
+
+.console-shell[class].mode-execution {
+  --mode-accent: #2f6b50;
+  --mode-accent-soft: #e5efe9;
+  --mode-border: #d0dfd5;
+}
+
+:root[data-theme="dark"] .console-shell[class].mode-execution {
+  --mode-accent: #7faa8c;
+  --mode-accent-soft: #293b31;
+  --mode-border: #405b49;
+}
+
+.console-shell[class] input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  align-self: start;
+  accent-color: var(--mode-accent);
+}
+
+.console-shell[class] :is(.mode-switch-button, .primary-button, .secondary-button, .notification-button, .icon-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.console-shell[class].mode-monitoring .mode-switch-button[data-mode="monitoring"].selected {
+  color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class].mode-execution .mode-switch-button[data-mode="execution"].selected {
+  color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class].mode-monitoring button:focus-visible,
+.console-shell[class].mode-monitoring input:focus-visible,
+.console-shell[class].mode-monitoring select:focus-visible,
+.console-shell[class].mode-monitoring textarea:focus-visible,
+.console-shell[class].mode-monitoring a:focus-visible,
+.console-shell[class].mode-execution button:focus-visible,
+.console-shell[class].mode-execution input:focus-visible,
+.console-shell[class].mode-execution select:focus-visible,
+.console-shell[class].mode-execution textarea:focus-visible,
+.console-shell[class].mode-execution a:focus-visible {
+  outline-color: color-mix(in srgb, var(--mode-accent) 60%, transparent);
+}
+
+.console-shell[class] .mode-switch-button.selected,
+.console-shell[class] .shell-primary-action {
+  border-color: var(--mode-border, color-mix(in srgb, var(--mode-accent) 46%, var(--line)));
+}
+
+.console-shell[class] :is(.overview-actions, .session-monitoring-workspace, .monitoring-onboarding, .context-panel) .secondary-button {
+  color: var(--mode-accent);
+  border-color: var(--mode-border);
+  background: color-mix(in srgb, var(--mode-accent-soft) 58%, var(--panel));
+}
+
+.console-shell[class] .secondary-button:hover {
+  border-color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--mode-border);
+  border-radius: 8px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--mode-accent-soft) 72%, var(--panel));
+  text-align: left;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool:hover,
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool:focus-visible,
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool.is-active,
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool.is-partial {
+  border-color: var(--mode-border);
+  color: var(--mode-accent);
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-tool > span {
+  grid-column: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-session-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  padding: 5px 0;
+  border-radius: 5px;
+  color: var(--text);
+  background: transparent;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-session-preview:hover {
+  background: var(--mode-accent-soft);
+}
+
+.console-shell[class].mode-monitoring .session-monitoring-lane.selected,
+.console-shell[class].mode-monitoring .session-monitoring-card.selected {
+  border-color: color-mix(in srgb, var(--mode-accent) 38%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mode-accent) 8%, transparent);
+}
+
+.console-shell[class].mode-monitoring .monitoring-work-tabs button.active,
+.console-shell[class].mode-monitoring .monitoring-work-tabs button:hover,
+.console-shell[class].mode-monitoring .monitoring-work-tabs button:focus-visible,
+.console-shell[class].mode-monitoring .context-panel .text-button,
+.console-shell[class].mode-monitoring .session-monitoring-workspace .text-button {
+  border-bottom-color: var(--mode-accent);
+  color: var(--mode-accent);
+}
+
+.notification-dialog {
+  position: fixed;
+  top: 54px;
+  right: 16px;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(460px, calc(100vh - 70px));
+  margin: 0;
+  padding: 14px;
+  border-radius: 12px;
+  z-index: 40;
+  box-shadow: 0 16px 36px rgba(22, 28, 23, 0.16);
+}
+
+.notification-dialog .dialog-heading {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notification-dialog .dialog-heading h2 {
+  font-size: 17px;
+}
+
+.notification-dialog .icon-button {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+.notification-dialog .notification-list {
+  max-height: min(360px, calc(100vh - 170px));
+  gap: 6px;
+}
+
+.notification-dialog .notification-item {
+  padding: 10px 11px;
+  border-radius: 9px;
+}
+
+.notification-settings-link {
+  margin-top: 10px;
+  padding-inline: 0;
+}
+
+.monitoring-onboarding-form,
+.monitoring-onboarding-candidates,
+.monitoring-onboarding-candidate {
+  gap: 8px;
+}
+
+.monitoring-onboarding-tools,
+.monitoring-onboarding-candidate {
+  padding: 12px;
+  border-radius: 10px;
+}
+
+.monitoring-onboarding-tool-list,
+.monitoring-onboarding-sessions {
+  gap: 5px;
+}
+
+.monitoring-onboarding-candidate-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 9px;
+}
+
+.monitoring-onboarding-project-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+  gap: 9px;
+}
+
+.monitoring-onboarding-project-choice > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.monitoring-onboarding-project-meta {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.monitoring-onboarding-project-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitoring-onboarding-project-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.monitoring-onboarding-candidate-heading .monitoring-onboarding-project-path {
+  display: block;
+}
+
+.monitoring-onboarding-candidate-heading .monitoring-onboarding-project-count {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.monitoring-onboarding-project-count [data-onboarding-candidate-count] {
+  display: inline;
+}
+
+.monitoring-onboarding-default {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: max-content;
+  margin-left: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.monitoring-onboarding-default span {
+  display: block;
+}
+
+.monitoring-onboarding-default strong {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.monitoring-onboarding-candidate-heading small,
+.monitoring-onboarding-tool small,
+.monitoring-onboarding-sessions small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.monitoring-onboarding-candidate-heading strong,
+.monitoring-onboarding-tool strong,
+.monitoring-onboarding-sessions strong,
+.session-monitoring-lane-select > span:nth-child(2) strong,
+.session-monitoring-lane-select > span:nth-child(2) small,
+.notification-item-heading strong,
+.notification-item > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-monitoring-lane-select > span:nth-child(2) {
+  min-width: 0;
+}
+
+.monitoring-onboarding-filter-empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--text-soft);
+}
+
+.monitoring-onboarding-candidate[hidden],
+.monitoring-onboarding-session-preview[hidden] {
+  display: none !important;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-candidate {
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-candidate-heading {
+  gap: 10px;
+  padding-bottom: 6px;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-project-choice {
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+}
+
+.console-shell[class].mode-monitoring :is(.monitoring-onboarding-project-choice, .monitoring-onboarding-default) > input[type="checkbox"] {
+  align-self: center;
+}
+
+.console-shell[class].mode-monitoring :is(.monitoring-onboarding-project-choice, .monitoring-onboarding-default, .monitoring-onboarding-session-preview) > span {
+  margin-bottom: 0;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-project-choice > span {
+  grid-template-columns: minmax(88px, 0.32fr) minmax(0, 0.68fr);
+  align-items: baseline;
+  gap: 12px;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-project-choice strong {
+  white-space: nowrap;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-sessions {
+  gap: 0;
+  padding-left: 0;
+}
+
+.console-shell[class].mode-monitoring .monitoring-onboarding-session-preview > span {
+  grid-column: 1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 1px;
+  width: 100%;
+}
+
+.console-shell[class].mode-monitoring #confirm-session-monitoring-onboarding:disabled:not([data-busy="true"]) {
+  cursor: not-allowed;
+}
+
+@media (max-width: 680px) {
+  .notification-dialog {
+    top: 54px;
+    right: 8px;
+    width: min(360px, calc(100vw - 16px));
+  }
+
+  .monitoring-onboarding-candidate-heading {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+  }
+
+  .console-shell[class].mode-monitoring .monitoring-onboarding-project-choice > span {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .console-shell[class].mode-monitoring .monitoring-onboarding-session-preview > span {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .monitoring-onboarding-default {
+    margin-left: 25px;
+  }
+
+  .monitoring-onboarding-candidate-heading strong,
+  .monitoring-onboarding-tool strong,
+  .monitoring-onboarding-sessions strong,
+  .session-monitoring-lane-select > span:nth-child(2) strong,
+  .session-monitoring-lane-select > span:nth-child(2) small,
+  .notification-item-heading strong,
+  .notification-item > span:last-child {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .monitoring-onboarding-candidate-heading small,
+  .monitoring-onboarding-tool small,
+  .monitoring-onboarding-sessions small {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
   }
 }

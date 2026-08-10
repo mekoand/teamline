@@ -6,10 +6,11 @@ import {
   Menu,
   nativeImage,
   Notification as ElectronNotification,
+  shell,
   Tray,
 } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureLocalCore } from "./local-core-client.mjs";
@@ -21,6 +22,12 @@ import {
   normalizeLocalNotification,
   releaseLocalNotification,
 } from "./local-notification-pump.mjs";
+import {
+  createOpenSettingsIpcHandler,
+  createSettingsUrl,
+  createSettingsWindowOptions,
+  normalizeSettingsSection,
+} from "./settings-window.mjs";
 
 app.setName("Teamline");
 const sourceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -136,10 +143,7 @@ function installArtifactActionBridge() {
 }
 
 function installSettingsBridge() {
-  ipcMain.handle("teamline:open-settings", () => {
-    openSettingsWindow();
-    return { opened: true };
-  });
+  ipcMain.handle("teamline:open-settings", createOpenSettingsIpcHandler(openSettingsWindow));
 }
 
 async function executeArtifactAction(path, action) {
@@ -252,14 +256,31 @@ function showMainWindow() {
   createMainWindow();
 }
 
+function createTemplateTrayImage() {
+  const svg = readFileSync(resolve(sourceRoot, "public/teamline-tray-template.svg"), "utf8");
+  const vector = nativeImage.createFromDataURL(
+    `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+  );
+  const backing = vector.resize({ width: 36, height: 36, quality: "best" });
+  const template = nativeImage.createFromBuffer(backing.toBitmap(), {
+    width: 36,
+    height: 36,
+    scaleFactor: 2,
+  });
+  template.setTemplateImage(true);
+  return template;
+}
+
 function createTray() {
   if (tray || !coreConnection) return;
-  const icon = nativeImage.createFromPath(resolve(sourceRoot, "public/teamline-logo.png"));
+  const icon = createTemplateTrayImage();
   tray = new Tray(icon);
   tray.setToolTip("Teamline");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示 Teamline", click: showMainWindow },
+      { label: "设置…", click: () => openSettingsWindow("general") },
+      { label: "检查更新…", click: () => void shell.openExternal("https://github.com/mekoand/teamline/releases") },
       { type: "separator" },
       { label: "退出客户端", role: "quit" },
       { label: "退出并停止后台服务", click: () => void stopCoreAndQuit() },
@@ -282,29 +303,27 @@ function installApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function openSettingsWindow() {
+function openSettingsWindow(section = "general") {
+  const normalizedSection = normalizeSettingsSection(section);
   if (settingsWindow) {
     settingsWindow.show();
     settingsWindow.focus();
+    settingsWindow.webContents.send("teamline:settings-section", normalizedSection);
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 640,
-    height: 480,
-    minWidth: 520,
-    minHeight: 360,
-    title: "Teamline 设置",
     parent: mainWindow ?? undefined,
-    backgroundColor: "#f5f7f5",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: process.platform === "darwin" ? { x: 14, y: 12 } : undefined,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    ...createSettingsWindowOptions({
+      preloadPath: resolve(sourceRoot, "src/electron/preload.cjs"),
+      platform: process.platform,
+    }),
   });
   settingsWindow.on("closed", () => {
     settingsWindow = null;
   });
   if (!coreConnection) return;
-  void settingsWindow.loadURL(new URL("/settings", coreConnection.url).toString());
+  const settingsUrl = createSettingsUrl(coreConnection.url, normalizedSection);
+  void settingsWindow.loadURL(settingsUrl.toString());
 }
 
 async function choosePackagedDataDirectory({ canonicalDirectory, candidates }) {

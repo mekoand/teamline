@@ -8,24 +8,23 @@
     <script>
       (() => {
         const saved = localStorage.getItem("teamline-theme");
-        const theme = saved === "dark" || saved === "light"
-          ? saved
-          : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-        document.documentElement.dataset.theme = theme;
+        const preference = ["system", "light", "dark"].includes(saved) ? saved : "system";
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.dataset.theme = preference === "system"
+          ? matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+          : preference;
       })();
     </script>
-    <link rel="stylesheet" href="/settings.css" />
+    <link rel="stylesheet" href="/settings.css?v=teamline-3-1-closeout-6" />
   </head>
   <body>
     <main class="settings-window">
       <header class="settings-header">
-        <div>
-          <p class="eyebrow">Teamline · Local Core</p>
+        <div class="settings-drag-region" data-settings-drag-region aria-label="设置窗口标题栏">
+          <p class="eyebrow">Teamline</p>
           <h1>偏好设置</h1>
-          <p class="settings-intro">这里管理客户端偏好，不替代目标工作区。</p>
         </div>
         <div class="settings-header-actions">
-          <button class="icon-button" id="settings-theme-toggle" type="button" aria-label="切换深浅色主题">◐</button>
           <button class="secondary-button" id="settings-close" type="button">关闭</button>
         </div>
       </header>
@@ -43,13 +42,20 @@
           <section class="settings-section is-visible" data-settings-panel="general">
             <div class="section-heading">
               <div><p class="eyebrow">常规</p><h2>客户端显示</h2></div>
-              <span class="section-note">与主窗口共享本地偏好</span>
             </div>
             <label class="setting-row">
-              <span><strong>界面语言</strong><small>保存到同一个 Local Core。</small></span>
+              <span><strong>界面语言</strong></span>
               <select id="settings-language" aria-label="界面语言">
                 <option value="zh-CN">简体中文</option>
                 <option value="en">English</option>
+              </select>
+            </label>
+            <label class="setting-row">
+              <span><strong>外观</strong></span>
+              <select id="settings-theme" aria-label="外观">
+                <option value="system">跟随系统</option>
+                <option value="light">浅色</option>
+                <option value="dark">深色</option>
               </select>
             </label>
             <p class="settings-feedback" id="general-feedback" role="status"></p>
@@ -58,10 +64,9 @@
           <section class="settings-section" data-settings-panel="monitoring" hidden>
             <div class="section-heading">
               <div><p class="eyebrow">会话监控</p><h2>自动更新</h2></div>
-              <span class="section-note">接入已有监控调度</span>
             </div>
             <label class="setting-row setting-toggle">
-              <span><strong>自动更新会话状态</strong><small>关闭后不会启动新的自动扫描；现有记录保留。</small></span>
+              <span><strong>自动更新会话状态</strong></span>
               <input id="monitoring-automatic" type="checkbox" />
             </label>
             <p class="settings-feedback" id="monitoring-feedback" role="status"></p>
@@ -70,9 +75,7 @@
           <section class="settings-section" data-settings-panel="models" hidden>
             <div class="section-heading">
               <div><p class="eyebrow">模型</p><h2>会话整理模型</h2></div>
-              <span class="section-note">模型标识由来源适配器解释</span>
             </div>
-            <p class="settings-explanation">自动选择只使用当前来源已配置的模型。深度整理是本次手动选择，不会改变自动默认。</p>
             <form id="model-settings-form" class="settings-form">
               <fieldset class="source-settings">
                 <legend>Codex 来源</legend>
@@ -83,7 +86,6 @@
               </fieldset>
               <fieldset class="source-settings source-settings-disabled" disabled>
                 <legend>Claude Code 来源</legend>
-                <p>当前没有对应执行适配器；不会借用 Codex 模型或账号。</p>
               </fieldset>
               <div class="settings-actions">
                 <button class="primary-button" type="submit">保存模型设置</button>
@@ -95,14 +97,12 @@
           <section class="settings-section" data-settings-panel="notifications" hidden>
             <div class="section-heading">
               <div><p class="eyebrow">通知</p><h2>提醒偏好</h2></div>
-              <span class="section-note">只保存给通知服务消费的契约</span>
             </div>
-            <p class="settings-explanation">这些开关不主动触发通知，也不改变通知点击行为。</p>
             <form id="notification-preferences-form" class="settings-form notification-preferences">
-              <label class="setting-row setting-toggle"><span><strong>需响应</strong><small>有需要你处理的本地状态时提醒。</small></span><input name="needsResponse" type="checkbox" /></label>
-              <label class="setting-row setting-toggle"><span><strong>运行失败</strong><small>目标运行出现失败状态时提醒。</small></span><input name="runFailed" type="checkbox" /></label>
-              <label class="setting-row setting-toggle"><span><strong>目标待验收</strong><small>目标完成并等待验收时提醒。</small></span><input name="goalPendingAcceptance" type="checkbox" /></label>
-              <label class="setting-row setting-toggle"><span><strong>账号或额度不可用</strong><small>当前来源账号或额度无法使用时提醒。</small></span><input name="resourceUnavailable" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>需响应</strong></span><input name="needsResponse" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>运行失败</strong></span><input name="runFailed" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>目标待验收</strong></span><input name="goalPendingAcceptance" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>账号或额度不可用</strong></span><input name="resourceUnavailable" type="checkbox" /></label>
               <div class="settings-actions"><button class="primary-button" type="submit">保存通知偏好</button><span class="settings-feedback" id="notification-feedback" role="status"></span></div>
             </form>
           </section>
@@ -110,18 +110,17 @@
           <section class="settings-section" data-settings-panel="advanced" hidden>
             <div class="section-heading">
               <div><p class="eyebrow">高级</p><h2>诊断与本地数据</h2></div>
-              <span class="section-note">仍由同一个 Local Core 提供服务</span>
             </div>
             <section class="advanced-card">
-              <div><strong>Local Core 诊断</strong><p id="diagnostics-state">正在读取本地服务状态…</p></div>
+              <div><strong>服务状态</strong><p id="diagnostics-state">正在读取本地服务状态…</p></div>
               <button class="secondary-button" id="refresh-diagnostics" type="button">刷新诊断</button>
             </section>
             <section class="advanced-card">
-              <div><strong>导出本地数据</strong><p>导出目标、项目和账号元数据，不复制凭据。</p></div>
+              <div><strong>导出本地数据</strong><p>导出目标、项目和账号信息。</p></div>
               <button class="secondary-button" id="export-local-state" type="button">导出</button>
             </section>
             <section class="advanced-card restore-card">
-              <div><strong>恢复本地数据</strong><p>先预览冲突，再确认保留现有数据或导入副本。</p></div>
+              <div><strong>恢复本地数据</strong><p>先预览冲突，再确认恢复。</p></div>
               <input id="restore-state-file" type="file" accept="application/json,.json" />
               <p class="settings-feedback" id="restore-feedback" role="status"></p>
               <div class="restore-actions" hidden id="restore-actions">
@@ -133,6 +132,6 @@
         </div>
       </div>
     </main>
-    <script type="module" src="/settings.js"></script>
+    <script type="module" src="/settings.js?v=teamline-3-1-closeout-3"></script>
   </body>
 </html>

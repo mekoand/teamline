@@ -87,6 +87,22 @@ describe("desktop navigation state", () => {
     expect(routeForNavigation(execution)).toBe("/goals/goal-a");
   });
 
+  test("keeps the unclassified project when switching from monitoring to execution", () => {
+    const monitoring = chooseInitialNavigation({
+      saved: { ...defaultNavigationState(), mode: "monitoring", projectId: "unclassified" },
+      projects: [{ id: "project-a" }],
+      monitoringSessions: [{ key: "session-unclassified", projectId: null }],
+    });
+
+    expect(routeForNavigation({ ...monitoring, mode: "execution", workObject: null }))
+      .toBe("/projects/unclassified");
+  });
+
+  test("never routes an execution state without a project to the legacy home", () => {
+    expect(routeForNavigation({ ...defaultNavigationState(), mode: "execution" }))
+      .toBe("/projects/unclassified");
+  });
+
   test("restores a monitoring work selection in the monitoring mode", () => {
     const restored = chooseInitialNavigation({
       saved: {

@@ -428,26 +428,35 @@ describe("local work-order notifications", () => {
     ]);
   });
 
-  test("the local console exposes permission, unread, settings, and exact node routing", async () => {
+  test("the local console exposes unread notifications and routes preferences to settings", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
-    const [page, script, styles] = await Promise.all([
+    const [page, settingsPage, settingsScript, script, styles] = await Promise.all([
       app.fetch(new Request("http://teamline.local/")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/settings")).then((response) => response.text()),
+      app.fetch(new Request("http://teamline.local/settings.js")).then((response) => response.text()),
       app.fetch(new Request("http://teamline.local/app.js")).then((response) => response.text()),
       app.fetch(new Request("http://teamline.local/styles.css")).then((response) => response.text()),
     ]);
 
     expect(page).toContain('id="open-notifications"');
     expect(page).toContain('id="notification-dialog"');
-    expect(page).toContain('id="notification-needs-response"');
-    expect(page).toContain('id="notification-run-failed"');
-    expect(page).toContain('id="notification-goal-pending-acceptance"');
-    expect(page).toContain('id="notification-resource-unavailable"');
-    expect(script).toContain("Notification.requestPermission()");
-    expect(script).toContain('requestJson("/api/notifications/claim"');
-    expect(script).toContain('requestJson("/api/preferences/notifications"');
+    expect(page).toContain('id="open-notification-settings"');
+    expect(page).not.toContain('id="notification-needs-response"');
+    expect(page).not.toContain('id="notification-run-failed"');
+    expect(page).not.toContain('id="notification-goal-pending-acceptance"');
+    expect(page).not.toContain('id="notification-resource-unavailable"');
+    expect(settingsPage).toContain('id="notification-preferences-form"');
+    expect(settingsPage).toContain('name="needsResponse"');
+    expect(settingsPage).toContain('name="runFailed"');
+    expect(settingsPage).toContain('name="goalPendingAcceptance"');
+    expect(settingsPage).toContain('name="resourceUnavailable"');
+    expect(script).not.toContain("Notification.requestPermission()");
+    expect(script).not.toContain('requestJson("/api/notifications/claim"');
+    expect(script).not.toContain('requestJson("/api/preferences/notifications"');
+    expect(settingsScript).toContain('requestJson("/api/preferences/notifications"');
     expect(script).toContain('searchParams.get("stage")');
     expect(script).toContain('searchParams.delete("stage")');
-    expect(script).toContain('requestJson("/api/notifications/release"');
+    expect(script).not.toContain('requestJson("/api/notifications/release"');
     expect(script).toContain("unread-indicator");
     expect(script).toContain("bindDismissibleDialog(notificationDialog");
     expect(script).toContain("bindDismissibleDialog(localStateDialog");

@@ -88,7 +88,7 @@ export function routeForNavigation(state) {
   }
   if (normalized.projectId === "unclassified") return "/projects/unclassified";
   if (normalized.projectId) return `/projects/${encodeURIComponent(normalized.projectId)}`;
-  return "/";
+  return "/projects/unclassified";
 }
 
 /**

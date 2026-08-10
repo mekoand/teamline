@@ -7,7 +7,7 @@ import { createApp } from "../src/app";
 import { WorkOrderStore } from "../src/work-order-store";
 
 describe("personal console", () => {
-  test("serves the formal three-column workspace with a persistent theme control", async () => {
+  test("serves the formal three-column workspace with settings-owned appearance controls", async () => {
     const app = createApp({ store: new WorkOrderStore(new Database(":memory:")) });
 
     const [pageResponse, scriptResponse, navigationResponse, stylesResponse] = await Promise.all([
@@ -29,14 +29,18 @@ describe("personal console", () => {
     expect(page).toContain('id="project-list"');
     expect(page).toContain('id="toggle-left-sidebar"');
     expect(page).toContain('id="toggle-right-sidebar"');
+    expect(page).toContain('id="toggle-left-sidebar" type="button" data-i18n-preserve');
+    expect(script).toContain('state.navigation.leftSidebarCollapsed ? "展开项目栏" : "收起项目栏"');
+    expect(script).toContain('state.navigation.rightSidebarCollapsed ? "打开检查栏" : "关闭检查栏"');
     expect(page).toContain('id="quick-navigator"');
     expect(page).toContain('id="work-order-list"');
     expect(page).toContain('id="work-order-workspace"');
     expect(page).toContain('id="context-panel"');
-    expect(page).toContain('id="theme-toggle"');
+    expect(page).not.toContain('id="theme-toggle"');
+    expect(page).not.toContain('class="language-control"');
     expect(page).not.toContain('id="max-concurrency"');
     expect(script).toContain('localStorage.getItem("teamline-theme")');
-    expect(script).toContain('localStorage.setItem("teamline-theme"');
+    expect(script).toContain("function readTheme()");
     expect(script).toContain('import {');
     expect(script).toContain('"./navigation-state.js"');
     expect(script).toContain("initializeNavigationFromData");
@@ -45,6 +49,8 @@ describe("personal console", () => {
     expect(styles).toContain("/* Teamline 3.1 desktop shell.");
     expect(styles).toContain(".console-shell[class] > .main-column");
     expect(styles).toContain("@media (max-width: 1000px)");
+    expect(styles).toContain("grid-template-columns: 60px minmax(0, 1fr)");
+    expect(script).toContain("narrowSidebarInitialized");
     expect(script).toContain('"/api/execution-settings"');
     expect(script).toContain("state.workOrders.some((workOrder)");
     expect(script).toContain('workOrder.importContext?.status === "pending"');
@@ -150,8 +156,12 @@ describe("personal console", () => {
     expect(styles).toContain("@media (max-width: 680px)");
     expect(styles).toContain(".console-shell.context-open .context-backdrop");
     expect(styles).toContain("width: min(360px, calc(100vw - 28px))");
+    expect(styles).toContain("width: min(340px, calc(100vw - 60px))");
+    expect(styles).toContain(".console-shell[class].context-open:not(.right-collapsed) > .context-panel");
     expect(styles).toContain("text-wrap: balance");
     expect(styles).toContain("word-break: auto-phrase");
+    expect(script).toContain("function normalizeLegacyHomeRoute()");
+    expect(script).toContain("aggregateLane.nodes.map((node) => renderMonitoringNode(node, false))");
   });
 
   test("keeps primary actions in the work surface and limits the inspector to selected context", async () => {
@@ -373,7 +383,7 @@ describe("personal console", () => {
     const script = await (await app.fetch(new Request("http://teamline.local/app.js"))).text();
 
     expect(script).toContain('progressView: "map"');
-    expect(script).toContain('contextTab: "artifacts"');
+    expect(script).toContain('contextTab: "details"');
     expect(script).toContain("defaultGoalWorkbenchView(presentation.status)");
     expect(script).toContain('workOrder.importContext?.status === "ready" && !workOrder.plan');
     expect(script).toContain("workOrder.plan?.stages?.[preferredStageIndex(workOrder)]");
@@ -397,7 +407,10 @@ describe("personal console", () => {
     expect(script).toContain("renderProjectGoalLane");
     expect(script).toContain("project-goal-stage-connector");
     expect(script).toContain("project-goal-stage-edge");
-    expect(script).toContain("项目本身不计算完成度");
+    expect(script).not.toContain("项目本身不计算完成度");
+    expect(script).not.toContain("虚拟项目");
+    expect(script).toContain("project-empty-state");
+    expect(script).toContain("使用左栏“新建目标”开始。");
     expect(script).toContain("data-project-goal-stage-id");
     expect(script).toContain("data-project-goal-edge-from");
     expect(script).toContain("buildProjectGoalGraph");

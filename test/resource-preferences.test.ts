@@ -199,7 +199,11 @@ describe("resource preferences", () => {
 
     expect(script).toContain('if (["unavailable", "not_connected"].includes(status))');
     expect(script).toContain('<strong>未知</strong><small>暂无数据</small>');
-    expect(script).toContain('if (status === "available" && quota?.shortWindow && quota?.longWindow) return "可用";');
+    expect(script).toContain('const displayStatus = hasUsage ? "available" : explicitlyUnavailable ? "unavailable" : "unknown";');
+    expect(script).toContain('<p class="resource-message">${explicitlyUnavailable ? "当前来源未提供 API 用量" : "暂无 API 用量数据"}</p>');
+    expect(script).not.toContain("暂时无法读取 API 用量");
+    expect(script).toContain('quotaWindowSummary(quota, state.locale)');
+    expect(script).toContain('function resourceAvailabilityLabel(status)');
     expect(script).toContain('return "未知";');
     expect(script).not.toContain('return `<div><span>${label}</span><strong>不可用</strong><small>暂无数据</small></div>`');
   });

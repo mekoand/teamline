@@ -3,13 +3,18 @@ const { contextBridge, ipcRenderer } = require("electron");
 const allowedActions = new Set(["open", "reveal", "quicklook"]);
 
 contextBridge.exposeInMainWorld("teamlineDesktop", Object.freeze({
-  nativeNotifications: process.platform === "darwin",
-
   onNotificationClick(listener) {
     if (typeof listener !== "function") return () => {};
     const wrapped = (_event, notification) => listener(notification);
     ipcRenderer.on("teamline:notification-click", wrapped);
     return () => ipcRenderer.removeListener("teamline:notification-click", wrapped);
+  },
+
+  onSettingsSection(listener) {
+    if (typeof listener !== "function") return () => {};
+    const wrapped = (_event, section) => listener(section);
+    ipcRenderer.on("teamline:settings-section", wrapped);
+    return () => ipcRenderer.removeListener("teamline:settings-section", wrapped);
   },
 
   openArtifact(request) {
@@ -28,7 +33,7 @@ contextBridge.exposeInMainWorld("teamlineDesktop", Object.freeze({
       workOrderId: request.workOrderId,
     });
   },
-  openSettings() {
-    return ipcRenderer.invoke("teamline:open-settings");
+  openSettings(section = "general") {
+    return ipcRenderer.invoke("teamline:open-settings", section);
   },
 }));

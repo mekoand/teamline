@@ -110,6 +110,11 @@ describe("session monitoring catalog", () => {
     expect(page).toContain('id="monitoring-goal-dialog"');
     expect(script).toContain('"/api/session-monitoring/discover"');
     expect(script).toContain("currentProjectIdForModeSwitch");
+    expect(script).toContain("const shellProjectId = currentShellProjectId();");
+    expect(script).toContain("if (shellProjectId) return shellProjectId;");
+    expect(script).toContain('const rememberedProjectId = state.navigation.mode === "monitoring"');
+    expect(script).toContain("if (entries.some((entry) => entry.key === rememberedProjectId)) return rememberedProjectId;");
+    expect(script).toContain('return requestedProjectId || "unclassified";');
     expect(script).toContain('"/session-monitoring"');
     expect(script).toContain("data-session-monitoring-toggle");
     expect(script).toContain("data-session-monitoring-retry");

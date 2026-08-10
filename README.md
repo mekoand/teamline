@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="README.zh-CN.md">简体中文</a> ·
-  v3.0 ·
+  v3.1 ·
   Early access · Apple Silicon macOS
 </p>
 
@@ -56,7 +56,7 @@ The resource view shows the currently available Codex signal and the run prefere
 
 ## Current status
 
-Teamline is in early access. The current product version is `v3.0`.
+Teamline is in early access. The current product version is `v3.1`.
 
 The supported setup is:
 

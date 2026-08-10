@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="README.md">English</a> ·
-  v3.0 ·
+  v3.1 ·
   Early access · Apple Silicon macOS
 </p>
 
@@ -56,7 +56,7 @@ Teamline 的控制服务和界面运行在 Mac 本机，不需要注册账号。
 
 ## 当前状态
 
-Teamline 目前处于 Early access，当前产品版本为 `v3.0`。
+Teamline 目前处于 Early access，当前产品版本为 `v3.1`。
 
 当前支持：
 

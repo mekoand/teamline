@@ -413,3 +413,299 @@ button:focus-visible {
     display: grid;
   }
 }
+
+/* The native settings window is 640x480: keep the header stable and scroll the content. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+.settings-window {
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  padding: 38px 18px 14px;
+  overflow: hidden;
+}
+
+.settings-header {
+  min-height: 42px;
+  padding-bottom: 10px;
+  gap: 12px;
+}
+
+.settings-header h1 {
+  font-size: 20px;
+}
+
+.settings-header-actions .secondary-button {
+  min-height: 30px;
+  padding: 5px 9px;
+}
+
+.eyebrow {
+  margin-bottom: 2px;
+  font-size: 9px;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 14px;
+  height: calc(100% - 53px);
+  min-height: 0;
+  padding-top: 12px;
+}
+
+.settings-nav {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  overflow: visible;
+}
+
+.settings-nav-item {
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.settings-content {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.settings-section {
+  padding: 14px;
+  border-radius: 10px;
+}
+
+.section-heading {
+  padding-bottom: 10px;
+}
+
+.section-heading h2 {
+  font-size: 16px;
+}
+
+.setting-row {
+  min-height: 42px;
+  padding: 9px 0;
+  gap: 12px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.setting-row strong,
+.advanced-card strong {
+  font-size: 12px;
+}
+
+.setting-row small,
+.advanced-card p,
+.source-settings p {
+  font-size: 11px;
+}
+
+select,
+input:not([type="checkbox"]):not([type="file"]) {
+  min-width: 132px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.setting-toggle input {
+  width: 36px;
+  height: 20px;
+}
+
+.settings-form {
+  gap: 10px;
+}
+
+.source-settings {
+  gap: 8px;
+  padding: 12px;
+}
+
+.source-settings label {
+  grid-template-columns: minmax(104px, 0.42fr) minmax(0, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+
+.source-settings input {
+  min-width: 0;
+}
+
+.settings-actions {
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.settings-actions .primary-button,
+.advanced-card .secondary-button {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.settings-feedback {
+  min-height: 16px;
+  font-size: 11px;
+}
+
+.settings-feedback:empty {
+  display: none;
+}
+
+.advanced-card {
+  margin-top: 10px;
+  padding: 11px;
+  gap: 10px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.setting-toggle input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--settings-accent);
+}
+
+:is(.icon-button, .secondary-button, .primary-button, .settings-nav-item) {
+  display: inline-flex;
+  align-items: center;
+}
+
+:is(.icon-button, .secondary-button, .primary-button) {
+  justify-content: center;
+}
+
+.restore-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+/* The frameless settings window needs an explicit, non-interactive drag area. */
+.settings-header {
+  -webkit-app-region: drag;
+}
+
+.settings-drag-region {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 100%;
+  -webkit-app-region: drag;
+}
+
+.settings-header-actions,
+.settings-header button,
+.settings-nav,
+.settings-nav button,
+.settings-content,
+.settings-content button,
+.settings-content a,
+.settings-content input,
+.settings-content select,
+.settings-content textarea {
+  -webkit-app-region: no-drag;
+}
+
+.setting-row > span,
+.source-settings label > span,
+.advanced-card > div {
+  min-width: 0;
+}
+
+.setting-row > span,
+.advanced-card > div {
+  flex: 1 1 auto;
+}
+
+.setting-row > :is(select, input, .setting-toggle),
+.advanced-card > :is(button, input[type="file"]) {
+  flex: 0 0 auto;
+}
+
+.setting-row > select {
+  width: 168px;
+}
+
+.advanced-card > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.advanced-card p {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.advanced-card strong {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.restore-card > input[type="file"] {
+  max-width: 190px;
+  font-size: 11px;
+}
+
+.restore-actions[hidden] {
+  display: none;
+}
+
+.settings-actions .settings-feedback {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting-row strong,
+.source-settings label > span,
+.advanced-card strong,
+.advanced-card p {
+  overflow-wrap: anywhere;
+}
+
+.source-settings input,
+.settings-content select {
+  max-width: 100%;
+}
+
+@media (max-width: 520px) {
+  .setting-row,
+  .advanced-card:not(.restore-card) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .source-settings label,
+  .restore-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .advanced-card > div {
+    flex-wrap: wrap;
+  }
+
+  .advanced-card p {
+    white-space: normal;
+  }
+}
