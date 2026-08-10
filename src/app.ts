@@ -242,6 +242,10 @@ const staticFiles: Record<string, { path: string; type: string }> = {
     path: "public/session-monitoring-graph.js",
     type: "text/javascript; charset=utf-8",
   },
+  "/session-monitoring-onboarding.js": {
+    path: "public/session-monitoring-onboarding.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/styles.css": { path: "public/styles.css", type: "text/css; charset=utf-8" },
   "/settings.css": { path: "public/settings.css", type: "text/css; charset=utf-8" },
   "/teamline-logo.png": { path: "public/teamline-logo.png", type: "image/png" },

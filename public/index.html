@@ -15,7 +15,7 @@
           : preference;
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=teamline-3-1-closeout-3" />
   </head>
   <body>
     <div class="console-shell">
@@ -27,8 +27,8 @@
           <button class="icon-button" id="toggle-left-sidebar" type="button" data-i18n-preserve aria-label="收起项目栏" aria-pressed="false">‹</button>
         </div>
         <nav class="mode-switch" role="tablist" aria-label="工作模式">
-          <button class="mode-switch-button selected" id="open-execution-mode" data-mode="execution" role="tab" aria-selected="true" type="button">目标执行</button>
-          <button class="mode-switch-button" id="open-monitoring-mode" data-mode="monitoring" role="tab" aria-selected="false" type="button">会话监控</button>
+          <button class="mode-switch-button selected" id="open-monitoring-mode" data-mode="monitoring" role="tab" aria-selected="true" type="button">会话监控</button>
+          <button class="mode-switch-button" id="open-execution-mode" data-mode="execution" role="tab" aria-selected="false" type="button">目标执行</button>
         </nav>
         <button class="primary-button full-button shell-primary-action" id="open-create" type="button">＋ <span data-i18n="action.create_goal">新建目标</span></button>
         <div class="sidebar-heading project-heading">
@@ -64,7 +64,7 @@
 
       <section class="main-column">
         <header class="console-topbar">
-          <div class="window-heading">
+          <div class="window-heading window-drag-region" data-window-drag-region aria-label="拖动窗口">
             <span class="local-status"><i></i> 本地运行</span>
           </div>
           <div class="topbar-status" aria-label="本地服务状态">
@@ -174,40 +174,14 @@
     <dialog id="notification-dialog" class="notification-dialog">
       <div class="dialog-heading">
         <div>
-          <p class="overline">本机状态</p>
           <h2>通知</h2>
         </div>
         <button type="button" class="icon-button" id="close-notifications" aria-label="关闭">×</button>
       </div>
-      <section class="notification-settings" aria-label="通知设置">
-        <div class="notification-permission">
-          <div>
-            <strong>本机通知</strong>
-            <small id="notification-permission-state">正在读取权限…</small>
-          </div>
-          <button class="secondary-button" id="enable-notifications" type="button">开启</button>
-        </div>
-        <label>
-          <input id="notification-needs-response" type="checkbox" checked />
-          <span>需要响应</span>
-        </label>
-        <label>
-          <input id="notification-run-failed" type="checkbox" checked />
-          <span>运行失败</span>
-        </label>
-        <label>
-          <input id="notification-goal-pending-acceptance" type="checkbox" checked />
-          <span>目标待验收</span>
-        </label>
-        <label>
-          <input id="notification-resource-unavailable" type="checkbox" checked />
-          <span>账号或额度不可用</span>
-        </label>
-      </section>
       <div id="notification-list" class="notification-list" aria-live="polite">
         <p class="muted">还没有通知。</p>
       </div>
-      <p id="notification-feedback" class="inline-feedback" role="status"></p>
+      <button class="text-button notification-settings-link" id="open-notification-settings" type="button">通知设置</button>
     </dialog>
 
     <dialog id="session-import-dialog" class="session-import-dialog">
@@ -321,6 +295,6 @@
       </div>
     </dialog>
 
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=teamline-3-1-closeout-3"></script>
   </body>
 </html>

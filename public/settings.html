@@ -15,12 +15,12 @@
           : preference;
       })();
     </script>
-    <link rel="stylesheet" href="/settings.css" />
+    <link rel="stylesheet" href="/settings.css?v=teamline-3-1-closeout-3" />
   </head>
   <body>
     <main class="settings-window">
       <header class="settings-header">
-        <div>
+        <div class="settings-drag-region" data-settings-drag-region aria-label="设置窗口标题栏">
           <p class="eyebrow">Teamline</p>
           <h1>偏好设置</h1>
         </div>
@@ -66,7 +66,7 @@
               <div><p class="eyebrow">会话监控</p><h2>自动更新</h2></div>
             </div>
             <label class="setting-row setting-toggle">
-              <span><strong>自动更新会话状态</strong><small>关闭自动更新。</small></span>
+              <span><strong>自动更新会话状态</strong></span>
               <input id="monitoring-automatic" type="checkbox" />
             </label>
             <p class="settings-feedback" id="monitoring-feedback" role="status"></p>
@@ -99,10 +99,10 @@
               <div><p class="eyebrow">通知</p><h2>提醒偏好</h2></div>
             </div>
             <form id="notification-preferences-form" class="settings-form notification-preferences">
-              <label class="setting-row setting-toggle"><span><strong>需响应</strong><small>有需要你处理的本地状态时提醒。</small></span><input name="needsResponse" type="checkbox" /></label>
-              <label class="setting-row setting-toggle"><span><strong>运行失败</strong><small>目标运行出现失败状态时提醒。</small></span><input name="runFailed" type="checkbox" /></label>
-              <label class="setting-row setting-toggle"><span><strong>目标待验收</strong><small>目标完成并等待验收时提醒。</small></span><input name="goalPendingAcceptance" type="checkbox" /></label>
-              <label class="setting-row setting-toggle"><span><strong>账号或额度不可用</strong><small>当前来源账号或额度无法使用时提醒。</small></span><input name="resourceUnavailable" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>需响应</strong></span><input name="needsResponse" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>运行失败</strong></span><input name="runFailed" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>目标待验收</strong></span><input name="goalPendingAcceptance" type="checkbox" /></label>
+              <label class="setting-row setting-toggle"><span><strong>账号或额度不可用</strong></span><input name="resourceUnavailable" type="checkbox" /></label>
               <div class="settings-actions"><button class="primary-button" type="submit">保存通知偏好</button><span class="settings-feedback" id="notification-feedback" role="status"></span></div>
             </form>
           </section>
@@ -132,6 +132,6 @@
         </div>
       </div>
     </main>
-    <script type="module" src="/settings.js"></script>
+    <script type="module" src="/settings.js?v=teamline-3-1-closeout-3"></script>
   </body>
 </html>

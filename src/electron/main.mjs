@@ -6,10 +6,11 @@ import {
   Menu,
   nativeImage,
   Notification as ElectronNotification,
+  shell,
   Tray,
 } from "electron";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureLocalCore } from "./local-core-client.mjs";
@@ -21,6 +22,12 @@ import {
   normalizeLocalNotification,
   releaseLocalNotification,
 } from "./local-notification-pump.mjs";
+import {
+  createOpenSettingsIpcHandler,
+  createSettingsUrl,
+  createSettingsWindowOptions,
+  normalizeSettingsSection,
+} from "./settings-window.mjs";
 
 app.setName("Teamline");
 const sourceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -136,10 +143,7 @@ function installArtifactActionBridge() {
 }
 
 function installSettingsBridge() {
-  ipcMain.handle("teamline:open-settings", () => {
-    openSettingsWindow();
-    return { opened: true };
-  });
+  ipcMain.handle("teamline:open-settings", createOpenSettingsIpcHandler(openSettingsWindow));
 }
 
 async function executeArtifactAction(path, action) {
@@ -253,37 +257,13 @@ function showMainWindow() {
 }
 
 function createTemplateTrayImage() {
-  const logo = nativeImage.createFromPath(resolve(sourceRoot, "public/teamline-logo.png"));
-  const { width, height } = logo.getSize();
-  const crop = logo.crop({
-    // The source wordmark has no separate icon. Keep only the complete
-    // official first letter; never feed a partial neighbouring letter to Tray.
-    x: Math.round(width * 0.025),
-    y: Math.round(height * 0.06),
-    width: Math.round(width * 0.155),
-    height: Math.round(height * 0.88),
-  });
-  const cropSize = crop.getSize();
-  const bitmap = crop.toBitmap();
-
-  // The official logo has a white matte. Convert the compact mark to a
-  // monochrome alpha mask so macOS can tint it as a template image.
-  for (let offset = 0; offset < bitmap.length; offset += 4) {
-    const blue = bitmap[offset];
-    const green = bitmap[offset + 1];
-    const red = bitmap[offset + 2];
-    const luminance = 0.0722 * blue + 0.7152 * green + 0.2126 * red;
-    bitmap[offset] = 0;
-    bitmap[offset + 1] = 0;
-    bitmap[offset + 2] = 0;
-    bitmap[offset + 3] = Math.max(0, Math.min(255, Math.round(255 - luminance)));
-  }
-
-  const resized = nativeImage
-    .createFromBuffer(bitmap, { width: cropSize.width, height: cropSize.height })
-    .resize({ width: 32, height: 36, quality: "best" });
-  const template = nativeImage.createFromBuffer(resized.toBitmap(), {
-    width: 32,
+  const svg = readFileSync(resolve(sourceRoot, "public/teamline-tray-template.svg"), "utf8");
+  const vector = nativeImage.createFromDataURL(
+    `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+  );
+  const backing = vector.resize({ width: 36, height: 36, quality: "best" });
+  const template = nativeImage.createFromBuffer(backing.toBitmap(), {
+    width: 36,
     height: 36,
     scaleFactor: 2,
   });
@@ -299,6 +279,8 @@ function createTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示 Teamline", click: showMainWindow },
+      { label: "设置…", click: () => openSettingsWindow("general") },
+      { label: "检查更新…", click: () => void shell.openExternal("https://github.com/mekoand/teamline/releases") },
       { type: "separator" },
       { label: "退出客户端", role: "quit" },
       { label: "退出并停止后台服务", click: () => void stopCoreAndQuit() },
@@ -321,29 +303,27 @@ function installApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function openSettingsWindow() {
+function openSettingsWindow(section = "general") {
+  const normalizedSection = normalizeSettingsSection(section);
   if (settingsWindow) {
     settingsWindow.show();
     settingsWindow.focus();
+    settingsWindow.webContents.send("teamline:settings-section", normalizedSection);
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 640,
-    height: 480,
-    minWidth: 520,
-    minHeight: 360,
-    title: "Teamline 设置",
     parent: mainWindow ?? undefined,
-    backgroundColor: "#f5f7f5",
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: process.platform === "darwin" ? { x: 14, y: 12 } : undefined,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    ...createSettingsWindowOptions({
+      preloadPath: resolve(sourceRoot, "src/electron/preload.cjs"),
+      platform: process.platform,
+    }),
   });
   settingsWindow.on("closed", () => {
     settingsWindow = null;
   });
   if (!coreConnection) return;
-  void settingsWindow.loadURL(new URL("/settings", coreConnection.url).toString());
+  const settingsUrl = createSettingsUrl(coreConnection.url, normalizedSection);
+  void settingsWindow.loadURL(settingsUrl.toString());
 }
 
 async function choosePackagedDataDirectory({ canonicalDirectory, candidates }) {

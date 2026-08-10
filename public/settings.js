@@ -132,16 +132,21 @@ function setFeedback(id, message, isError = false) {
 }
 
 function selectSection(name) {
+  const normalizedName = panels.some((panel) => panel.dataset.settingsPanel === name) ? name : "general";
   for (const button of sections) {
-    const selected = button.dataset.settingsSection === name;
+    const selected = button.dataset.settingsSection === normalizedName;
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-current", selected ? "page" : "false");
   }
   for (const panel of panels) {
-    const visible = panel.dataset.settingsPanel === name;
+    const visible = panel.dataset.settingsPanel === normalizedName;
     panel.hidden = !visible;
     panel.classList.toggle("is-visible", visible);
   }
+}
+
+function requestedSettingsSection() {
+  return new URL(window.location.href).searchParams.get("section") || "general";
 }
 
 function applyTheme(theme) {
@@ -354,6 +359,8 @@ document.querySelector("#model-settings-form").addEventListener("submit", saveMo
 document.querySelector("#notification-preferences-form").addEventListener("submit", saveNotifications);
 document.querySelector("#settings-theme").addEventListener("change", (event) => applyTheme(event.currentTarget.value));
 document.querySelector("#settings-close").addEventListener("click", () => window.close());
+selectSection(requestedSettingsSection());
+window.teamlineDesktop?.onSettingsSection?.((section) => selectSection(section));
 document.querySelector("#refresh-diagnostics").addEventListener("click", refreshDiagnostics);
 document.querySelector("#export-local-state").addEventListener("click", exportLocalState);
 document.querySelector("#restore-state-file").addEventListener("change", previewRestore);

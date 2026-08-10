@@ -37,6 +37,12 @@ import {
   normalizeSessionMonitoringGraph,
 } from "./session-monitoring-graph.js";
 import {
+  buildOnboardingToolBySessionKey,
+  buildOnboardingSelectionPayload,
+  visibleOnboardingCandidates,
+  visibleOnboardingSessionKeys,
+} from "./session-monitoring-onboarding.js";
+import {
   chooseInitialNavigation,
   buildQuickNavigationIndex,
   defaultNavigationState,
@@ -106,6 +112,7 @@ const state = {
   sessionMonitoringError: "",
   sessionMonitoringRefreshInFlight: false,
   sessionMonitoringSelectionKeys: new Set(),
+  sessionMonitoringToolFilters: null,
   monitoringSelectedKey: null,
   monitoringSelectedWorkId: null,
   monitoringCollapsedWorkIds: new Set(),
@@ -114,14 +121,6 @@ const state = {
   sourceStatus: null,
   notifications: [],
   unreadNotificationCount: 0,
-  notificationSettings: { autoRunStarted: true, autoRunStopped: true },
-  notificationPreferences: {
-    needsResponse: true,
-    runFailed: true,
-    goalPendingAcceptance: true,
-    resourceUnavailable: true,
-  },
-  nativeNotificationCheckInFlight: false,
   navigationFallback: null,
   restorePreview: null,
   navigation: readStoredNavigation(),
@@ -204,21 +203,19 @@ function bindShellEvents() {
   });
 
   document.querySelector("#open-notifications").addEventListener("click", () => {
+    if (notificationDialog.open) {
+      notificationDialog.close();
+      return;
+    }
     renderNotificationShell();
-    notificationDialog.showModal();
+    notificationDialog.show();
   });
   document.querySelector("#close-notifications").addEventListener("click", () => notificationDialog.close());
+  document.querySelector("#open-notification-settings")?.addEventListener("click", () => {
+    notificationDialog.close();
+    openSettingsView("notifications");
+  });
   document.querySelector("#close-quick-navigator")?.addEventListener("click", () => quickNavigatorDialog.close());
-  document.querySelector("#enable-notifications").addEventListener("click", enableNativeNotifications);
-  for (const id of [
-    "notification-needs-response",
-    "notification-run-failed",
-    "notification-goal-pending-acceptance",
-    "notification-resource-unavailable",
-  ]) {
-    document.querySelector(`#${id}`)?.addEventListener("change", saveNotificationPreferences);
-  }
-
   document.querySelector("#open-create")?.addEventListener("click", () => {
     if (isSessionMonitoringView()) {
       void openSessionDiscovery();
@@ -244,14 +241,7 @@ function bindShellEvents() {
     refreshConsole();
   });
   document.querySelector("#open-settings")?.addEventListener("click", () => {
-    const desktop = window.teamlineDesktop;
-    if (desktop?.openSettings) {
-      void desktop.openSettings().catch((error) => {
-        console.warn("Unable to open Teamline settings", error);
-      });
-      return;
-    }
-    window.open("/settings", "teamline-settings", "noopener");
+    openSettingsView();
   });
   document.querySelector("#open-local-state")?.addEventListener("click", () => {
     resetRestorePreview();
@@ -317,12 +307,26 @@ function bindShellEvents() {
       openQuickNavigator();
       return;
     }
-    if ((event.key !== "Escape" && event.key !== "Esc") || document.querySelector("dialog[open]")) return;
+    if (event.key === "Escape" || event.key === "Esc") {
+      if (notificationDialog.open) {
+        notificationDialog.close();
+        event.preventDefault();
+        return;
+      }
+      if (document.querySelector("dialog[open]")) return;
+    } else {
+      return;
+    }
     if (closeOpenFloatingDisclosures()) {
       event.preventDefault();
       return;
     }
     dismissContextInspector();
+  });
+  document.addEventListener("click", (event) => {
+    if (!notificationDialog.open) return;
+    if (event.target.closest?.("#open-notifications") || event.target.closest?.("#notification-dialog")) return;
+    notificationDialog.close();
   });
   document.querySelector("#toggle-left-sidebar")?.addEventListener("click", toggleLeftSidebar);
   document.querySelector("#toggle-right-sidebar")?.addEventListener("click", toggleRightSidebar);
@@ -910,11 +914,8 @@ async function refreshConsole({
     state.sessionMonitoringError = "";
     state.notifications = notificationState.notifications;
     state.unreadNotificationCount = notificationState.unreadCount;
-    state.notificationSettings = notificationState.settings;
-    state.notificationPreferences = notificationState.preferences ?? state.notificationPreferences;
     state.navigationFallback = null;
     renderNotificationShell();
-    void showPendingNativeNotifications();
     void refreshResources({ checkAutoRun });
     state.autoRunCheckRequested = false;
     if (initializeNavigationFromData()) {
@@ -1159,16 +1160,6 @@ function renderNotificationShell() {
     .querySelector("#open-notifications")
     .classList.toggle("has-unread", state.unreadNotificationCount > 0);
 
-  document.querySelector("#notification-needs-response").checked =
-    state.notificationPreferences.needsResponse;
-  document.querySelector("#notification-run-failed").checked =
-    state.notificationPreferences.runFailed;
-  document.querySelector("#notification-goal-pending-acceptance").checked =
-    state.notificationPreferences.goalPendingAcceptance;
-  document.querySelector("#notification-resource-unavailable").checked =
-    state.notificationPreferences.resourceUnavailable;
-  renderNotificationPermission();
-
   const list = document.querySelector("#notification-list");
   list.innerHTML = state.notifications.length
     ? state.notifications
@@ -1176,10 +1167,10 @@ function renderNotificationShell() {
           (notification) => `
             <button class="notification-item ${notification.readAt ? "" : "unread"}" data-notification-id="${notification.id}" type="button">
               <span class="notification-item-heading">
-                <strong>${escapeHtml(translateMessage(state.locale, notification.titleMessage, notification.title))}</strong>
+                <strong title="${escapeHtml(translateMessage(state.locale, notification.titleMessage, notification.title))}">${escapeHtml(translateMessage(state.locale, notification.titleMessage, notification.title))}</strong>
                 <time>${formatDate(notification.createdAt)}</time>
               </span>
-              <span data-i18n-preserve>${escapeHtml(translateMessage(state.locale, notification.bodyMessage, notification.body))}</span>
+              <span data-i18n-preserve title="${escapeHtml(translateMessage(state.locale, notification.bodyMessage, notification.body))}">${escapeHtml(translateMessage(state.locale, notification.bodyMessage, notification.body))}</span>
             </button>`,
         )
         .join("")
@@ -1194,122 +1185,16 @@ function renderNotificationShell() {
   });
 }
 
-function renderNotificationPermission() {
-  const stateElement = document.querySelector("#notification-permission-state");
-  const button = document.querySelector("#enable-notifications");
-  if (window.teamlineDesktop?.nativeNotifications) {
-    stateElement.textContent = "已开启";
-    button.hidden = true;
+function openSettingsView(section = "general") {
+  const desktop = window.teamlineDesktop;
+  if (desktop?.openSettings) {
+    void desktop.openSettings(section).catch((error) => {
+      console.warn("Unable to open Teamline settings", error);
+    });
     return;
   }
-  if (!("Notification" in window)) {
-    stateElement.textContent = "当前浏览器不支持";
-    button.hidden = true;
-    return;
-  }
-  const labels = {
-    granted: "已开启",
-    denied: "已被浏览器关闭",
-    default: "开启后显示在系统通知中心",
-  };
-  stateElement.textContent = labels[Notification.permission];
-  button.hidden = Notification.permission === "granted";
-  button.textContent = Notification.permission === "denied" ? "查看浏览器设置" : "开启";
-  button.disabled = Notification.permission === "denied";
-}
-
-async function enableNativeNotifications() {
-  if (!("Notification" in window)) return;
-  try {
-    await Notification.requestPermission();
-    renderNotificationPermission();
-    await showPendingNativeNotifications();
-  } catch {
-    setFeedback("notification-feedback", "无法开启本机通知，请检查浏览器设置。", true);
-  }
-}
-
-async function saveNotificationSettings() {
-  const settings = {
-    autoRunStarted: document.querySelector("#auto-run-started-notifications").checked,
-    autoRunStopped: document.querySelector("#auto-run-stopped-notifications").checked,
-  };
-  try {
-    const result = await requestJson("/api/notification-settings", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(settings),
-    });
-    state.notificationSettings = result.settings;
-    setFeedback("notification-feedback", "通知设置已保存。", false);
-  } catch (error) {
-    renderNotificationShell();
-    setFeedback("notification-feedback", messageFrom(error, "无法保存通知设置。"), true);
-  }
-}
-
-async function saveNotificationPreferences() {
-  const settings = {
-    needsResponse: document.querySelector("#notification-needs-response").checked,
-    runFailed: document.querySelector("#notification-run-failed").checked,
-    goalPendingAcceptance: document.querySelector("#notification-goal-pending-acceptance").checked,
-    resourceUnavailable: document.querySelector("#notification-resource-unavailable").checked,
-  };
-  try {
-    const result = await requestJson("/api/preferences/notifications", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ settings }),
-    });
-    state.notificationPreferences = result.settings;
-    setFeedback("notification-feedback", "通知设置已保存。", false);
-  } catch (error) {
-    renderNotificationShell();
-    setFeedback("notification-feedback", messageFrom(error, "无法保存通知设置。"), true);
-  }
-}
-
-async function showPendingNativeNotifications() {
-  if (
-    window.teamlineDesktop?.nativeNotifications ||
-    !("Notification" in window) ||
-    Notification.permission !== "granted" ||
-    state.nativeNotificationCheckInFlight
-  ) {
-    return;
-  }
-  state.nativeNotificationCheckInFlight = true;
-  try {
-    const { notifications } = await requestJson("/api/notifications/claim", {
-      method: "POST",
-    });
-    for (const localNotification of notifications) {
-      try {
-        const systemNotification = new Notification(
-          translateMessage(state.locale, localNotification.titleMessage, localNotification.title),
-          {
-          body: translateMessage(state.locale, localNotification.bodyMessage, localNotification.body),
-          tag: `teamline-${localNotification.id}`,
-          },
-        );
-        systemNotification.addEventListener("click", () => {
-          window.focus();
-          void openLocalNotification(localNotification);
-          systemNotification.close();
-        });
-      } catch {
-        await requestJson("/api/notifications/release", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: localNotification.id }),
-        });
-      }
-    }
-  } catch {
-    // 网页内未读通知仍会保留。
-  } finally {
-    state.nativeNotificationCheckInFlight = false;
-  }
+  const suffix = section ? `?section=${encodeURIComponent(section)}` : "";
+  window.open(`/settings${suffix}`, "teamline-settings", "noopener");
 }
 
 async function openLocalNotification(notification) {
@@ -1779,6 +1664,9 @@ function renderSessionMonitoringWorkspace() {
 function renderSessionMonitoringOnboarding(monitoring) {
   const candidates = Array.isArray(monitoring.candidates) ? monitoring.candidates : [];
   const tools = Array.isArray(monitoring.tools) ? monitoring.tools : [];
+  const activeToolKeys = onboardingActiveToolKeys(monitoring);
+  const toolBySessionKey = buildOnboardingToolBySessionKey(tools);
+  const visibleCandidateCount = visibleOnboardingCandidates(candidates, toolBySessionKey, activeToolKeys).length;
   return `
     <section class="workspace-content monitoring-onboarding" aria-labelledby="monitoring-onboarding-title">
       <header class="overview-heading">
@@ -1790,22 +1678,58 @@ function renderSessionMonitoringOnboarding(monitoring) {
         <form id="session-monitoring-onboarding-form" class="monitoring-onboarding-form">
           <section class="monitoring-onboarding-tools" aria-label="来源工具">
             <div class="section-heading compact"><div><span class="overline">来源工具</span><h2>先按工具筛选</h2></div></div>
-            <div class="monitoring-onboarding-tool-list">${tools.map((tool) => `
-              <label class="monitoring-onboarding-tool"><input type="checkbox" data-onboarding-tool="${escapeHtml(tool.key)}" checked /><span><strong>${escapeHtml(tool.label)}</strong><small>${tool.sessionKeys.length} 个来源会话</small></span></label>`).join("")}</div>
+            <div class="monitoring-onboarding-tool-list" role="group" aria-label="来源工具筛选">${tools.map((tool) => `
+              <button class="monitoring-onboarding-tool ${activeToolKeys.has(tool.key) ? "is-active" : ""}" data-onboarding-tool="${escapeHtml(tool.key)}" aria-pressed="${activeToolKeys.has(tool.key)}" title="${escapeHtml(tool.label)}" type="button"><span><strong>${escapeHtml(tool.label)}</strong><small>${tool.sessionKeys?.length ?? 0} 个来源会话</small></span></button>`).join("")}</div>
           </section>
-          <div class="monitoring-onboarding-candidates">${candidates.map((candidate) => `
-            <article class="monitoring-onboarding-candidate" data-onboarding-candidate-card="${escapeHtml(candidate.key)}">
-              <label class="monitoring-onboarding-candidate-heading"><input type="checkbox" data-onboarding-project="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve>${escapeHtml(candidate.name)}</strong><small>${escapeHtml(candidate.workspacePath || "未提供工作文件夹")} · ${candidate.sessionKeys.length} 个来源会话</small></span></label>
-              <label class="monitoring-onboarding-default"><input type="checkbox" data-onboarding-default="${escapeHtml(candidate.key)}" /><span><strong>默认开启监控</strong><small>当前及以后同一工作文件夹的来源会话继承此设置</small></span></label>
+          <p class="monitoring-onboarding-filter-empty" data-onboarding-filter-empty role="status" ${visibleCandidateCount ? "hidden" : ""}>没有匹配的来源会话。</p>
+          <div class="monitoring-onboarding-candidates">${candidates.map((candidate) => {
+            const visibleSessionKeys = new Set(visibleOnboardingSessionKeys(candidate, toolBySessionKey, activeToolKeys));
+            return `
+            <article class="monitoring-onboarding-candidate" data-onboarding-candidate-card="${escapeHtml(candidate.key)}" ${visibleSessionKeys.size ? "" : "hidden"} style="${visibleSessionKeys.size ? "" : "display: none;"}">
+              <div class="monitoring-onboarding-candidate-heading">
+                <label class="monitoring-onboarding-project-choice" title="${escapeHtml(candidate.name)}"><input type="checkbox" data-onboarding-project="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve title="${escapeHtml(candidate.name)}">${escapeHtml(candidate.name)}</strong><small title="${escapeHtml(candidate.workspacePath || "未提供工作文件夹")}">${escapeHtml(candidate.workspacePath || "未提供工作文件夹")} · <span data-onboarding-candidate-count>${visibleSessionKeys.size}</span> 个来源会话</small></span></label>
+                <label class="monitoring-onboarding-default"><input type="checkbox" data-onboarding-default="${escapeHtml(candidate.key)}" /><span><strong>默认开启监控</strong></span></label>
+              </div>
               <div class="monitoring-onboarding-sessions">${candidate.sessionKeys.map((key) => {
                 const session = (monitoring.sessions ?? []).find((item) => item.key === key);
-                return session ? `<label><input type="checkbox" data-onboarding-session="${escapeHtml(key)}" data-onboarding-candidate-session="${escapeHtml(candidate.key)}" checked /><span><strong data-i18n-preserve>${escapeHtml(session.title)}</strong><small>${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)}</small></span></label>` : "";
+                const visible = visibleSessionKeys.has(key);
+                const toolKey = toolBySessionKey.get(key) ?? "";
+                return session ? `<div class="monitoring-onboarding-session-preview" data-onboarding-session="${escapeHtml(key)}" data-onboarding-candidate-session="${escapeHtml(candidate.key)}" data-onboarding-session-tool="${escapeHtml(toolKey)}" ${visible ? "" : "hidden"} title="${escapeHtml(session.title)}"><span><strong data-i18n-preserve title="${escapeHtml(session.title)}">${escapeHtml(session.title)}</strong><small title="${escapeHtml(`${sourceKindLabel(session.sourceKind)} · ${session.projectLabel}`)}">${escapeHtml(sourceKindLabel(session.sourceKind))} · ${escapeHtml(session.projectLabel)}</small></span></div>` : "";
               }).join("")}</div>
-            </article>`).join("")}</div>
+            </article>`;
+          }).join("")}</div>
           <p class="monitoring-onboarding-note">可稍后从“＋ 添加会话”进入。</p>
           <div class="dialog-actions"><button type="button" class="secondary-button" id="skip-session-monitoring-onboarding">全部跳过</button><button type="submit" class="primary-button" id="confirm-session-monitoring-onboarding">加入 Teamline</button></div>
         </form>` : `<section class="session-monitoring-empty"><strong>没有发现可加入的本地会话</strong><p>确认 Codex 或 Claude Code 已在这台电脑上使用过。</p><button class="secondary-button" id="skip-session-monitoring-onboarding" type="button">稍后再选</button></section>`}
     </section>`;
+}
+
+function onboardingActiveToolKeys(monitoring = state.sessionMonitoring) {
+  const allToolKeys = new Set((monitoring.tools ?? []).map((tool) => tool.key));
+  if (!(state.sessionMonitoringToolFilters instanceof Set)) return allToolKeys;
+  return new Set([...state.sessionMonitoringToolFilters].filter((key) => allToolKeys.has(key)));
+}
+
+function applySessionMonitoringOnboardingToolFilter() {
+  const activeToolKeys = onboardingActiveToolKeys();
+  let visibleCandidateCount = 0;
+  document.querySelectorAll("[data-onboarding-candidate-card]").forEach((card) => {
+    let visibleSessionCount = 0;
+    card.querySelectorAll("[data-onboarding-session]").forEach((session) => {
+      const visible = activeToolKeys.has(session.dataset.onboardingSessionTool);
+      session.hidden = !visible;
+      session.style.display = visible ? "" : "none";
+      session.toggleAttribute("aria-hidden", !visible);
+      if (visible) visibleSessionCount += 1;
+    });
+    card.hidden = visibleSessionCount === 0;
+    card.style.display = card.hidden ? "none" : "";
+    if (!card.hidden) visibleCandidateCount += 1;
+    const count = card.querySelector("[data-onboarding-candidate-count]");
+    if (count) count.textContent = String(visibleSessionCount);
+  });
+  const empty = document.querySelector("[data-onboarding-filter-empty]");
+  if (empty) empty.hidden = visibleCandidateCount > 0;
 }
 
 function renderSessionMonitoringGraph(graph, projectName, preserveProjectName) {
@@ -1859,7 +1783,7 @@ function renderMonitoringWorkLane(lane) {
       <div class="session-monitoring-lane-heading">
         <button class="session-monitoring-lane-select" type="button" data-monitoring-work="${escapeHtml(work.id)}">
         <span class="monitoring-lane-marker"></span>
-        <span><strong data-i18n-preserve>${escapeHtml(work.name)}</strong><small>${sourceCount} 个来源</small></span>
+        <span><strong data-i18n-preserve title="${escapeHtml(work.name)}">${escapeHtml(work.name)}</strong><small>${sourceCount} 个来源</small></span>
         <span class="status-pill ${work.aggregateStatus === "failed" ? "response" : work.aggregateStatus === "pending" ? "planning" : work.aggregateStatus === "ready" ? "running" : "queued"}">${escapeHtml(monitoringWorkStatusLabel(work.aggregateStatus))}</span>
         </button>
         <button class="icon-button monitoring-collapse-button" type="button" data-monitoring-collapse-work="${escapeHtml(work.id)}" aria-expanded="${!collapsed}" aria-label="${collapsed ? "展开监控工作" : "折叠监控工作"}">${collapsed ? "＋" : "−"}</button>
@@ -1889,7 +1813,7 @@ function renderMonitoringSourceSubLane(sourceLane) {
       <div class="session-monitoring-lane-heading">
         <button class="session-monitoring-lane-select" type="button" data-monitoring-session="${escapeHtml(source.key)}">
           <span class="monitoring-lane-marker"></span>
-          <span><strong data-i18n-preserve>${escapeHtml(source.title)}</strong><small>${escapeHtml(`${sourceKindLabel(source.sourceKind)}${account} · ${source.projectLabel}`)}</small></span>
+          <span><strong data-i18n-preserve title="${escapeHtml(source.title)}">${escapeHtml(source.title)}</strong><small title="${escapeHtml(`${sourceKindLabel(source.sourceKind)}${account} · ${source.projectLabel}`)}">${escapeHtml(`${sourceKindLabel(source.sourceKind)}${account} · ${source.projectLabel}`)}</small></span>
           <span class="status-pill ${status === "failed" ? "response" : status === "pending" ? "planning" : status === "ready" ? "running" : "queued"}">${escapeHtml(sessionOrganizationStatusLabel(status))}</span>
         </button>
       </div>
@@ -2805,25 +2729,26 @@ function bindSessionMonitoringEvents() {
   document.querySelector("#refresh-session-monitoring-onboarding")?.addEventListener("click", openSessionDiscovery);
   document.querySelector("#skip-session-monitoring-onboarding")?.addEventListener("click", skipSessionMonitoringOnboarding);
   document.querySelector("#session-monitoring-onboarding-form")?.addEventListener("submit", confirmSessionMonitoringOnboarding);
-  document.querySelectorAll("[data-onboarding-project]").forEach((control) => {
-    control.addEventListener("change", () => {
-      const key = control.dataset.onboardingProject;
-      document.querySelectorAll(`[data-onboarding-candidate-session="${CSS.escape(key)}"]`).forEach((session) => {
-        session.checked = control.checked;
-        session.disabled = !control.checked;
-      });
-    });
-  });
   document.querySelectorAll("[data-onboarding-tool]").forEach((control) => {
-    control.addEventListener("change", () => {
-      const tool = state.sessionMonitoring.tools?.find((candidate) => candidate.key === control.dataset.onboardingTool);
-      for (const key of tool?.sessionKeys ?? []) {
-        const session = document.querySelector(`[data-onboarding-session="${CSS.escape(key)}"]`);
-        if (session) {
-          session.checked = control.checked;
-          session.disabled = !control.checked;
+    control.addEventListener("click", () => {
+      const activeToolKeys = onboardingActiveToolKeys();
+      const checked = control.getAttribute("aria-pressed") === "true";
+      if (checked && activeToolKeys.size <= 1) {
+        control.setAttribute("aria-pressed", "true");
+        control.classList.add("is-active");
+        const empty = document.querySelector("[data-onboarding-filter-empty]");
+        if (empty) {
+          empty.hidden = false;
+          empty.textContent = "至少保留一个来源工具。";
         }
+        return;
       }
+      if (!checked) activeToolKeys.add(control.dataset.onboardingTool);
+      else activeToolKeys.delete(control.dataset.onboardingTool);
+      control.setAttribute("aria-pressed", String(!checked));
+      control.classList.toggle("is-active", !checked);
+      state.sessionMonitoringToolFilters = activeToolKeys;
+      applySessionMonitoringOnboardingToolFilter();
     });
   });
   document.querySelectorAll("[data-create-monitoring-goal-work], [data-create-monitoring-goal-session]").forEach((button) => {
@@ -2902,12 +2827,14 @@ async function openSessionDiscovery() {
   state.sessionMonitoringError = "";
   state.sessionMonitoring.onboarding = true;
   state.sessionMonitoring.onboardingDismissed = false;
+  state.sessionMonitoringToolFilters = null;
   renderConsole();
   try {
     state.sessionMonitoring = await requestJson("/api/session-monitoring/discover?preview=1", {
       method: "POST",
     });
     state.sessionMonitoringSelectionKeys = new Set();
+    state.sessionMonitoringToolFilters = null;
   } catch (error) {
     state.sessionMonitoringError = messageFrom(error, "无法扫描本机会话");
   } finally {
@@ -2930,6 +2857,7 @@ async function refreshSessionMonitoring(mode = "manual") {
         })
       : await requestJson("/api/session-monitoring/discover", { method: "POST" });
     state.sessionMonitoringSelectionKeys = new Set();
+    state.sessionMonitoringToolFilters = null;
   } catch (error) {
     state.sessionMonitoringError = messageFrom(error, "无法扫描本机会话");
   } finally {
@@ -2954,21 +2882,24 @@ async function skipSessionMonitoringOnboarding() {
 
 async function confirmSessionMonitoringOnboarding(event) {
   event.preventDefault();
-  const projects = [...document.querySelectorAll("[data-onboarding-project]")].map((control) => ({
+  const projectSelections = [...document.querySelectorAll("[data-onboarding-project]")].map((control) => ({
     candidateKey: control.dataset.onboardingProject,
     selected: control.checked,
     monitoringEnabled: Boolean(document.querySelector(`[data-onboarding-default="${CSS.escape(control.dataset.onboardingProject)}"]`)?.checked),
   }));
-  const selectedSessionKeys = [...document.querySelectorAll("[data-onboarding-session]:checked")]
-    .map((control) => control.dataset.onboardingSession)
-    .filter(Boolean);
+  const payload = buildOnboardingSelectionPayload(
+    state.sessionMonitoring.candidates ?? [],
+    state.sessionMonitoring.tools ?? [],
+    projectSelections,
+    onboardingActiveToolKeys(),
+  );
   const button = document.querySelector("#confirm-session-monitoring-onboarding");
   setBusy(button, "正在保存…");
   try {
     state.sessionMonitoring = await requestJson("/api/session-monitoring/onboarding", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projects, selectedSessionKeys }),
+      body: JSON.stringify(payload),
     });
     state.sessionMonitoringError = "";
     renderConsole();
